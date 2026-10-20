@@ -110,6 +110,7 @@ USAGE:
       model, written as <model>.json to DIR (default: the profiles folder LightCraft reads,
       <config>/camera-profiles, or $LIGHTCRAFT_CAMERA_PROFILES). Raws of a profiled model then
       take their colour from the profile and only their tone from their own JPEG.
+  lightcraft-cli optics-inspect FILE   read-only optical metadata and correction report
   lightcraft-cli --version | --help
 ";
 
@@ -160,6 +161,7 @@ fn main() -> ExitCode {
         Some("run") => run(&args[1..]),
         Some("mcp") => mcp(&args[1..]),
         Some("render") => render(&args[1..]),
+        Some("optics-inspect") => optics_inspect(&args[1..]),
         Some("snapshot") => snapshot(&args[1..]),
         Some("commands") => commands(&args[1..]),
         Some("merge") => merge(&args[1..]),
@@ -184,6 +186,14 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Read-only diagnosis: no Session, catalog, preferences or sidecars are opened.
+fn optics_inspect(args: &[String]) -> Result<(), String> {
+    let [path] = args else { return Err("usage: lightcraft-cli optics-inspect FILE".into()) };
+    let report = lightcraft_engine::lens_profiles::inspect_file(std::path::Path::new(path))?;
+    println!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+    Ok(())
 }
 
 /// Raw files below `path` (or `path` itself), skipping hidden and NAS metadata folders.
