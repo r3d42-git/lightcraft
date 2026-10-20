@@ -1,0 +1,13 @@
+# r3d-optics
+
+Provider-neutral identity resolution for the LightCraft fork. The crate accepts descriptors and recorded identity strings, returns indices into those descriptors plus a serializable resolution, and has no dependency on the engine, catalog, rendering pipeline, or profile database parser.
+
+Camera make/model normalization removes corporate suffixes and optional maker prefixes and ignores case, spacing, and punctuation. Lens identity comparison ignores case, punctuation, maker words, word order, and insignificant decimal zeros. Every remaining word and number must agree. Revisions such as II, IS, and optical series suffixes are not guessed. Providers can supply explicit aliases in `ProfileDescriptor.names`.
+
+Camera-only matching requires the provider to explicitly mark `CameraDescriptor.fixed_lens`. The Lensfun adapter derives this from the documented lowercase initial mount convention, never from a single available profile or a list of camera models. Known mount incompatibility is a hard exclusion. Missing identity, unknown placeholders, duplicate cameras, and tied profiles return a reason without selecting a profile.
+
+Calibration selection happens only after optical identity is unambiguous: maker and the complete normalized profile-name alias set must agree. A camera crop factor or explicit recorded-frame crop must be known and valid. The recorded frame can narrow the body sensor field but cannot widen it. A calibration crop may exceed the recorded crop by at most 1% for rounding; profiles measured over a smaller field are otherwise rejected. Among compatible calibrations of the same identity, the largest calibration crop is selected; equal best calibrations remain ambiguous. Different makers or model identities cannot be resolved solely by crop. Missing or invalid profile calibration crop factors are rejected.
+
+The engine adapter owns database loading, conversion and orientation handling. Embedded corrections retain precedence as a complete source; this initial implementation does not combine embedded and external components with unverified coordinate compatibility. Component statuses describe conversion output, not whether the user's develop settings currently enable that output.
+
+Current limitations: numeric lens identifiers are not matched without a trusted resolved name; manufacturer aliases beyond corporate suffixes require provider aliases; adapters and implicit interchangeable mount compatibility are not inferred; equally suitable calibrations tied to the same identity are rejected; no database is bundled or downloaded by this crate.
