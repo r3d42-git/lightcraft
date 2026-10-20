@@ -58,6 +58,7 @@ pub mod memory;
 pub mod merge;
 mod model_download;
 pub mod open_path;
+pub mod optics_metadata;
 pub mod originals;
 mod pdf;
 pub mod preset_import;
