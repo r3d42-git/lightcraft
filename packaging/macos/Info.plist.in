@@ -7,13 +7,13 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>LightCraft</string>
+  <string>LightCraft R3D</string>
   <key>CFBundleName</key>
-  <string>LightCraft</string>
+  <string>LightCraft R3D</string>
   <key>CFBundleExecutable</key>
   <string>LightCraft</string>
   <key>CFBundleIdentifier</key>
-  <string>ai.storyteller.lightcraft</string>
+  <string>local.r3d.lightcraft</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundlePackageType</key>
@@ -54,7 +54,7 @@
   <array>
     <dict>
       <key>UTTypeIdentifier</key>
-      <string>ai.storyteller.lightcraft.document</string>
+      <string>local.r3d.lightcraft.document</string>
       <key>UTTypeDescription</key>
       <string>LightCraft Document</string>
       <key>UTTypeConformsTo</key>
@@ -94,7 +94,7 @@
     </dict>
     <dict>
       <key>UTTypeIdentifier</key>
-      <string>ai.storyteller.lightcraft.qoi</string>
+      <string>local.r3d.lightcraft.qoi</string>
       <key>UTTypeDescription</key>
       <string>QOI Image</string>
       <key>UTTypeConformsTo</key>
