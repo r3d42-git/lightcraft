@@ -16,6 +16,10 @@ Changing an upstream metadata or image type therefore does not change this API.
 parser and correction pipeline. Database parameters are converted by upstream
 code, not by a duplicate renderer. A compact camera is identified through the
 provider's fixed-lens mount convention, never through a hardcoded camera list.
+Top-level Lensfun mount declarations survive database-file aggregation. The adapter
+passes only the camera mount's explicitly declared compatible lens mounts to the
+resolver (for example, Canon EF-S accepts Canon EF). Reverse or transitive
+compatibility is never inferred; fixed-lens camera-only matching requires the exact mount.
 Calibration crop coverage is checked separately from lens identity.
 
 `crates/engine/src/optics_metadata.rs` supplements the upstream optical metadata
