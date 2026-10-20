@@ -36,6 +36,7 @@ const DB: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <maker>Testcam</maker>
     <model>Testcam 50mm f/1.8</model>
     <mount>Other Mount</mount>
+    <cropfactor>1</cropfactor>
     <calibration>
       <distortion model="poly5" focal="50" k1="-0.02" k2="0.0003" />
     </calibration>
@@ -44,6 +45,7 @@ const DB: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <maker>Fishco</maker>
     <model>Fishco 8mm f/3.5 Fisheye</model>
     <type>equisolid</type>
+    <cropfactor>1</cropfactor>
     <calibration>
       <distortion model="poly3" focal="8" k1="0.5" />
     </calibration>
@@ -116,8 +118,8 @@ fn malformed_documents_are_errors_not_panics() {
 #[test]
 fn finds_cameras_by_exif_strings() {
     let db = db();
-    assert_eq!(db.find_camera("TESTCAM CORPORATION", "TC-1").unwrap().crop_factor, 1.5);
-    assert_eq!(db.find_camera("Testcam", "tc-ff").unwrap().crop_factor, 1.0);
+    assert_eq!(db.find_camera("TESTCAM CORPORATION", "TC-1").unwrap().crop_factor, Some(1.5));
+    assert_eq!(db.find_camera("Testcam", "tc-ff").unwrap().crop_factor, Some(1.0));
     assert!(db.find_camera("Testcam", "TC-2").is_none());
     assert!(db.find_camera("Other", "TC-1").is_none());
 }
@@ -270,4 +272,35 @@ fn load_dir_reads_xml_files_and_reports_bad_ones() {
 fn tokens_split_names_like_exif_writes_them() {
     assert_eq!(tokens("FE 24-105mm F4.0 G OSS"), ["fe", "24", "105", "mm", "f", "4", "g", "oss"]);
     assert_eq!(tokens("f/2.8"), ["f", "2.8"]);
+}
+
+#[test]
+fn unknown_calibration_crop_cannot_be_converted_or_inherit_invalid_overrides() {
+    let xml = |parent: &str, calibration: &str| {
+        format!(
+            r#"<lensdatabase>
+      <lens><maker>Test</maker><model>Test 50mm</model><mount>T</mount>{parent}
+        <calibration {calibration}><distortion model="poly3" focal="50" k1="-0.03" /></calibration>
+      </lens></lensdatabase>"#
+        )
+    };
+    for parent in ["", "<cropfactor/>", "<cropfactor>bad</cropfactor>", "<cropfactor>NaN</cropfactor>", "<cropfactor>0.09</cropfactor>"] {
+        let db = LensDb::parse(&xml(parent, "")).unwrap();
+        assert_eq!(db.lenses[0].crop_factor, None);
+        assert!(db.lenses[0].correction(&shot(50.0)).is_none());
+        let db = LensDb::parse(&xml(parent, r#"cropfactor="1""#)).unwrap();
+        assert_eq!(db.lenses[0].crop_factor, Some(1.0));
+        assert!(db.lenses[0].correction(&shot(50.0)).is_some());
+    }
+    for value in ["", "bad", "NaN", "inf", "0", "-1", "0.09", "21"] {
+        let db = LensDb::parse(&xml("<cropfactor>1.5</cropfactor>", &format!(r#"cropfactor="{value}""#))).unwrap();
+        assert_eq!(db.lenses[0].crop_factor, None, "{value}");
+        assert!(db.lenses[0].correction(&shot(50.0)).is_none());
+    }
+    let inherited = LensDb::parse(&xml("<cropfactor>1.5</cropfactor>", "")).unwrap();
+    assert_eq!(inherited.lenses[0].crop_factor, Some(1.5));
+    for value in ["0.1", "1", "20"] {
+        let db = LensDb::parse(&xml("", &format!(r#"cropfactor="{value}""#))).unwrap();
+        assert_eq!(db.lenses[0].crop_factor, value.parse().ok());
+    }
 }
