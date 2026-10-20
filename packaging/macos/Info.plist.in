@@ -7,13 +7,13 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>LightCraft</string>
+  <string>LightCraft R3D</string>
   <key>CFBundleName</key>
-  <string>LightCraft</string>
+  <string>LightCraft R3D</string>
   <key>CFBundleExecutable</key>
   <string>LightCraft</string>
   <key>CFBundleIdentifier</key>
-  <string>ai.storyteller.lightcraft</string>
+  <string>local.r3d.lightcraft</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundlePackageType</key>
@@ -54,6 +54,7 @@
        Declaring PhotoCraft's `.pcraft` type here (and importing PSB and QOI) made Launch Services
        type PhotoCraft documents as LightCraft's; `.pcraft` ended up with three claimant apps
        (issue #1951). -->
+
 
 </dict>
 </plist>
