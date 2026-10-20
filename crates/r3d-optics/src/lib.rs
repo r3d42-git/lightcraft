@@ -49,18 +49,27 @@ pub enum Status {
 }
 
 /// Indices reference the supplied descriptor slices, never provider-global identifiers.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Resolution {
     pub status: Status,
     pub camera_index: Option<usize>,
     pub profile_index: Option<usize>,
     pub candidates: Vec<usize>,
     pub via_fixed_lens: bool,
+    /// The validated crop used for both calibration coverage and correction conversion.
+    pub frame_crop_factor: Option<f64>,
 }
 
 /// Resolve only a unique best candidate. Camera-only resolution requires a provider-declared fixed lens.
 pub fn resolve(request: Request<'_>, cameras: &[CameraDescriptor], profiles: &[ProfileDescriptor]) -> Resolution {
-    let mut result = Resolution { status: Status::NoMatch, camera_index: None, profile_index: None, candidates: Vec::new(), via_fixed_lens: false };
+    let mut result = Resolution {
+        status: Status::NoMatch,
+        camera_index: None,
+        profile_index: None,
+        candidates: Vec::new(),
+        via_fixed_lens: false,
+        frame_crop_factor: None,
+    };
     let camera_model = camera_name(request.camera_model.unwrap_or_default(), request.camera_make.unwrap_or_default());
     let matching_cameras: Vec<_> = cameras
         .iter()
@@ -119,11 +128,8 @@ pub fn resolve(request: Request<'_>, cameras: &[CameraDescriptor], profiles: &[P
         result.status = Status::AmbiguousProfile;
         return result;
     }
-    let body_crop = camera.and_then(|camera| valid_crop(camera.crop_factor));
-    let frame_crop = match (body_crop, valid_crop(request.frame_crop_factor)) {
-        (Some(body), Some(frame)) => Some(body.max(frame)),
-        (body, frame) => frame.or(body),
-    };
+    let frame_crop = effective_frame_crop_factor(camera.and_then(|camera| camera.crop_factor), request.frame_crop_factor);
+    result.frame_crop_factor = frame_crop;
     let Some(frame_crop) = frame_crop else {
         result.status = if result.candidates.len() > 1 { Status::AmbiguousProfile } else { Status::NoMatch };
         return result;
@@ -154,8 +160,18 @@ pub fn resolve(request: Request<'_>, cameras: &[CameraDescriptor], profiles: &[P
     result
 }
 
+/// A recorded crop narrows the body's field only when it exceeds the body crop by more than 10%.
+/// Smaller differences are treated as whole-millimetre EXIF rounding, retaining the body's crop.
+/// Both inputs use the same finite 0.1..=20 validity range as calibration coverage.
+pub fn effective_frame_crop_factor(body: Option<f64>, recorded: Option<f64>) -> Option<f64> {
+    match (valid_crop(body), valid_crop(recorded)) {
+        (Some(body), Some(recorded)) if recorded > body * 1.1 => Some(recorded),
+        (body, recorded) => body.or(recorded),
+    }
+}
+
 fn valid_crop(crop: Option<f64>) -> Option<f64> {
-    crop.filter(|crop| crop.is_finite() && (0.05..=20.0).contains(crop))
+    crop.filter(|crop| crop.is_finite() && (0.1..=20.0).contains(crop))
 }
 
 fn same_identity(a: &ProfileDescriptor, b: &ProfileDescriptor) -> bool {
@@ -364,6 +380,30 @@ mod tests {
         assert_eq!(resolve(request(), &[body.clone()], &profiles).profile_index, Some(0));
         assert_eq!(resolve(Request { frame_crop_factor: Some(1.6), ..request() }, &[body.clone()], &profiles).profile_index, Some(1));
         assert_eq!(resolve(request(), &[body], &profiles[1..]).status, Status::NoMatch);
+    }
+
+    #[test]
+    fn effective_crop_retains_body_rounding_and_respects_crop_mode() {
+        let body = camera(false);
+        let mut too_narrow = profile();
+        too_narrow.calibration_crop_factor = Some(1.611);
+        let result = resolve(Request { frame_crop_factor: Some(1.6), ..request() }, &[body], &[too_narrow]);
+        assert_eq!(result.status, Status::NoMatch, "1.6 EXIF rounding cannot qualify a 1.611 calibration for a 1.5 body");
+        assert_eq!(result.frame_crop_factor, Some(1.5));
+        let boundary = 1.5 * 1.1;
+        for recorded in [1.0, 1.5, boundary - 1e-9, boundary] {
+            assert_eq!(effective_frame_crop_factor(Some(1.5), Some(recorded)), Some(1.5));
+        }
+        assert_eq!(effective_frame_crop_factor(Some(1.5), Some(boundary + 1e-9)), Some(boundary + 1e-9));
+        assert_eq!(effective_frame_crop_factor(Some(1.0), Some(1.6)), Some(1.6));
+        assert_eq!(effective_frame_crop_factor(None, Some(1.6)), Some(1.6));
+        for invalid in [f64::NAN, f64::INFINITY, -1.0, 0.0, 0.099, 20.001] {
+            assert_eq!(effective_frame_crop_factor(Some(invalid), Some(invalid)), None);
+            assert_eq!(effective_frame_crop_factor(Some(1.5), Some(invalid)), Some(1.5));
+        }
+        for boundary in [0.1, 20.0] {
+            assert_eq!(effective_frame_crop_factor(None, Some(boundary)), Some(boundary));
+        }
     }
 
     #[test]

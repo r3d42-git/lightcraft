@@ -89,7 +89,7 @@ pub fn inspect(db: &LensDb, m: &lightcraft_meta::Metadata, w: f64, h: f64, orien
                 .filter(|mount| mount.name.eq_ignore_ascii_case(&camera.mount))
                 .flat_map(|mount| mount.compatible_mounts.iter().cloned())
                 .collect(),
-            crop_factor: Some(camera.crop_factor),
+            crop_factor: camera.crop_factor,
             // Lensfun documents lowercase initial mounts as reserved for fixed-lens cameras:
             // https://lensfun.github.io/manual/latest/structlfMount.html
             fixed_lens: camera.mount.chars().next().is_some_and(char::is_lowercase),
@@ -102,7 +102,7 @@ pub fn inspect(db: &LensDb, m: &lightcraft_meta::Metadata, w: f64, h: f64, orien
             maker: profile.maker.clone(),
             names: profile.models.clone(),
             mounts: profile.mounts.clone(),
-            calibration_crop_factor: Some(profile.crop_factor),
+            calibration_crop_factor: profile.crop_factor,
         })
         .collect::<Vec<_>>();
     let resolution = r3d_optics::resolve(
@@ -111,13 +111,14 @@ pub fn inspect(db: &LensDb, m: &lightcraft_meta::Metadata, w: f64, h: f64, orien
             camera_model: m.model.as_deref(),
             lens_make: m.lens_make.as_deref(),
             lens_model: m.lens_model.as_deref(),
-            frame_crop_factor: frame_crop_factor(None, m.focal_length.unwrap_or(0.0), m.focal_length_35mm),
+            frame_crop_factor: recorded_crop_factor(m.focal_length.unwrap_or(0.0), m.focal_length_35mm),
         },
         &cameras,
         &profiles,
     );
     let mut report = ProfileReport {
         provider: "lensfun_xml",
+        frame_crop_factor: resolution.frame_crop_factor,
         resolution,
         profile_maker: None,
         profile_names: Vec::new(),
@@ -125,7 +126,6 @@ pub fn inspect(db: &LensDb, m: &lightcraft_meta::Metadata, w: f64, h: f64, orien
         chromatic_aberration: ComponentStatus::Missing,
         vignetting: ComponentStatus::Missing,
         aperture_known: m.f_number.is_some_and(|n| n.is_finite() && n > 0.0),
-        frame_crop_factor: None,
         correction: None,
     };
     let Some(profile) = report.resolution.profile_index.and_then(|index| db.lenses.get(index)) else { return report };
@@ -143,9 +143,7 @@ pub fn inspect(db: &LensDb, m: &lightcraft_meta::Metadata, w: f64, h: f64, orien
         report.vignetting = if profile.vignetting.is_empty() { ComponentStatus::Missing } else { ComponentStatus::MissingMetadata };
         return report;
     };
-    let camera = report.resolution.camera_index.and_then(|index| db.cameras.get(index));
-    let crop = frame_crop_factor(camera.map(|camera| camera.crop_factor), focal, m.focal_length_35mm);
-    report.frame_crop_factor = crop;
+    let crop = report.resolution.frame_crop_factor;
     let shot = Shot { focal, aperture: m.f_number.filter(|n| n.is_finite() && *n > 0.0), distance: None, crop_factor: crop, width: w, height: h };
     // Without an aperture, choosing the widest calibrated value can brighten the
     // corners far too much. Keep geometric correction, but report shading missing.
@@ -182,17 +180,12 @@ pub fn lookup(db: &LensDb, m: &lightcraft_meta::Metadata, w: f64, h: f64, orient
     inspect(db, m, w, h, orientation).correction
 }
 
-/// The crop factor of the recorded frame, which scales the profile's radii: the body's (`camera`), else what the
-/// 35 mm equivalent focal length implies. A body shooting a crop of its sensor (a full-frame camera in APS-C /
-/// Super 35 mode, or switched there by an APS-C lens) records a larger 35 mm equivalent than its own crop factor
-/// gives; the frame's corners are then nearer the optical axis, so that crop wins. Within 10 % of the body's, the
-/// difference is the tag's whole-millimetre rounding and the body's value stands.
-fn frame_crop_factor(camera: Option<f64>, focal: f64, focal_35mm: Option<f64>) -> Option<f64> {
-    let frame = focal_35mm.map(|f35| f35 / focal).filter(|c| c.is_finite() && (0.1..=20.0).contains(c));
-    match (camera, frame) {
-        (Some(body), Some(frame)) if frame > body * 1.1 => Some(frame),
-        (body, frame) => body.or(frame),
+/// The EXIF-implied crop; body rounding and crop-mode policy belong to the resolver.
+fn recorded_crop_factor(focal: f64, focal_35mm: Option<f64>) -> Option<f64> {
+    if !focal.is_finite() || focal <= 0.0 {
+        return None;
     }
+    focal_35mm.map(|f35| f35 / focal).filter(|crop| crop.is_finite() && (0.1..=20.0).contains(crop))
 }
 
 /// [`crate::files::embedded_lens`], else the database profile ([`lookup`]) for a raw with metadata `meta`.
@@ -270,6 +263,80 @@ mod tests {
         assert!(lookup(&db, &lightcraft_meta::Metadata { focal_length: None, ..meta() }, 6000.0, 4000.0, Orientation::Normal).is_none());
         let other = lightcraft_meta::Metadata { lens_model: Some("70-200mm F4".into()), ..meta() };
         assert!(lookup(&db, &other, 6000.0, 4000.0, Orientation::Normal).is_none());
+    }
+
+    #[test]
+    fn selection_and_conversion_share_the_effective_frame_crop() {
+        let xml = DB.replace("<calibration>", "<calibration cropfactor=\"1.611\">");
+        let m = lightcraft_meta::Metadata { focal_length: Some(20.0), focal_length_35mm: Some(32.0), ..meta() };
+        let db = LensDb::parse(&xml).unwrap();
+        let report = inspect(&db, &m, 6000.0, 4000.0, Orientation::Normal);
+        assert_eq!(report.resolution.status, r3d_optics::Status::NoMatch);
+        assert_eq!(report.resolution.frame_crop_factor, Some(1.5));
+        assert!(report.correction.is_none());
+        // With both calibrations present, select the wider 1.5 profile and convert at the same body crop.
+        let both = DB.replace(
+            "</calibration>",
+            "</calibration><calibration cropfactor=\"1.611\"><distortion model=\"poly3\" focal=\"18\" k1=\"-0.03\" /></calibration>",
+        );
+        let both = LensDb::parse(&both).unwrap();
+        let selected = inspect(&both, &m, 6000.0, 4000.0, Orientation::Normal);
+        assert_eq!(selected.resolution.profile_index, Some(0));
+        assert_eq!(selected.frame_crop_factor, Some(1.5));
+        let shot = Shot { focal: 20.0, aperture: Some(3.5), distance: None, crop_factor: selected.frame_crop_factor, width: 6000.0, height: 4000.0 };
+        assert!(selected.correction.is_some());
+        assert_eq!(selected.correction, both.lenses[0].correction(&shot));
+        // A genuine crop mode can use the narrower calibration, and conversion uses precisely that crop.
+        let m = lightcraft_meta::Metadata { focal_length_35mm: Some(36.0), ..m };
+        let report = inspect(&db, &m, 6000.0, 4000.0, Orientation::Normal);
+        assert_eq!(report.resolution.status, r3d_optics::Status::Selected);
+        assert_eq!(report.frame_crop_factor, Some(1.8));
+        assert_eq!(report.frame_crop_factor, report.resolution.frame_crop_factor);
+        let shot = Shot { focal: 20.0, aperture: Some(3.5), distance: None, crop_factor: Some(1.8), width: 6000.0, height: 4000.0 };
+        assert!(report.correction.is_some());
+        assert_eq!(report.correction, db.lenses[0].correction(&shot));
+    }
+
+    #[test]
+    fn xml_crop_validity_survives_the_adapter() {
+        let inspect_xml = |xml: &str| inspect(&LensDb::parse(xml).unwrap(), &meta(), 6000.0, 4000.0, Orientation::Normal);
+        let valid = inspect_xml(DB);
+        assert_eq!(valid.resolution.status, r3d_optics::Status::Selected);
+        assert!(valid.correction.is_some());
+        // Missing/invalid camera crops must not turn into a trusted full-frame body.
+        for value in [None, Some(""), Some("bad"), Some("NaN"), Some("inf"), Some("0"), Some("-1"), Some("0.09"), Some("21")] {
+            let replacement = value.map(|value| format!("<cropfactor>{value}</cropfactor>")).unwrap_or_default();
+            let xml = DB.replacen("<cropfactor>1.5</cropfactor>", &replacement, 1);
+            let report = inspect_xml(&xml);
+            assert_eq!(report.resolution.status, r3d_optics::Status::NoMatch, "body {value:?}");
+            assert!(report.correction.is_none());
+            // Invalid/missing parent crop also cannot establish calibration coverage.
+            let xml = DB.replacen(
+                "<mount>T</mount><cropfactor>1.5</cropfactor>\n        <calibration>",
+                &format!("<mount>T</mount>{replacement}\n        <calibration>"),
+                1,
+            );
+            assert_eq!(inspect_xml(&xml).resolution.status, r3d_optics::Status::NoMatch, "profile {value:?}");
+        }
+        // Omitting the calibration override inherits the explicit parent, preserving the existing correction.
+        let inherited = inspect_xml(&DB.replace("<calibration>", "<calibration cropfactor=\"1.5\">"));
+        assert_eq!(inherited.correction, valid.correction);
+        for value in ["", "bad", "NaN", "inf", "0", "-1", "0.09", "21"] {
+            let xml = DB.replace("<calibration>", &format!("<calibration cropfactor=\"{value}\">"));
+            let report = inspect_xml(&xml);
+            assert_eq!(report.resolution.status, r3d_optics::Status::NoMatch, "override {value:?}");
+            assert!(report.correction.is_none());
+        }
+        // A valid override needs no parent; explicit full-frame crop is valid, never confused with absence.
+        let xml = DB.replace("<cropfactor>1.5</cropfactor>", "").replace("<calibration>", "<calibration cropfactor=\"1\">");
+        let db = LensDb::parse(&xml).unwrap();
+        let m = lightcraft_meta::Metadata { focal_length_35mm: Some(18.0), ..meta() };
+        let report = inspect(&db, &m, 6000.0, 4000.0, Orientation::Normal);
+        assert_eq!(report.resolution.status, r3d_optics::Status::Selected);
+        assert_eq!(report.frame_crop_factor, Some(1.0));
+        assert!(report.correction.is_some());
+        let xml = DB.replace("<cropfactor>1.5</cropfactor>", "<cropfactor>1</cropfactor>");
+        assert_eq!(inspect_xml(&xml).resolution.status, r3d_optics::Status::Selected);
     }
 
     #[test]
@@ -378,8 +445,8 @@ mod tests {
         for f35 in [Some(70.0), Some(71.0), None] {
             assert_eq!(lookup(&db, &m(f35), 8640.0, 5760.0, Orientation::Normal).unwrap(), at(1.0, 8640.0, 5760.0), "{f35:?}");
         }
-        assert_eq!(frame_crop_factor(None, 70.0, Some(105.0)), Some(1.5), "no body in the database: the 35 mm equivalent's");
-        assert_eq!(frame_crop_factor(Some(1.0), 0.0, Some(105.0)), Some(1.0), "a hostile focal length is ignored");
+        assert_eq!(recorded_crop_factor(70.0, Some(105.0)), Some(1.5), "no body in the database: the 35 mm equivalent's");
+        assert_eq!(recorded_crop_factor(0.0, Some(105.0)), None, "a hostile focal length is ignored");
     }
 
     /// A synthetic grid recorded through the profile's barrel distortion comes out of the pipeline's geometry
