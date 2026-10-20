@@ -11,6 +11,9 @@ pub struct CameraDescriptor {
     pub maker: String,
     pub model: String,
     pub mount: String,
+    /// Lens mounts directly accepted by this camera mount, explicitly declared by the provider.
+    /// Never inferred in reverse or transitively; ignored for fixed-lens camera-only resolution.
+    pub compatible_mounts: Vec<String>,
     pub fixed_lens: bool,
     /// Sensor crop relative to 35 mm; missing or invalid values cannot establish calibration coverage.
     pub crop_factor: Option<f64>,
@@ -85,7 +88,14 @@ pub fn resolve(request: Request<'_>, cameras: &[CameraDescriptor], profiles: &[P
     }
     let mut best = 0usize;
     for (index, profile) in profiles.iter().enumerate() {
-        if camera.is_some_and(|camera| !camera.mount.is_empty() && !profile.mounts.iter().any(|mount| mount.eq_ignore_ascii_case(&camera.mount))) {
+        if camera.is_some_and(|camera| {
+            !camera.mount.is_empty()
+                && !profile.mounts.iter().any(|mount| {
+                    mount.eq_ignore_ascii_case(&camera.mount)
+                        || (!fixed
+                            && camera.compatible_mounts.iter().any(|compatible| !compatible.is_empty() && mount.eq_ignore_ascii_case(compatible)))
+                })
+        }) {
             continue;
         }
         if request.lens_make.is_some_and(|maker| !maker.trim().is_empty() && !maker_agrees(&profile.maker, maker)) {
@@ -248,6 +258,7 @@ mod tests {
             maker: "Example Corporation".into(),
             model: "EX-1".into(),
             mount: "Example mount".into(),
+            compatible_mounts: Vec::new(),
             fixed_lens: fixed,
             crop_factor: Some(1.5),
         }
@@ -292,6 +303,33 @@ mod tests {
         other.mounts = vec!["Other mount".into()];
         assert_eq!(resolve(request(), &[camera(false)], &[other]).status, Status::NoMatch);
     }
+    #[test]
+    fn provider_mount_compatibility_is_directional_and_explicit() {
+        let mut body = camera(false);
+        body.mount = "Canon EF-S".into();
+        body.compatible_mounts = vec!["Canon EF".into()];
+        let mut lens = profile();
+        lens.mounts = vec!["Canon EF".into()];
+        assert_eq!(resolve(request(), &[body.clone()], &[lens.clone()]).status, Status::Selected);
+        lens.mounts = vec!["Other mount".into()];
+        assert_eq!(resolve(request(), &[body.clone()], &[lens.clone()]).status, Status::NoMatch);
+        body.mount = "Canon EF".into();
+        body.compatible_mounts.clear();
+        lens.mounts = vec!["Canon EF-S".into()];
+        assert_eq!(resolve(request(), &[body], &[lens]).status, Status::NoMatch);
+    }
+
+    #[test]
+    fn fixed_lens_requires_its_exact_mount_even_with_declared_compatibility() {
+        let mut body = camera(true);
+        body.compatible_mounts = vec!["Other mount".into()];
+        let mut other = profile();
+        other.mounts = vec!["Other mount".into()];
+        let request = Request { lens_model: None, ..request() };
+        assert_eq!(resolve(request, &[body.clone()], &[other]).status, Status::NoMatch);
+        assert_eq!(resolve(request, &[body], &[profile()]).status, Status::Selected);
+    }
+
     #[test]
     fn ambiguous_generic_name_is_rejected() {
         let mut other = profile();
