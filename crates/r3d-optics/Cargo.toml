@@ -1,0 +1,12 @@
+[package]
+name = "r3d-optics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Provider-neutral, conservative optics profile identification"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
