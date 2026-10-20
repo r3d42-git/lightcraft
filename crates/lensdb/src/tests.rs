@@ -85,6 +85,26 @@ fn parses_cameras_lenses_and_skips_invalid_entries() {
 }
 
 #[test]
+fn parses_direct_mount_compatibility_without_inference() {
+    let db = LensDb::parse(
+        r#"<lensdatabase>
+          <mount><name> Canon EF-S </name><compat> Canon EF </compat><compat>Other</compat><compat> </compat></mount>
+          <mount><name>Canon EF</name><compat>Third</compat></mount>
+          <mount><name> </name><compat>Invalid</compat></mount>
+          <mount><compat>Missing name</compat></mount>
+        </lensdatabase>"#,
+    )
+    .unwrap();
+    assert_eq!(
+        db.mounts,
+        vec![
+            Mount { name: "Canon EF-S".into(), compatible_mounts: vec!["Canon EF".into(), "Other".into()] },
+            Mount { name: "Canon EF".into(), compatible_mounts: vec!["Third".into()] },
+        ]
+    );
+}
+
+#[test]
 fn malformed_documents_are_errors_not_panics() {
     assert!(LensDb::parse("").is_err());
     assert!(LensDb::parse("<lensdatabase><lens><maker>").is_ok_and(|d| d.lenses.is_empty()));
@@ -231,10 +251,18 @@ fn load_dir_reads_xml_files_and_reports_bad_ones() {
     std::fs::write(dir.join("a.xml"), DB).unwrap();
     std::fs::write(dir.join("b.xml"), "<lensdatabase").unwrap();
     std::fs::write(dir.join("c.txt"), "ignored").unwrap();
+    std::fs::write(dir.join("d.xml"), r#"<lensdatabase><mount><name>Test Mount</name><compat>Other Mount</compat></mount></lensdatabase>"#).unwrap();
     let (db, errs) = LensDb::load_dir(&dir).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(db.lenses.len(), 3);
     assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(
+        db.mounts,
+        vec![
+            Mount { name: "Test Mount".into(), compatible_mounts: vec![] },
+            Mount { name: "Test Mount".into(), compatible_mounts: vec!["Other Mount".into()] },
+        ]
+    );
     assert!(LensDb::load_dir(Path::new("/nonexistent/lensdb")).is_err());
 }
 

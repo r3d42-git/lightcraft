@@ -83,6 +83,12 @@ pub fn inspect(db: &LensDb, m: &lightcraft_meta::Metadata, w: f64, h: f64, orien
             maker: camera.maker.clone(),
             model: camera.model.clone(),
             mount: camera.mount.clone(),
+            compatible_mounts: db
+                .mounts
+                .iter()
+                .filter(|mount| mount.name.eq_ignore_ascii_case(&camera.mount))
+                .flat_map(|mount| mount.compatible_mounts.iter().cloned())
+                .collect(),
             crop_factor: Some(camera.crop_factor),
             // Lensfun documents lowercase initial mounts as reserved for fixed-lens cameras:
             // https://lensfun.github.io/manual/latest/structlfMount.html
@@ -286,6 +292,36 @@ mod tests {
         // a lens model, when the file has one, still decides
         let named_other = lightcraft_meta::Metadata { lens_model: Some("70-200mm F4".into()), ..nikon.clone() };
         assert!(lookup(&aliased, &named_other, 6000.0, 4000.0, Orientation::Normal).is_none());
+    }
+
+    #[test]
+    fn declared_camera_mount_compatibility_survives_database_merge() {
+        let xml = DB.replacen("<mount>T</mount>", "<mount>Canon EF-S</mount>", 1).replace("<mount>T</mount>", "<mount>Canon EF</mount>");
+        let mut db = LensDb::parse(&xml).unwrap();
+        let status = |db: &LensDb| inspect(db, &meta(), 6000.0, 4000.0, Orientation::Normal).resolution.status;
+        assert_eq!(status(&db), r3d_optics::Status::NoMatch);
+        db.extend(
+            LensDb::parse(
+                r#"<lensdatabase>
+          <mount><name>Canon EF-S</name><compat>Canon EF</compat></mount>
+          <mount><name>Canon EF</name><compat>Third mount</compat></mount>
+        </lensdatabase>"#,
+            )
+            .unwrap(),
+        );
+        let report = inspect(&db, &meta(), 6000.0, 4000.0, Orientation::Normal);
+        assert_eq!(report.resolution.status, r3d_optics::Status::Selected);
+        assert_eq!(report.distortion, ComponentStatus::Applied);
+        assert_eq!(report.vignetting, ComponentStatus::Applied);
+        // Only the camera mount's own declaration is used; no transitive traversal.
+        db.lenses[0].mounts = vec!["Third mount".into()];
+        assert_eq!(status(&db), r3d_optics::Status::NoMatch);
+        db.cameras[0].mount = "Canon EF".into();
+        db.lenses[0].mounts = vec!["Canon EF-S".into()];
+        assert_eq!(status(&db), r3d_optics::Status::NoMatch);
+        db.cameras[0].mount = "Unrelated mount".into();
+        db.lenses[0].mounts = vec!["Canon EF".into()];
+        assert_eq!(status(&db), r3d_optics::Status::NoMatch);
     }
 
     #[test]

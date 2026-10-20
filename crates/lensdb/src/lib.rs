@@ -63,6 +63,14 @@ pub struct Camera {
     pub crop_factor: f64,
 }
 
+/// A provider-declared camera mount and the lens mounts it accepts directly.
+/// Compatibility is directional; reverse and transitive relationships are not implied.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mount {
+    pub name: String,
+    pub compatible_mounts: Vec<String>,
+}
+
 /// One calibrated vignetting point.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VignettingPoint {
@@ -111,6 +119,7 @@ pub struct Shot {
 /// A set of lens and camera profiles.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LensDb {
+    pub mounts: Vec<Mount>,
     pub cameras: Vec<Camera>,
     pub lenses: Vec<Profile>,
 }
@@ -143,12 +152,27 @@ impl LensDb {
     pub fn parse(xml: &str) -> Result<LensDb, Error> {
         let root = xml::parse(xml)?;
         let Some(top) = root.kid("lensdatabase") else { return Err(Error::Xml("no <lensdatabase> element".into())) };
+        let mounts = top
+            .kids("mount")
+            .filter_map(|node| {
+                Some(Mount {
+                    name: node.kid_text("name")?.to_string(),
+                    compatible_mounts: node
+                        .kids("compat")
+                        .map(|compat| compat.text.trim())
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string)
+                        .collect(),
+                })
+            })
+            .collect();
         let cameras = top.kids("camera").filter_map(camera).collect();
         let lenses = top.kids("lens").flat_map(lens).collect();
-        Ok(LensDb { cameras, lenses })
+        Ok(LensDb { mounts, cameras, lenses })
     }
 
     pub fn extend(&mut self, other: LensDb) {
+        self.mounts.extend(other.mounts);
         self.cameras.extend(other.cameras);
         self.lenses.extend(other.lenses);
     }
