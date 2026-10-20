@@ -1,5 +1,11 @@
 # Lens profiles from a lens database
 
+> R3D development fork: [INTEGRATION.md](../INTEGRATION.md) documents the isolated
+> resolver, optional read-only metadata helper, setup, update checks and current
+> limitations. The upstream behavior described below remains the baseline;
+> this fork also supports provider-declared fixed lenses without an EXIF lens name
+> and rejects ambiguous or crop-incompatible calibrations.
+
 Raws that carry no lens correction of their own (DNG `OpcodeList3`, or a camera correction a raw reader converts,
 see [sony-lens-corrections.md](sony-lens-corrections.md) and [nikon-lens-corrections.md](nikon-lens-corrections.md)) can be corrected from a **lens database in the lensfun
 XML format** that you supply. The app does not ship any lens database: lensfun's data is licensed CC-BY-SA 3.0 and

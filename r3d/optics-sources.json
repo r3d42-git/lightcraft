@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "lensfun": {
+    "revision": "3e14a04ba6a5c02a65fcce50d4f1987c705dc196",
+    "url": "https://codeload.github.com/lensfun/lensfun/tar.gz/3e14a04ba6a5c02a65fcce50d4f1987c705dc196",
+    "archive": "lensfun-source.tar.gz",
+    "sha256": "c0640a6a9e4c124e47e31024ad88066ab82bbd3b3ae003a0da07a313632f7c16",
+    "prefix": "lensfun-3e14a04ba6a5c02a65fcce50d4f1987c705dc196/data/db/",
+    "license": "CC-BY-SA-3.0, database only"
+  },
+  "exiftool": {
+    "version": "13.59",
+    "url": "https://sourceforge.net/projects/exiftool/files/Image-ExifTool-13.59.tar.gz/download",
+    "archive": "exiftool-13.59.tar.gz",
+    "sha256": "668ea3acececb7235fbd0f4900e72d5f12c9b07e5c778fd36cb1e9b5828fd65a",
+    "prefix": "Image-ExifTool-13.59/",
+    "license": "Artistic License or GPL, executed separately; see upstream distribution"
+  }
+}

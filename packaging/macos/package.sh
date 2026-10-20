@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # Build, sign and (optionally) notarize the macOS release artifacts:
 #
-#   $DIST/lightcraft-<version>-macos-<arch>.dmg          LightCraft.app on a drag-to-Applications DMG
+#   $DIST/lightcraft-<version>-macos-<arch>.dmg          LightCraft R3D.app on a drag-to-Applications DMG
 #   $DIST/lightcraft-cli-<version>-macos-<arch>.zip      the headless CLI
 #
-# Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build]
+# Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build] [--dev-app]
 # Fonts: use CRAFT_FONTS_DIR or ../craft-fonts; download the pinned checkout if absent.
 #
 # Signing (env):
 #   MACOS_SIGN_IDENTITY   codesign identity (name or SHA-1). Default "-" = ad-hoc (local testing;
 #                         Gatekeeper will reject the result on other Macs). In CI, import-cert.sh sets it.
 #   MACOS_KEYCHAIN        keychain holding the identity (optional)
-# Notarization (env; all three needed, and a real identity):
+# Notarization: MACOS_NOTARY_PROFILE defaults to ToolBoxS; requires a real identity.
+# Legacy credentials (when explicitly disabling the profile):
 #   APPLE_ID, APPLE_PASSWORD (app-specific password), APPLE_TEAM_ID
 set -euo pipefail
 # shellcheck source=../env.sh
@@ -20,10 +21,12 @@ HERE="$ROOT/packaging/macos"
 
 ARCH=universal
 SKIP_BUILD=0
+DEV_APP=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --arch) ARCH="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
+    --dev-app) DEV_APP=1; shift ;;
     -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -40,14 +43,26 @@ export MACOSX_DEPLOYMENT_TARGET=11.0
 IDENTITY="${MACOS_SIGN_IDENTITY:--}"
 SHORT_VERSION="${VERSION%%-*}"
 WORK="$CARGO_TARGET_DIR/macos-package"
-APP="$WORK/LightCraft.app"
-DMG="$DIST/lightcraft-$VERSION-macos-$ARCH.dmg"
-CLI_ZIP="$DIST/lightcraft-cli-$VERSION-macos-$ARCH.zip"
+APP="$WORK/LightCraft R3D.app"
+DMG="$DIST/lightcraft-r3d-$VERSION-macos-$ARCH.dmg"
+CLI_ZIP="$DIST/lightcraft-r3d-cli-$VERSION-macos-$ARCH.zip"
 
 NOTARIZE=0
+MACOS_NOTARY_PROFILE="${MACOS_NOTARY_PROFILE-ToolBoxS}"
+NOTARY_AUTH=(--keychain-profile "$MACOS_NOTARY_PROFILE")
+if [ "$DEV_APP" = 1 ]; then
+  # Local, explicitly isolated development artifact. Never use release credentials.
+  ARCH=local
+  IDENTITY="-"
+  : "${LIGHTCRAFT_R3D_CONFIG_DIR:?source r3d/dev-env.sh before --dev-app}"
+  : "${LIGHTCRAFT_R3D_LIBRARY:?source r3d/dev-env.sh before --dev-app}"
+fi
 if [ "$IDENTITY" = "-" ]; then
   warn "macOS: ad-hoc signing (no MACOS_SIGN_IDENTITY); artifacts are not notarized"
+elif [ -n "$MACOS_NOTARY_PROFILE" ]; then
+  NOTARIZE=1
 elif [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+  NOTARY_AUTH=(--apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID")
   NOTARIZE=1
 else
   warn "macOS: APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID incomplete; signed but not notarized"
@@ -56,7 +71,9 @@ fi
 echo "==> LightCraft $VERSION for macOS ($ARCH), identity: $IDENTITY, notarize: $NOTARIZE"
 
 # ---- build -------------------------------------------------------------------------------------
-if [ "$SKIP_BUILD" = 0 ]; then
+if [ "$SKIP_BUILD" = 0 ] && [ "$DEV_APP" = 1 ]; then
+  (cd "$ROOT" && cargo build --locked -p lightcraft -p lightcraft-cli)
+elif [ "$SKIP_BUILD" = 0 ]; then
   # shellcheck source=../fonts.sh
   . "$ROOT/packaging/fonts.sh"
   prepare_fonts
@@ -69,7 +86,11 @@ rm -rf "$WORK"
 mkdir -p "$WORK/bin"
 for bin in lightcraft lightcraft-cli; do
   inputs=()
-  for t in "${TARGETS[@]}"; do inputs+=("$CARGO_TARGET_DIR/$t/release/$bin"); done
+  if [ "$DEV_APP" = 1 ]; then
+    inputs=("$CARGO_TARGET_DIR/debug/$bin")
+  else
+    for t in "${TARGETS[@]}"; do inputs+=("$CARGO_TARGET_DIR/$t/release/$bin"); done
+  fi
   lipo -create -output "$WORK/bin/$bin" "${inputs[@]}"
   lipo -info "$WORK/bin/$bin"
 done
@@ -87,21 +108,20 @@ sign() {
 notarize() {
   local file="$1" out id status
   echo "==> notarizing $(basename "$file") (this can take a few minutes)"
-  out="$(xcrun notarytool submit "$file" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
-    --team-id "$APPLE_TEAM_ID" --wait --timeout 1h --output-format json)" || true
+  out="$(xcrun notarytool submit "$file" "${NOTARY_AUTH[@]}" --wait --timeout 1h --output-format json)" || true
   echo "$out"
   id="$(printf '%s' "$out" | plutil -extract id raw -o - - 2>/dev/null || true)"
   status="$(printf '%s' "$out" | plutil -extract status raw -o - - 2>/dev/null || true)"
   if [ "$status" != "Accepted" ]; then
     if [ -n "$id" ]; then
-      xcrun notarytool log "$id" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" || true
+      xcrun notarytool log "$id" "${NOTARY_AUTH[@]}" || true
     fi
     echo "error: notarization of $(basename "$file") failed (status: ${status:-unknown})" >&2
     exit 1
   fi
 }
 
-# ---- LightCraft.app ----------------------------------------------------------------------------
+# ---- LightCraft R3D.app ----------------------------------------------------------------------------
 echo "==> assembling $APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # Executable and icon carry the display name (CFBundleExecutable / CFBundleIconFile).
@@ -110,6 +130,28 @@ cp "$ROOT/assets/app-icon/lightcraft.icns" "$APP/Contents/Resources/LightCraft.i
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" \
   -e "s/@BUILD_SHA@/${LIGHTCRAFT_BUILD_SHA:-unknown}/g" \
   "$HERE/Info.plist.in" >"$APP/Contents/Info.plist"
+if [ "$DEV_APP" = 1 ]; then
+  # Launch Services supplies the same explicit isolation as run-dev.sh, even when
+  # the development bundle is opened from Finder. Only this generated app changes.
+  python3 - "$APP/Contents/Info.plist" <<'PY'
+import os, plistlib, sys
+path = sys.argv[1]
+with open(path, "rb") as stream:
+    data = plistlib.load(stream)
+data["CFBundleDisplayName"] = "LightCraft R3D Dev"
+for key in ("CFBundleDocumentTypes", "UTExportedTypeDeclarations", "UTImportedTypeDeclarations"):
+    data.pop(key, None)
+data["LightCraftVersion"] += "-r3d-dev"
+data["LSEnvironment"] = {
+    key: os.environ[key] for key in (
+        "LIGHTCRAFT_R3D_CONFIG_DIR", "LIGHTCRAFT_R3D_LIBRARY",
+        "LIGHTCRAFT_LENSFUN_DIR", "LIGHTCRAFT_R3D_EXIFTOOL"
+    ) if key in os.environ
+}
+with open(path, "wb") as stream:
+    plistlib.dump(data, stream)
+PY
+fi
 plutil -lint "$APP/Contents/Info.plist"
 printf 'APPL????' >"$APP/Contents/PkgInfo"
 # Licences (and the craft-fonts font licences when built with CRAFT_FONTS_DIR) inside the bundle.
@@ -126,6 +168,11 @@ sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP/Contents/
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP"
 codesign --verify --strict --deep --verbose=2 "$APP"
 
+if [ "$DEV_APP" = 1 ]; then
+  echo "==> local development app only (ad-hoc signed, not notarized): $APP"
+  exit 0
+fi
+
 if [ "$NOTARIZE" = 1 ]; then
   ditto -c -k --keepParent "$APP" "$WORK/LightCraft-notarize.zip"
   notarize "$WORK/LightCraft-notarize.zip"
@@ -138,7 +185,7 @@ fi
 echo "==> building $DMG"
 STAGE="$WORK/dmg"
 mkdir -p "$STAGE"
-ditto "$APP" "$STAGE/LightCraft.app"
+ditto "$APP" "$STAGE/LightCraft R3D.app"
 ln -s /Applications "$STAGE/Applications"
 # Finder window layout: background, icon size and positions (packaging/macos/dmg/README.md).
 mkdir -p "$STAGE/.background"
@@ -177,21 +224,21 @@ verify_dmg_app() {
     hdiutil detach "$mount" >/dev/null 2>&1 || true
     return 1
   fi
-  echo "==> strict codesign of LightCraft.app in finished DMG"
-  codesign --verify --deep --strict --verbose=2 "$mount/LightCraft.app" || rc=1
+  echo "==> strict codesign of LightCraft R3D.app in finished DMG"
+  codesign --verify --deep --strict --verbose=2 "$mount/LightCraft R3D.app" || rc=1
   if [ "$rc" = 0 ]; then
-    ditto "$mount/LightCraft.app" "$copy/LightCraft.app" || rc=1
+    ditto "$mount/LightCraft R3D.app" "$copy/LightCraft R3D.app" || rc=1
   fi
   if [ "$rc" = 0 ]; then
-    echo "==> strict codesign of LightCraft.app after ditto install-copy"
-    codesign --verify --deep --strict --verbose=2 "$copy/LightCraft.app" || rc=1
+    echo "==> strict codesign of LightCraft R3D.app after ditto install-copy"
+    codesign --verify --deep --strict --verbose=2 "$copy/LightCraft R3D.app" || rc=1
   fi
   if [ "$rc" = 0 ] && [ "$NOTARIZE" = 1 ]; then
-    spctl --assess --type execute -vvv "$copy/LightCraft.app" || rc=1
+    spctl --assess --type execute -vvv "$copy/LightCraft R3D.app" || rc=1
   fi
   if [ "$rc" != 0 ]; then
     echo "error: published-image app verification failed; reject $DMG" >&2
-    xattr -lr "$mount/LightCraft.app" >&2 || true
+    xattr -lr "$mount/LightCraft R3D.app" >&2 || true
   fi
   if ! hdiutil_retry detach "$mount" >/dev/null; then
     echo "error: could not detach verification mount" >&2
@@ -210,7 +257,7 @@ fi
 
 # ---- CLI ---------------------------------------------------------------------------------------
 echo "==> building $CLI_ZIP"
-CLI_DIR="$WORK/lightcraft-cli-$VERSION-macos-$ARCH"
+CLI_DIR="$WORK/lightcraft-r3d-cli-$VERSION-macos-$ARCH"
 mkdir -p "$CLI_DIR"
 cp "$WORK/bin/lightcraft-cli" "$CLI_DIR/"
 copy_docs "$CLI_DIR"
