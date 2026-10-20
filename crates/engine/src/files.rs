@@ -135,7 +135,7 @@ fn ext_upper(name: &str) -> String {
 /// compressed data that is all there: such a file imports and shows as unreadable when rendered).
 pub fn probe_bytes(name: &str, bytes: &[u8]) -> Result<ProbeInfo, String> {
     let content_hash = Some(lightcraft_preview::hash_bytes(bytes).to_string());
-    let m = lightcraft_meta::extract(bytes);
+    let m = crate::optics_metadata::extract(bytes);
     let (meta, captured) = meta_of(&m);
     if lightcraft_raw::probe(bytes).is_some() {
         let raw = match lightcraft_raw::probe_info(bytes).map_err(|e| preview_reason(bytes, e)) {
@@ -423,7 +423,7 @@ fn load_bytes_now(
         // Embedded lens corrections are applied by the pipeline ("Enable Profile Corrections"), not baked in
         // (removed before the camera look's binned sensor proxy too, which needs an empty `OpcodeList3`).
         let info = raw.info();
-        let lens = crate::lens_profiles::for_raw(&info, || lightcraft_meta::extract(&bytes));
+        let lens = crate::lens_profiles::for_raw(&info, || crate::optics_metadata::extract(&bytes));
         // (the camera look still pairs the sensor with the camera JPEG through the warp the camera applied to it)
         let lens_geometry = crate::camera_preview::lens_geometry(&raw.opcodes.list3);
         raw.opcodes.list3.retain(|op| !op.is_lens_correction());

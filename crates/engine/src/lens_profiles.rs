@@ -4,7 +4,7 @@
 //! [`crate::files::embedded_lens`]), the lens named in its EXIF is looked up in a lensfun-format database: the
 //! directory in `LIGHTCRAFT_LENSFUN_DIR` (e.g. lensfun's `data/db`, CC-BY-SA, which is never bundled with the app).
 //! The profile is converted to the same [`lightcraft_develop::EmbeddedLens`] form, so "Enable Profile Corrections", its
-//! amount sliders, the GPU path and DNG export treat both alike. Without the variable nothing changes.
+//! amount sliders, the GPU path and DNG export treat both alike. Profiles may also live in the fork config directory.
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -18,7 +18,10 @@ pub const ENV: &str = "LIGHTCRAFT_LENSFUN_DIR";
 pub fn database() -> Option<&'static LensDb> {
     static DB: OnceLock<Option<LensDb>> = OnceLock::new();
     DB.get_or_init(|| {
-        let dir = PathBuf::from(std::env::var_os(ENV)?);
+        let dir = database_dir()?;
+        if !dir.is_dir() {
+            return None;
+        }
         match LensDb::load_dir(&dir) {
             Ok((db, errors)) => {
                 for (file, e) in errors {
@@ -35,16 +38,142 @@ pub fn database() -> Option<&'static LensDb> {
     .as_ref()
 }
 
+/// External profiles live outside the binary. An explicit environment path takes precedence.
+pub fn database_dir() -> Option<PathBuf> {
+    std::env::var_os(ENV)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| crate::config::config_dir().map(|path| path.join("optics/lensfun")))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComponentStatus {
+    Applied,
+    Missing,
+    MissingMetadata,
+    UnsupportedProjection,
+    RejectedConversion,
+}
+
+/// Exact component outcomes for the converted external profile. Distortion/TCA share one warp:
+/// if their combined conversion fails, both supplied components are reported rejected.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ProfileReport {
+    pub provider: &'static str,
+    pub resolution: r3d_optics::Resolution,
+    pub profile_maker: Option<String>,
+    pub profile_names: Vec<String>,
+    pub distortion: ComponentStatus,
+    pub chromatic_aberration: ComponentStatus,
+    pub vignetting: ComponentStatus,
+    pub aperture_known: bool,
+    pub frame_crop_factor: Option<f64>,
+    #[serde(skip)]
+    pub correction: Option<EmbeddedLens>,
+}
+
+/// Inspect external-profile selection and conversion without changing a photo or its settings.
+/// No embedded/external components are mixed: the raw adapter retains embedded precedence.
+pub fn inspect(db: &LensDb, m: &lightcraft_meta::Metadata, w: f64, h: f64, orientation: lightcraft_geom::Orientation) -> ProfileReport {
+    let cameras = db
+        .cameras
+        .iter()
+        .map(|camera| r3d_optics::CameraDescriptor {
+            maker: camera.maker.clone(),
+            model: camera.model.clone(),
+            mount: camera.mount.clone(),
+            crop_factor: Some(camera.crop_factor),
+            // Lensfun documents lowercase initial mounts as reserved for fixed-lens cameras:
+            // https://lensfun.github.io/manual/latest/structlfMount.html
+            fixed_lens: camera.mount.chars().next().is_some_and(char::is_lowercase),
+        })
+        .collect::<Vec<_>>();
+    let profiles = db
+        .lenses
+        .iter()
+        .map(|profile| r3d_optics::ProfileDescriptor {
+            maker: profile.maker.clone(),
+            names: profile.models.clone(),
+            mounts: profile.mounts.clone(),
+            calibration_crop_factor: Some(profile.crop_factor),
+        })
+        .collect::<Vec<_>>();
+    let resolution = r3d_optics::resolve(
+        r3d_optics::Request {
+            camera_make: m.make.as_deref(),
+            camera_model: m.model.as_deref(),
+            lens_make: m.lens_make.as_deref(),
+            lens_model: m.lens_model.as_deref(),
+            frame_crop_factor: frame_crop_factor(None, m.focal_length.unwrap_or(0.0), m.focal_length_35mm),
+        },
+        &cameras,
+        &profiles,
+    );
+    let mut report = ProfileReport {
+        provider: "lensfun_xml",
+        resolution,
+        profile_maker: None,
+        profile_names: Vec::new(),
+        distortion: ComponentStatus::Missing,
+        chromatic_aberration: ComponentStatus::Missing,
+        vignetting: ComponentStatus::Missing,
+        aperture_known: m.f_number.is_some_and(|n| n.is_finite() && n > 0.0),
+        frame_crop_factor: None,
+        correction: None,
+    };
+    let Some(profile) = report.resolution.profile_index.and_then(|index| db.lenses.get(index)) else { return report };
+    report.profile_maker = Some(profile.maker.clone());
+    report.profile_names = profile.models.clone();
+    let Some(focal) = m.focal_length.filter(|f| f.is_finite() && *f > 0.0) else {
+        report.distortion = if !profile.rectilinear {
+            ComponentStatus::UnsupportedProjection
+        } else if profile.distortion.is_empty() {
+            ComponentStatus::Missing
+        } else {
+            ComponentStatus::MissingMetadata
+        };
+        report.chromatic_aberration = if profile.tca.is_empty() { ComponentStatus::Missing } else { ComponentStatus::MissingMetadata };
+        report.vignetting = if profile.vignetting.is_empty() { ComponentStatus::Missing } else { ComponentStatus::MissingMetadata };
+        return report;
+    };
+    let camera = report.resolution.camera_index.and_then(|index| db.cameras.get(index));
+    let crop = frame_crop_factor(camera.map(|camera| camera.crop_factor), focal, m.focal_length_35mm);
+    report.frame_crop_factor = crop;
+    let shot = Shot { focal, aperture: m.f_number.filter(|n| n.is_finite() && *n > 0.0), distance: None, crop_factor: crop, width: w, height: h };
+    // Without an aperture, choosing the widest calibrated value can brighten the
+    // corners far too much. Keep geometric correction, but report shading missing.
+    let mut supported_profile = profile.clone();
+    if !report.aperture_known {
+        supported_profile.vignetting.clear();
+    }
+    let correction = supported_profile.correction(&shot);
+    let warp = correction.as_ref().is_some_and(|correction| correction.warp.is_some());
+    let component = |supplied: bool, applied: bool| {
+        if !supplied {
+            ComponentStatus::Missing
+        } else if applied {
+            ComponentStatus::Applied
+        } else {
+            ComponentStatus::RejectedConversion
+        }
+    };
+    report.distortion = if !profile.rectilinear { ComponentStatus::UnsupportedProjection } else { component(!profile.distortion.is_empty(), warp) };
+    report.chromatic_aberration = component(!profile.tca.is_empty(), warp);
+    report.vignetting = if !profile.vignetting.is_empty() && !report.aperture_known {
+        ComponentStatus::MissingMetadata
+    } else {
+        component(!profile.vignetting.is_empty(), correction.as_ref().is_some_and(|correction| correction.vignette.is_some()))
+    };
+    report.correction = correction.map(|correction| lightcraft_pipeline::optics::reorient_lens(&correction, orientation, w, h));
+    report
+}
+
 /// The database profile for a photo with metadata `m`, for its `w × h` (unoriented, default-cropped) image,
-/// re-expressed after `orientation`. `None` without a database, lens name, focal length or matching profile.
+/// re-expressed after `orientation`. Fixed-lens cameras may resolve through their provider mount without a lens name.
+/// `None` without a focal length or unique compatible profile.
 pub fn lookup(db: &LensDb, m: &lightcraft_meta::Metadata, w: f64, h: f64, orientation: lightcraft_geom::Orientation) -> Option<EmbeddedLens> {
-    let focal = m.focal_length.filter(|f| f.is_finite() && *f > 0.0)?;
-    let camera = db.find_camera(m.make.as_deref().unwrap_or_default(), m.model.as_deref().unwrap_or_default());
-    let lens = db.find_lens(m.lens_make.as_deref(), m.lens_model.as_deref()?, camera)?;
-    let crop = frame_crop_factor(camera.map(|c| c.crop_factor), focal, m.focal_length_35mm);
-    let shot = Shot { focal, aperture: m.f_number, distance: None, crop_factor: crop, width: w, height: h };
-    let corr = lens.correction(&shot)?;
-    Some(lightcraft_pipeline::optics::reorient_lens(&corr, orientation, w, h))
+    inspect(db, m, w, h, orientation).correction
 }
 
 /// The crop factor of the recorded frame, which scales the profile's radii: the body's (`camera`), else what the
@@ -67,6 +196,35 @@ pub fn for_raw(raw: &lightcraft_raw::RawInfo, meta: impl FnOnce() -> lightcraft_
         let (w, h) = raw.developed_size();
         lookup(db, &meta(), w as f64, h as f64, raw.orientation)
     })
+}
+
+/// Read-only local diagnosis, deliberately independent of any library or session.
+pub fn inspect_file(path: &std::path::Path) -> Result<serde_json::Value, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).map_err(|e| e.to_string())?.take(256 * 1024 * 1024 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    if bytes.len() > 256 * 1024 * 1024 {
+        return Err("diagnostic input exceeds 256 MiB".into());
+    }
+    let raw = lightcraft_raw::probe_info(&bytes).map_err(|e| e.to_string())?;
+    let meta = crate::optics_metadata::extract(&bytes);
+    let (w, h) = raw.developed_size();
+    let embedded = crate::files::embedded_lens(&raw);
+    let external = database().map(|db| inspect(db, &meta, w as f64, h as f64, raw.orientation));
+    let effective = embedded.as_ref().or_else(|| external.as_ref().and_then(|r| r.correction.as_ref()));
+    Ok(serde_json::json!({
+        "camera_make": meta.make, "camera_model": meta.model,
+        "lens_make": meta.lens_make, "lens_model": meta.lens_model,
+        "focal_length": meta.focal_length, "aperture": meta.f_number,
+        "source": if embedded.is_some() { "embedded" } else if effective.is_some() { "external_profile" } else { "unavailable" },
+        "available": {
+            "geometric_warp": effective.is_some_and(|l| l.warp.is_some() || l.has_stages()),
+            "vignetting": effective.is_some_and(|l| l.vignette.is_some()),
+        },
+        "external_profile": external,
+        "database": database().map(|db| serde_json::json!({"cameras": db.cameras.len(), "profiles": db.lenses.len()})),
+        "correction": effective,
+    }))
 }
 
 #[cfg(test)]
@@ -106,6 +264,46 @@ mod tests {
         assert!(lookup(&db, &lightcraft_meta::Metadata { focal_length: None, ..meta() }, 6000.0, 4000.0, Orientation::Normal).is_none());
         let other = lightcraft_meta::Metadata { lens_model: Some("70-200mm F4".into()), ..meta() };
         assert!(lookup(&db, &other, 6000.0, 4000.0, Orientation::Normal).is_none());
+    }
+
+    #[test]
+    fn fixed_lens_mount_resolves_without_a_lens_name_and_rejects_duplicates() {
+        let fixed = DB.replace("<mount>T</mount>", "<mount>testFixed</mount>");
+        let mut db = LensDb::parse(&fixed).unwrap();
+        let metadata = lightcraft_meta::Metadata { lens_model: None, ..meta() };
+        let report = inspect(&db, &metadata, 6000.0, 4000.0, Orientation::Normal);
+        assert!(report.resolution.via_fixed_lens);
+        assert_eq!(report.distortion, ComponentStatus::Applied);
+        assert_eq!(report.vignetting, ComponentStatus::Applied);
+        assert_eq!(report.chromatic_aberration, ComponentStatus::Missing);
+        db.lenses.push(db.lenses[0].clone());
+        let report = inspect(&db, &metadata, 6000.0, 4000.0, Orientation::Normal);
+        assert_eq!(report.resolution.status, r3d_optics::Status::AmbiguousProfile);
+        assert!(report.correction.is_none());
+    }
+
+    #[test]
+    fn reports_missing_components_and_unsupported_projection_accurately() {
+        let mut db = LensDb::parse(DB).unwrap();
+        db.lenses[0].vignetting.clear();
+        let m = lightcraft_meta::Metadata { focal_length: None, ..meta() };
+        let report = inspect(&db, &m, 6000.0, 4000.0, Orientation::Normal);
+        assert_eq!(report.distortion, ComponentStatus::MissingMetadata);
+        assert_eq!(report.vignetting, ComponentStatus::Missing);
+        db.lenses[0].rectilinear = false;
+        let report = inspect(&db, &meta(), 6000.0, 4000.0, Orientation::Normal);
+        assert_eq!(report.distortion, ComponentStatus::UnsupportedProjection);
+        assert!(report.correction.is_none());
+    }
+
+    #[test]
+    fn missing_aperture_does_not_invent_a_shading_correction() {
+        let db = LensDb::parse(DB).unwrap();
+        let m = lightcraft_meta::Metadata { f_number: None, ..meta() };
+        let report = inspect(&db, &m, 6000.0, 4000.0, Orientation::Normal);
+        assert_eq!(report.distortion, ComponentStatus::Applied);
+        assert_eq!(report.vignetting, ComponentStatus::MissingMetadata);
+        assert!(report.correction.unwrap().vignette.is_none());
     }
 
     /// A full-frame body in APS-C / Super 35 mode (an ILCE-1M2 at 70 mm records 105 mm equivalent) frames only the
