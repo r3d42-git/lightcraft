@@ -21,6 +21,29 @@ passes only the camera mount's explicitly declared compatible lens mounts to the
 resolver (for example, Canon EF-S accepts Canon EF). Reverse or transitive
 compatibility is never inferred; fixed-lens camera-only matching requires the exact mount.
 Calibration crop coverage is checked separately from lens identity.
+The resolver records one effective frame crop in its resolution; the adapter passes
+that exact value to correction conversion. A recorded crop overrides the body only
+when it is more than 10% larger, preserving the existing whole-millimetre EXIF
+rounding policy. Calibration coverage retains its separate 1% boundary tolerance.
+
+Camera and calibration crops remain optional through XML parsing and adaptation;
+missing or invalid values never become an assumed 1.0. An omitted calibration
+attribute inherits its parent lens crop, while an explicitly invalid override stays
+unknown. A valid calibration attribute may supply a crop when its parent lacks one.
+Explicit 1.0 remains valid. Parsing, resolution and conversion accept only finite
+crops in 0.1..=20. Conversion rejects profiles with unknown calibration crop even
+when called directly. The parser uses `Option<f64>` rather than retaining a numeric
+fallback plus provenance flag, so downstream consumers cannot accidentally trust
+the fallback. This changes the parser's public crop fields but avoids parallel
+representations of the same fact.
+
+These rules follow the Lensfun format documentation: the
+[camera crop](https://lensfun.github.io/manual/latest/el_camera.html) must be
+accurate, [lens calibration crop](https://lensfun.github.io/manual/latest/el_lens.html)
+has no documented 1.0 default, and
+[calibration attributes](https://lensfun.github.io/manual/latest/structlfLensCalibAttributes.html)
+require a crop factor. The documented default aspect ratio remains unchanged.
+
 
 `crates/engine/src/optics_metadata.rs` supplements the upstream optical metadata
 using a separately executed, optional ExifTool helper. This is an explicit native
@@ -44,6 +67,7 @@ explicit `--download` option. Downloading these sources is not part of app start
 | --- | --- | --- |
 | Root and engine Cargo manifests, Cargo.lock, xtask layers | Register isolated module; no upstream dependency upgrades | Locked build, layer checker |
 | `crates/engine/src/lens_profiles.rs` | Generic resolver, external-data default, diagnostic report | Resolver and adapter tests, real profile reports, same geometry normalization |
+| `crates/lensdb/src/lib.rs` | Optional crop API preserves unknown values and distinguishes omitted inheritance from invalid overrides | XML crop validity/inheritance tests, direct conversion rejection of unknown calibration, adapter integration tests |
 | `crates/engine/src/files.rs` | Supplement metadata on RAW probe and RAW render paths | Import metadata and export agree; no JPEG correction |
 | `crates/engine/src/lib.rs` | Expose metadata helper module | Native and WASM builds |
 | `crates/engine/src/config.rs` | Separate settings defaults, override and portable marker | Config tests, official override must be ignored |
