@@ -364,7 +364,10 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         ui.add_space(8.0);
     });
     section(app, ui, &d, "optics", "Optics", |app, ui, d| {
-        let has_lens = app.session.catalog.photo(id).is_some_and(|p| p.embedded_lens.is_some());
+        let lens = app.session.catalog.photo(id).and_then(|p| p.embedded_lens.as_ref());
+        let has_lens = lens.is_some();
+        let has_warp = lens.is_some_and(|l| l.warp.is_some() || l.has_stages());
+        let has_vignette = lens.is_some_and(|l| l.vignette.is_some());
         egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 4, bottom: 4 }).show(ui, |ui| {
             let mut ca = d.optics.remove_ca;
             if ui.checkbox(&mut ca, crate::i18n::tr("Remove Chromatic Aberration")).changed() {
@@ -376,14 +379,20 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             }
             if lp && !has_lens {
                 ui.label(
-                    egui::RichText::new(crate::i18n::tr("No lens data embedded in this file.")).size(11.0).color(Tokens::get(ui.ctx()).text_dim),
+                    egui::RichText::new(crate::i18n::tr("No supported lens correction available.")).size(11.0).color(Tokens::get(ui.ctx()).text_dim),
+                );
+            }
+            if lp && has_lens && !has_vignette {
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr("No supported vignetting correction available."))
+                        .size(11.0)
+                        .color(Tokens::get(ui.ctx()).text_dim),
                 );
             }
         });
         if d.optics.lens_profile {
-            for c in ["optics.profileDistortion", "optics.profileVignetting"] {
-                control(app, ui, d, c, has_lens);
-            }
+            control(app, ui, d, "optics.profileDistortion", has_warp);
+            control(app, ui, d, "optics.profileVignetting", has_vignette);
         }
         sub_title(ui, crate::i18n::tr("Manual"));
         for c in ["optics.distortion", "optics.vignetting"] {

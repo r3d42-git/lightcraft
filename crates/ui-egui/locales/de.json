@@ -967,6 +967,8 @@
   "No edits yet.": "Noch keine Bearbeitungen.",
   "No exposure information": "Keine Belichtungsinformationen",
   "No filter presets yet": "Noch keine Filtervorgaben",
+  "No supported vignetting correction available.": "Keine unterstützte Vignettierungskorrektur verfügbar.",
+  "No supported lens correction available.": "Keine unterstützte Objektivkorrektur verfügbar.",
   "No lens data embedded in this file.": "Keine Objektivdaten in dieser Datei eingebettet.",
   "No masks yet. Choose a mask type above.": "Noch keine Masken. Wähle oben einen Maskentyp.",
   "No matching commands": "Keine passenden Befehle",
