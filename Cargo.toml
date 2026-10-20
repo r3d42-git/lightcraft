@@ -26,6 +26,7 @@ lightcraft-codecs = { path = "crates/codecs" }
 lightcraft-meta = { path = "crates/meta" }
 lightcraft-develop = { path = "crates/develop" }
 lightcraft-lensdb = { path = "crates/lensdb" }
+r3d-optics = { path = "crates/r3d-optics" }
 lightcraft-inpaint = { path = "crates/inpaint" }
 lightcraft-scenes = { path = "crates/scenes" }
 lightcraft-pipeline = { path = "crates/pipeline" }
