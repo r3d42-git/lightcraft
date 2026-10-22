@@ -1,9 +1,32 @@
 # R3D optics integration
 
-This fork starts at the unchanged LightCraft `v0.9.1` release,
-`4f0b110bcbd2e350c6d97b47f1d824c2222295c4`. The machine-readable base is
+This fork starts at the unchanged LightCraft `v0.11.0` release,
+`ec0cda9a6f320e3b32f659f16718f7bce6c3f12f`. The machine-readable base is
 `r3d/upstream-base.json`. This is a local development implementation, not a released
 replacement for the official application.
+
+## v0.11.0 integration
+
+The six local functional commits were replayed onto the official release in a
+separate worktree. Upstream's removal of the obsolete `.pcraft`, PSB and QOI UTI
+declarations is retained; the fork keeps its own bundle identifier without
+claiming those document types. The resolver, optional crop API and metadata helper
+remain necessary: upstream has not superseded them. The Lensfun and ExifTool
+versions and archive hashes remain unchanged.
+
+The upstream RAW-preview format detection, background Reload from Disk, bounded
+profile menus, export bit-depth validation, preset write-error recovery and merge
+preferences remain intact. One upstream boolean in export preset handling is
+expressed with `is_none_or` for the existing local Rust 1.95 Clippy gate; its
+missing/null-value behavior is unchanged. The replayed local crate lock entry now
+uses the workspace version `0.11.0`.
+
+The official release's pinch regression was reproduced from byte-identical
+upstream source before fixing it here. During a pinch the render plan stays held,
+but its display-fit dimensions previously followed the changing zoom rectangle,
+growing the texture despite the hold. The fork also holds the existing same-photo
+display-fit dimensions until the gesture is quiet. The ordinary Preview source
+floor remains intact, and normal rendering resumes after the hold expires.
 
 ## Boundaries
 
@@ -75,6 +98,7 @@ explicit `--download` option. Downloading these sources is not part of app start
 | `apps/lightcraft/src/main.rs` | Separate app ID, title, settings/library override references | Actual native launch, correct settings and library paths |
 | `apps/lightcraft-cli/src/main.rs` | Read-only `optics-inspect FILE` diagnostic | Report on test copies; no Session or library opened |
 | `crates/ui-egui/src/panels/edit.rs`, German locale | Available component controls and accurate missing-correction text | Native optics panel; missing vignette does not enable its slider |
+| `crates/ui-egui/src/panels/detail.rs`, `tests_preview_limit.rs` | Hold display-fit dimensions during a pinch, resume afterward | Unchanged pinch regression, modest-pinch resumption, full loupe tests and native zoom |
 | `packaging/macos/Info.plist.in`, `package.sh` | Distinct bundle/artifact names; local dev-app mode; ToolBoxS option | Plist, shell syntax, signature, correct bundle ID; no official app replacement |
 
 The catalog schema and rendering pipeline are unchanged. Available profile
