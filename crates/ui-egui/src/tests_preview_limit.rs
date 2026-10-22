@@ -648,6 +648,32 @@ mod in_the_loupe {
         assert_eq!(region.full.0.max(region.full.1), native);
     }
 
+    // A modest pinch stays below the window-render threshold: after the hold ends, the
+    // whole-frame texture must catch up to its new drawn size instead of staying at Fit.
+    #[test]
+    fn a_small_pinch_resumes_display_fitting_after_the_hold() {
+        let (mut h, _) = detail();
+        let fit = rendered_long_edge(&h);
+        let at = h.app.canvas_rect.unwrap().center();
+        h.request("ui.move", json!({"x": at.x, "y": at.y}), T);
+        for _ in 0..5 {
+            h.request("ui.zoom", json!({"factor": 1.08}), T);
+            assert_eq!(rendered_long_edge(&h), fit, "the display fit is held during the pinch");
+        }
+        for _ in 0..60 {
+            h.step();
+        }
+        h.settle(SETTLE);
+        assert!(h.app.region_view.is_none(), "a modest zoom still uses the whole-frame texture");
+        let drawn = h.app.image_rect.unwrap();
+        let expected = drawn.width().max(drawn.height()).round() as usize;
+        assert!(expected > fit, "the image is magnified");
+        let rendered = rendered_long_edge(&h);
+        assert!(rendered > fit, "the held Fit texture was replaced");
+        // Aspect-preserving fitting rounds the other side independently.
+        assert!(rendered.abs_diff(expected) <= 1, "display fitting resumes after the hold: {rendered} vs {expected}");
+    }
+
     // Given a picture on screen that is not the frame (an unsupported raw's embedded JPEG cropped
     // differently, #280), no window is rendered: its coordinates are the frame's
     #[test]

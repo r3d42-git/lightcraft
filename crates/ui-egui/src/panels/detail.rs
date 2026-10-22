@@ -606,7 +606,14 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         let job = if interacting {
             job
         } else {
-            job.with_display_fit((target_rect.width() * ppp).round() as usize, (target_rect.height() * ppp).round() as usize)
+            // The render plan is held during a pinch, but its display fit must be held too:
+            // otherwise the Preview source floor feeds progressively larger textures into the
+            // changing target rect, even though the plan's main edge did not change.
+            let held = (navigating || app.size_hold.holding(now))
+                .then(|| app.renderer.textures.get(&Slot::Main).filter(|t| t.photo == id && t.quick.is_none()).map(|t| t.size))
+                .flatten();
+            let [w, h] = held.unwrap_or([(target_rect.width() * ppp).round() as usize, (target_rect.height() * ppp).round() as usize]);
+            job.with_display_fit(w, h)
         };
         let job = job.with_overlay(overlay).with_proof(app.ui.soft_proof.then_some(app.ui.proof));
         let job = job.with_hidden_grading(app.ui.grading_hidden_for(id));
