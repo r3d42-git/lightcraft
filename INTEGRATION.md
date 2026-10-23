@@ -1,11 +1,41 @@
 # R3D optics integration
 
-This fork starts at the unchanged LightCraft `v0.11.0` release,
-`ec0cda9a6f320e3b32f659f16718f7bce6c3f12f`. The machine-readable base is
+This fork starts at the unchanged LightCraft `v0.13.0` release,
+`23e181283cb448205d865e8cd288b56afe987986`. The machine-readable base is
 `r3d/upstream-base.json`. This is a local development implementation, not a released
 replacement for the official application.
 
-## v0.11.0 integration
+## v0.13.0 integration
+
+The seven committed local changes from the tested v0.11.0 fork were replayed in a
+new checkout. The conservative resolver, optional crop validity, directional mount
+compatibility, read-only metadata helper, accurate component controls and isolated
+app identity remain necessary. Pinned Lensfun/ExifTool versions and archive hashes
+are unchanged. No diagnostic-branch colour experiment or Adobe asset is included.
+
+Upstream now owns the pinch display-fit hold through `SizeHold::display_fit` and
+also shares it with the Before and hover views. The former fork-only texture hold
+and its redundant modest-pinch test were removed; `detail.rs` and
+`tests_preview_limit.rs` are unchanged from v0.13.0. Upstream regression tests remain.
+
+The new upstream Nikon lens-specification fallback is retained: a missing lens
+model may use `spec_name` only for profiles with an explicit exact alias, using
+upstream `names_exactly`. Those eligible profiles still go through conservative
+mount, identity, ambiguity and crop checks. A recorded model retains precedence.
+The upstream adapter regression and the added duplicate-alias rejection cover this
+integration. Upstream's reduced-DNG thumbnail path, full-image exports, DNG lens
+opcode handling and all unrelated release changes are retained.
+
+The local `r3d-optics` lock entry now uses workspace version `0.13.0`. The equivalent
+`is_none_or` expression in export preset handling remains for the local Clippy gate.
+Development scripts now default to a checkout-specific build target and runtime,
+and preserve explicit caller overrides. For this checkout these are
+`.tools/target-update-0.13.0`, `test-runtime/update-0.13.0/{config,library,input}` and
+control port 18473, keeping the installed development app's older paths separate.
+Validation evidence is recorded outside Git; a prepared tree is not proof of a
+successful build, launch or image-quality check.
+
+## Historical v0.11.0 integration
 
 The six local functional commits were replayed onto the official release in a
 separate worktree. Upstream's removal of the obsolete `.pcraft`, PSB and QOI UTI
@@ -98,7 +128,6 @@ explicit `--download` option. Downloading these sources is not part of app start
 | `apps/lightcraft/src/main.rs` | Separate app ID, title, settings/library override references | Actual native launch, correct settings and library paths |
 | `apps/lightcraft-cli/src/main.rs` | Read-only `optics-inspect FILE` diagnostic | Report on test copies; no Session or library opened |
 | `crates/ui-egui/src/panels/edit.rs`, German locale | Available component controls and accurate missing-correction text | Native optics panel; missing vignette does not enable its slider |
-| `crates/ui-egui/src/panels/detail.rs`, `tests_preview_limit.rs` | Hold display-fit dimensions during a pinch, resume afterward | Unchanged pinch regression, modest-pinch resumption, full loupe tests and native zoom |
 | `packaging/macos/Info.plist.in`, `package.sh` | Distinct bundle/artifact names; local dev-app mode; ToolBoxS option | Plist, shell syntax, signature, correct bundle ID; no official app replacement |
 
 The catalog schema and rendering pipeline are unchanged. Available profile
@@ -122,8 +151,8 @@ cargo build --locked -p lightcraft -p lightcraft-cli
 ```
 
 If the pinned archives are absent, add `--download` to the setup command.
-Only copies placed in `test-runtime/input` are passed to the test app.
-The development launcher uses control port 18431. The official application is
+Only copies placed in `test-runtime/update-0.13.0/input` are passed to the test app.
+The development launcher uses control port 18473. The official application is
 neither stopped nor launched by these commands.
 
 The application and CLI use `LIGHTCRAFT_R3D_CONFIG_DIR` and

@@ -347,5 +347,4 @@ fn unknown_calibration_crop_cannot_be_converted_or_inherit_invalid_overrides() {
         let db = LensDb::parse(&xml("", &format!(r#"cropfactor="{value}""#))).unwrap();
         assert_eq!(db.lenses[0].crop_factor, value.parse().ok());
     }
-
 }

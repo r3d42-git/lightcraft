@@ -95,12 +95,15 @@ pub fn inspect(db: &LensDb, m: &lightcraft_meta::Metadata, w: f64, h: f64, orien
             fixed_lens: camera.mount.chars().next().is_some_and(char::is_lowercase),
         })
         .collect::<Vec<_>>();
+    // A maker-less specification is only an identity when a profile explicitly names it.
+    // Keep upstream's Nikon alias fallback without weakening conservative ambiguity checks.
+    let spec_name = m.lens_model.is_none().then(|| m.lens_spec.map(lightcraft_lensdb::spec_name)).flatten();
     let profiles = db
         .lenses
         .iter()
         .map(|profile| r3d_optics::ProfileDescriptor {
             maker: profile.maker.clone(),
-            names: profile.models.clone(),
+            names: if spec_name.as_deref().is_some_and(|name| !profile.names_exactly(name)) { Vec::new() } else { profile.models.clone() },
             mounts: profile.mounts.clone(),
             calibration_crop_factor: profile.crop_factor,
         })
@@ -110,7 +113,7 @@ pub fn inspect(db: &LensDb, m: &lightcraft_meta::Metadata, w: f64, h: f64, orien
             camera_make: m.make.as_deref(),
             camera_model: m.model.as_deref(),
             lens_make: m.lens_make.as_deref(),
-            lens_model: m.lens_model.as_deref(),
+            lens_model: m.lens_model.as_deref().or(spec_name.as_deref()),
             frame_crop_factor: recorded_crop_factor(m.focal_length.unwrap_or(0.0), m.focal_length_35mm),
         },
         &cameras,
@@ -178,7 +181,6 @@ pub fn inspect(db: &LensDb, m: &lightcraft_meta::Metadata, w: f64, h: f64, orien
 /// `None` without a focal length or unique compatible profile.
 pub fn lookup(db: &LensDb, m: &lightcraft_meta::Metadata, w: f64, h: f64, orientation: lightcraft_geom::Orientation) -> Option<EmbeddedLens> {
     inspect(db, m, w, h, orientation).correction
-
 }
 
 /// The EXIF-implied crop; body rounding and crop-mode policy belong to the resolver.
@@ -285,6 +287,11 @@ mod tests {
         // a lens model, when the file has one, still decides
         let named_other = lightcraft_meta::Metadata { lens_model: Some("70-200mm F4".into()), ..nikon.clone() };
         assert!(lookup(&aliased, &named_other, 6000.0, 4000.0, Orientation::Normal).is_none());
+        // Exact aliases establish eligibility, never permission to pick the first duplicate.
+        let mut ambiguous = aliased;
+        ambiguous.lenses.push(ambiguous.lenses[0].clone());
+        assert_eq!(inspect(&ambiguous, &nikon, 6000.0, 4000.0, Orientation::Normal).resolution.status, r3d_optics::Status::AmbiguousProfile);
+        assert!(at(&ambiguous).is_none());
     }
 
     #[test]
@@ -429,7 +436,6 @@ mod tests {
         assert_eq!(report.distortion, ComponentStatus::Applied);
         assert_eq!(report.vignetting, ComponentStatus::MissingMetadata);
         assert!(report.correction.unwrap().vignette.is_none());
-
     }
 
     /// A full-frame body in APS-C / Super 35 mode (an ILCE-1M2 at 70 mm records 105 mm equivalent) frames only the
