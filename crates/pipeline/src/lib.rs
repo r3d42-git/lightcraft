@@ -67,9 +67,33 @@ pub struct CameraColor {
     pub developed_for: lightcraft_color::Xy,
 }
 
+/// The colour actually used while decoding a raw, independent of the editable creative profile.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ColourBasis {
+    FileMatrices,
+    CameraProfile { model: String, local: bool },
+    CameraJpeg,
+    PartialCameraJpeg,
+    Spectral,
+    Neutral,
+}
+
+/// Diagnostic facts only: these never change rendering or cache keys.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ColourSource {
+    pub basis: ColourBasis,
+    pub monochrome_tone: bool,
+    pub dro_tone_removed: bool,
+    /// Accepted near-black JPEG tone fit; independent of monochrome and colour basis.
+    #[serde(default)]
+    pub dark_tone: bool,
+}
+
 /// Facts about the source the settings are interpreted against.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceInfo {
+    /// None until a raw has been decoded, or for a rendered image / old smart preview.
+    pub colour_source: Option<ColourSource>,
     /// Lens corrections embedded in the file (DNG opcodes), relative to the EXIF-oriented source.
     pub lens: Option<lightcraft_develop::EmbeddedLens>,
     /// Raw sources use absolute Kelvin white balance; rendered sources use a relative scale around
@@ -102,6 +126,7 @@ pub struct SourceInfo {
 impl Default for SourceInfo {
     fn default() -> Self {
         Self {
+            colour_source: None,
             raw: false,
             as_shot_temp: 6500.0,
             as_shot_tint: 0.0,

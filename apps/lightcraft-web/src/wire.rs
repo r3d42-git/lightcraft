@@ -173,6 +173,11 @@ impl WorkerCore {
         }
     }
 
+    /// Provenance of the original most recently decoded for this job, without transferring pixels.
+    pub fn colour_source(&self, job: &WireJob) -> Option<lightcraft_engine::pipeline::ColourSource> {
+        self.sources.peek(&job.source_key()).and_then(|src| src.info.as_ref()).and_then(|info| info.colour_source.clone())
+    }
+
     /// Render `job`; `original` holds the file's bytes when [`WorkerCore::needs_original`] asked.
     pub fn render(&mut self, job: &WireJob, original: Option<&[u8]>) -> Result<Rendered, String> {
         let key = job.source_key();
@@ -370,6 +375,32 @@ impl WorkerSlots {
 mod tests {
     use super::*;
     use lightcraft_engine::Session;
+
+    #[test]
+    fn worker_provenance_follows_the_decoded_source_identity() {
+        use lightcraft_engine::pipeline::{ColourBasis, ColourSource};
+        let mut session = lightcraft_engine::Session::with_demo();
+        let id = session.active().unwrap();
+        let job = session.thumb_job(id, 32).unwrap();
+        let mut wire = WireJob::from_job(&job, false, "Thumb");
+        let mut core = WorkerCore::default();
+        assert!(core.colour_source(&wire).is_none());
+        let source = ColourSource {
+            basis: ColourBasis::CameraProfile { model: "Test Camera".into(), local: false },
+            monochrome_tone: true,
+            dark_tone: false,
+            dro_tone_removed: true,
+        };
+        let decoded = DecodedSource::new(
+            Arc::new(lightcraft_raster::Rgb32f::new(4, 4)),
+            Some(SourceInfo { colour_source: Some(source.clone()), ..Default::default() }),
+        );
+        core.sources.insert(wire.source_key(), decoded, 1024);
+        let transported = serde_json::to_string(&core.colour_source(&wire)).unwrap();
+        assert_eq!(serde_json::from_str::<Option<ColourSource>>(&transported).unwrap(), Some(source));
+        wire.source_identity = Some("changed original".into());
+        assert!(core.colour_source(&wire).is_none());
+    }
 
     // Issue #229: a failed worker attempt must not shift the positions of the workers after it
     #[test]

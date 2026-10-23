@@ -1,5 +1,33 @@
 # Sony ARW, Nikon NEF, Panasonic RW2, Fujifilm RAF, Canon CR3/CR2, Pentax PEF, Samsung SRW, Olympus ORF, Epson ERF and Minolta MRW starting look
 
+## Colour source diagnostic (fork integration, 2026-10-23)
+
+The readout under the creative profile in Edit and the profile browser reports the
+selected original RAW's accepted decode path. It distinguishes the file's own
+matrices, a validated local or bundled camera profile, a full or partial fit to
+its camera JPEG, measured spectral sensitivities and the neutral fallback.
+Monochrome JPEG tone, accepted near-black JPEG tone and actual Sony DRO tone
+removal are independent badges. In particular, a DNG preview tone fit still uses
+the DNG's file matrices; a near-black colour JPEG is not labelled monochrome.
+English and German include every basis and badge.
+
+Facts are passive: they do not alter fitting, pixels, cache keys or the creative
+profile. Local profile origin is attached to validated profile data, not guessed
+from file presence. Worker facts require a successful render and the current
+original's content identity; remote facts occupy a bounded 64 KiB LRU. Decoded
+facts take precedence. Forget, eviction and source-cache clear remove the facts.
+A pure render-cache hit or an old smart preview without decoded facts reports
+unavailable until the original is decoded; the panel does not force a decode.
+Switching photos reads the selected source rather than the displayed old preview.
+
+This manually adapts PR #1332 at `467213a58e7cb630e9161266bcd96ff18fac85f7`
+to the current fork. Colour and geometry acceptance gates, `LOOK_VERSION` 13 and
+render-cache version 70 are preserved. It adds diagnostic visibility, with no
+image-quality or camera-calibration parity claim. Windowless synthetic regression
+tests cover acceptance paths, transport identity, pixel invariance and painted
+English/German text in both panels; native window validation is not performed.
+
+
 ARW, NEF, RW2, RAF, CR3, CR2, PEF, SRW, ORF, ERF and MRW decoding supply sensor data and camera white-balance multipliers, but currently no measured camera colour matrix. Treating camera RGB as linear sRGB produces a dark, muted default rendering. The loader now estimates a file-local starting look from that file's embedded camera JPEG, only when a usable camera matrix is absent. All output pixels still come from the RAW sensor data; there is no JPEG replacement or uniform saturation boost.
 
 ## Colour and tone are separate

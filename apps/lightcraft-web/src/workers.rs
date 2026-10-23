@@ -111,6 +111,10 @@ async fn handle(scope: &web_sys::DedicatedWorkerGlobalScope, backend: Option<Bac
             None => None,
         };
         let rendered = CORE.with(|c| c.borrow_mut().render(&job, original.as_deref()))?;
+        if let Some(source) = CORE.with(|c| c.borrow().colour_source(&job)) {
+            let text = serde_json::to_string(&source).map_err(|e| e.to_string())?;
+            set(&out, "colourSource", &text.into());
+        }
         let mut stored = 0;
         if let (Some(b), Some(key)) = (&backend, job.thumb_key())
             && let Some(jpeg) = lightcraft_preview::encode_jpeg(&rendered.image)
@@ -151,6 +155,7 @@ async fn handle(scope: &web_sys::DedicatedWorkerGlobalScope, backend: Option<Bac
 // main side
 
 struct Busy {
+    source_key: Option<Hash128>,
     disk_key: Option<String>,
     namespace: u64,
     request_id: u64,
@@ -292,13 +297,14 @@ impl Workers {
             if let Some(b) = w.busy.take() {
                 let r = RenderResult {
                     request_id: b.request_id,
-                    source_key: None,
+                    source_key: b.source_key,
                     photo: b.photo,
                     level: b.level,
                     key: b.key,
                     rendered: Err(msg),
                     gpu_fallback: None,
                     loaded: None,
+                    colour_source: None,
                     quick: None,
                     display: None,
                 };
@@ -371,6 +377,11 @@ impl Workers {
                 let _ = backend.remove(&thumb_storage_key(&key)).await;
             });
         }
+        let colour_source = if rendered.is_ok() && b.namespace == g.index.namespace() {
+            get(&data, "colourSource").as_string().and_then(|text| serde_json::from_str(&text).ok())
+        } else {
+            None
+        };
         g.remote_done += 1;
         let rendered = match (rendered, &b.slide) {
             (Ok(mut r), Some(slide)) => {
@@ -383,13 +394,14 @@ impl Workers {
             b.slot,
             RenderResult {
                 request_id: b.request_id,
-                source_key: None,
+                source_key: b.source_key,
                 photo: b.photo,
                 level: b.level,
                 key: b.key,
                 rendered,
                 gpu_fallback: None,
                 loaded: None,
+                colour_source,
                 quick: None,
                 display: None,
             },
@@ -444,6 +456,7 @@ impl RenderOffload for Workers {
                 rendered: Ok(Rendered { image, histogram, deep: None }),
                 gpu_fallback: None,
                 loaded: None,
+                colour_source: None,
                 quick: None,
                 display: None,
             };
@@ -492,6 +505,7 @@ impl RenderOffload for Workers {
             return Some(job);
         }
         w.busy = Some(Busy {
+            source_key: job.source_key,
             disk_key,
             namespace,
             request_id: job.request_id,

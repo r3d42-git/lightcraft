@@ -3424,5 +3424,16 @@
   "favourites across restarts (issue #328).": "über Neustarts hinweg Favoriten (Issue #328).",
   "Optional remote SAM 3: keep the native editor local and run Object, Describe, and detail": "Optionales entferntes SAM 3: Der native Editor bleibt lokal, und Objekt-, Beschreibungs- und Detail-",
   "inference on a Mac through SSH. Saved masks still render and export offline.": "Inferenz laufen über SSH auf einem Mac. Gespeicherte Masken werden weiterhin offline gerendert und exportiert.",
-  "See [remote Metal inference](ai-masks.md#remote-metal-inference).": "Siehe [remote Metal inference](ai-masks.md#remote-metal-inference)."
+  "See [remote Metal inference](ai-masks.md#remote-metal-inference).": "Siehe [remote Metal inference](ai-masks.md#remote-metal-inference).",
+  "Camera colour: fitted to the camera JPEG": "Kamerafarbe: an das Kamera-JPEG angepasst",
+  "Camera colour: neutral (no accepted colour fit)": "Kamerafarbe: neutral (keine akzeptierte Farbanpassung)",
+  "Camera colour: not available until the original is decoded": "Kamerafarbe: verfügbar nach dem Dekodieren des Originals",
+  "Camera colour: partial camera JPEG fit": "Kamerafarbe: teilweise an das Kamera-JPEG angepasst",
+  "Camera colour: raw's own matrices": "Kamerafarbe: eigene Matrizen der RAW-Datei",
+  "Camera colour: spectral sensitivities (no accepted colour fit)": "Kamerafarbe: spektrale Empfindlichkeiten (keine akzeptierte Farbanpassung)",
+  "Camera colour: {model} profile (built in)": "Kamerafarbe: Profil für {model} (integriert)",
+  "Camera colour: {model} profile (local)": "Kamerafarbe: Profil für {model} (lokal)",
+  "DRO tone removed": "DRO-Tonwertanhebung entfernt",
+  "Tone from black-and-white camera JPEG": "Tonwerte aus dem Schwarzweiß-Kamera-JPEG",
+  "Tone from near-black camera JPEG": "Tonwerte aus dem nahezu schwarzen Kamera-JPEG"
 }

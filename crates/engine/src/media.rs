@@ -354,6 +354,8 @@ impl SourceRef {
 
 pub struct MediaCache {
     settings_hashes: SettingsHashes,
+    /// Bounded diagnostics from workers that keep decoded pixels in another address space.
+    remote_colour: Lru<PhotoId, (Hash128, lightcraft_pipeline::ColourSource)>,
     /// Decoded thumbnail-level sources (LRU by bytes).
     thumbs: Lru<PhotoId, DecodedSource>,
     /// Decoded preview-level sources with their last use ([`lightcraft_preview::next_tick`]).
@@ -440,6 +442,7 @@ impl Default for MediaCache {
         let budget = crate::memory::cache_share(crate::memory::budget());
         MediaCache {
             settings_hashes: SettingsHashes::default(),
+            remote_colour: Lru::new(64 << 10),
             thumbs: Lru::new(THUMB_SOURCE_BYTES.min(budget)),
             previews: Vec::new(),
             full: Vec::new(),
@@ -488,6 +491,7 @@ impl MediaCache {
     /// Forget every decoded source (photo ids changed meaning, e.g. another library was opened).
     pub fn clear_sources(&mut self) {
         self.settings_hashes = SettingsHashes::default();
+        self.remote_colour = Lru::new(64 << 10);
         self.thumbs = Lru::new(THUMB_SOURCE_BYTES.min(self.budget));
         self.previews.clear();
         self.full.clear();
@@ -635,6 +639,7 @@ impl MediaCache {
 
     /// Forget a photo's decoded sources (e.g. after its file changed).
     pub fn forget(&mut self, id: PhotoId) {
+        self.remote_colour.remove(&id);
         self.thumbs.remove(&id);
         self.previews.retain(|e| e.0 != id);
         self.full.retain(|e| e.0 != id);
@@ -816,6 +821,8 @@ pub struct RenderResult {
     pub gpu_fallback: Option<String>,
     /// A source that was loaded by this job (to be inserted into the cache).
     pub loaded: Option<DecodedSource>,
+    /// Diagnostic facts returned by an out-of-process worker; requires a matching source key.
+    pub colour_source: Option<lightcraft_pipeline::ColourSource>,
     /// Set for a [`QuickJob`]'s stand-in: where the image came from.
     pub quick: Option<QuickSource>,
     /// The display profile (id) the image is encoded for; `None`: sRGB (see
@@ -934,6 +941,7 @@ impl RenderJob {
             rendered: Err(e),
             gpu_fallback: None,
             loaded: None,
+            colour_source: None,
             quick: None,
             display: None,
         }
@@ -977,6 +985,7 @@ impl RenderJob {
                 rendered: Ok(Rendered { image, histogram, deep: None }),
                 gpu_fallback: None,
                 loaded: None,
+                colour_source: None,
                 quick: None,
                 display: None,
             };
@@ -997,6 +1006,7 @@ impl RenderJob {
                 rendered: Ok(Rendered { image, histogram, deep: None }),
                 gpu_fallback: None,
                 loaded: None,
+                colour_source: None,
                 quick: None,
                 display: None,
             };
@@ -1061,6 +1071,7 @@ impl RenderJob {
                     rendered: Ok(rendered),
                     gpu_fallback,
                     loaded: (!was_loaded).then_some(source),
+                    colour_source: None,
                     quick: None,
                     display,
                 }
@@ -1166,6 +1177,7 @@ impl QuickJob {
             rendered: Err(e),
             gpu_fallback: None,
             loaded: None,
+            colour_source: None,
             quick: None,
             display: None,
         })
@@ -1183,6 +1195,7 @@ impl QuickJob {
             rendered,
             gpu_fallback: None,
             loaded: None,
+            colour_source: None,
             quick,
             display: None,
         };
@@ -1614,6 +1627,17 @@ impl crate::Session {
     /// Accept a finished job's loaded source into the cache. What the decode learnt about the file that the catalog
     /// has wrong is corrected too ([`Self::learn_as_shot_wb`]).
     pub fn accept(&mut self, r: &RenderResult) {
+        if r.rendered.is_ok()
+            && let (Some(key), Some(source)) = (r.source_key, &r.colour_source)
+            && self.catalog.photo(r.photo).is_some_and(|p| Hasher128::new().str(&content_key(p)).finish() == key)
+        {
+            let cost = 128
+                + match &source.basis {
+                    lightcraft_pipeline::ColourBasis::CameraProfile { model, .. } => model.len(),
+                    _ => 0,
+                };
+            self.media.remote_colour.insert(r.photo, (key, source.clone()), cost);
+        }
         if let Some(src) = &r.loaded
             && r.source_key.is_none_or(|key| self.catalog.photo(r.photo).is_some_and(|p| Hasher128::new().str(&content_key(p)).finish() == key))
         {
@@ -1705,7 +1729,14 @@ impl crate::Session {
     /// Prefer decoder facts to header-only metadata for pixel-statistics commands.
     pub fn source_info(&self, id: PhotoId) -> SourceInfo {
         let header = self.catalog.photo(id).map(|p| source_info(p)).unwrap_or_default();
-        self.media.source_facts(id, header)
+        let mut info = self.media.source_facts(id, header);
+        if info.colour_source.is_none()
+            && let Some((key, source)) = self.media.remote_colour.peek(&id)
+            && self.catalog.photo(id).is_some_and(|p| Hasher128::new().str(&content_key(p)).finish() == *key)
+        {
+            info.colour_source = Some(source.clone());
+        }
+        info
     }
 
     /// The source proxy for pixel-statistics commands (auto tone/WB), loading synchronously.
@@ -1944,13 +1975,96 @@ mod tests {
     }
 
     #[test]
+    fn worker_provenance_requires_a_current_source_and_is_forgotten() {
+        let mut s = crate::Session::with_demo();
+        let id = s.active().unwrap();
+        let mut result = s.loupe_job(id, 32, 32, true).unwrap().run();
+        result.loaded = None; // Workers retain their pixels in a separate address space.
+        let source = lightcraft_pipeline::ColourSource {
+            basis: lightcraft_pipeline::ColourBasis::Spectral,
+            monochrome_tone: false,
+            dark_tone: false,
+            dro_tone_removed: false,
+        };
+        result.colour_source = Some(source.clone());
+        let current_key = result.source_key;
+        result.source_key = None;
+        s.accept(&result);
+        assert!(s.source_info(id).colour_source.is_none());
+        result.source_key = Some(Hasher128::new().str("different original").finish());
+        s.accept(&result);
+        assert!(s.source_info(id).colour_source.is_none());
+        result.source_key = current_key;
+        let success = std::mem::replace(&mut result.rendered, Err("synthetic failed worker".into()));
+        s.accept(&result);
+        assert!(s.source_info(id).colour_source.is_none());
+        result.rendered = success;
+        s.accept(&result);
+        assert_eq!(s.source_info(id).colour_source, Some(source.clone()));
+        s.media.forget(id);
+        assert!(s.source_info(id).colour_source.is_none());
+        s.accept(&result);
+        assert_eq!(s.source_info(id).colour_source, Some(source.clone()));
+        let p = s.catalog.photo(id).unwrap().clone();
+        s.catalog
+            .apply(lightcraft_catalog::Op::SetContent {
+                id,
+                width: p.width,
+                height: p.height,
+                file_size: p.file_size,
+                content_hash: Some("changed identity".into()),
+                preview_only: p.preview_only.clone(),
+                preview_checked: p.preview_checked.clone(),
+            })
+            .unwrap();
+        assert!(s.source_info(id).colour_source.is_none(), "previously accepted facts do not survive a changed original");
+        s.accept(&result);
+        assert!(s.source_info(id).colour_source.is_none(), "an old worker cannot restore stale facts");
+        result.source_key = Some(Hasher128::new().str(&content_key(s.catalog.photo(id).unwrap())).finish());
+        s.accept(&result);
+        assert_eq!(s.source_info(id).colour_source, Some(source));
+        s.media.clear_sources();
+        assert!(s.source_info(id).colour_source.is_none());
+    }
+
+    #[test]
+    fn worker_provenance_budget_evicts_diagnostic_facts() {
+        let mut s = crate::Session::with_demo();
+        let id = s.active().unwrap();
+        let mut result = s.loupe_job(id, 32, 32, true).unwrap().run();
+        result.loaded = None;
+        result.colour_source = Some(lightcraft_pipeline::ColourSource {
+            basis: lightcraft_pipeline::ColourBasis::Spectral,
+            monochrome_tone: false,
+            dro_tone_removed: false,
+            dark_tone: false,
+        });
+        s.accept(&result);
+        assert!(s.source_info(id).colour_source.is_some());
+        // Other originals can consume the whole remote diagnostics budget.
+        s.media.remote_colour.insert(
+            lightcraft_catalog::PhotoId(u64::MAX),
+            (Hasher128::new().finish(), result.colour_source.clone().unwrap()),
+            64 << 10,
+        );
+        assert!(s.source_info(id).colour_source.is_none());
+    }
+
+    #[test]
     fn decoder_info_survives_render_jobs_cache_and_eviction() {
         let tone = lightcraft_pipeline::tone::CameraTone::new(std::array::from_fn(|i| {
             let x = 0.01 * (i + 1) as f32;
             [x, (x * 2.0).min(0.9)]
         }))
         .unwrap();
-        let info = SourceInfo { raw: true, relative_wb: true, camera_tone: Some(tone), ..Default::default() };
+        let colour_source = lightcraft_pipeline::ColourSource {
+            basis: lightcraft_pipeline::ColourBasis::Spectral,
+            monochrome_tone: false,
+            dark_tone: false,
+            dro_tone_removed: false,
+        };
+        let info =
+            SourceInfo { raw: true, relative_wb: true, camera_tone: Some(tone), colour_source: Some(colour_source.clone()), ..Default::default() };
         let mut s = crate::Session::with_demo();
         let id = s.active().unwrap();
         let mut job = s.render_job(id, 64, 64, false, true).unwrap();
@@ -1973,13 +2087,21 @@ mod tests {
         assert_eq!(r.loaded.as_ref().unwrap().info.as_ref(), Some(&info));
         let expected = lightcraft_pipeline::render(&r.loaded.as_ref().unwrap().image, &info, &job.settings, &job.request);
         assert_eq!(r.rendered.as_ref().unwrap().image.data, expected.image.data);
+        let mut without_diagnostic = info.clone();
+        without_diagnostic.colour_source = None;
+        let identical = lightcraft_pipeline::render(&r.loaded.as_ref().unwrap().image, &without_diagnostic, &job.settings, &job.request);
+        assert_eq!(expected.image.data, identical.image.data, "diagnostics never enter pixel rendering");
         s.accept(&r);
+        assert_eq!(s.source_info(id).colour_source, Some(colour_source));
+        let other = s.visible_cloned().into_iter().find(|other| *other != id).unwrap();
+        assert!(s.source_info(other).colour_source.is_none(), "never borrow another photo's source");
         job.source = s.media.source_ref(s.catalog.photo(id).unwrap(), job.level);
         let again = job.run();
         assert!(again.loaded.is_none());
         assert_eq!(r.rendered.unwrap().image.data, again.rendered.unwrap().image.data);
         s.media.forget(id);
         assert!(s.media.get_source(id, r.level).is_none());
+        assert!(s.source_info(id).colour_source.is_none(), "eviction must not leave stale provenance");
     }
 
     /// Issue #730: an ILCE-7M3 ARW from an older catalog (white balance relative to the as-shot look, 6500 / 0 as

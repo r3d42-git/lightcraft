@@ -5,6 +5,33 @@ This fork starts at the unchanged LightCraft `v0.13.0` release,
 `r3d/upstream-base.json`. This is a local development implementation, not a released
 replacement for the official application.
 
+## Camera colour provenance candidate
+
+Manually ported diagnostic feature from upstream [PR #1332](https://github.com/storytold/lightcraft/pull/1332),
+immutable head `467213a58e7cb630e9161266bcd96ff18fac85f7`, onto tested fork
+`6b8b5c47c946d6419dd692e7e892048f8a5fa1c5`. The original PR predates
+this fork's DNG tone, near-black tone and geometry work; obsolete test-portability
+patches are omitted and its diagnostic paths are adapted to the current source.
+
+Edit and the profile browser display the selected original RAW's actual accepted
+colour basis, separately from the editable creative profile. English and German
+readouts distinguish file matrices, validated local/bundled camera profiles, full
+or partial JPEG fits, spectral colour and neutral fallback; accepted monochrome,
+near-black tone and Sony DRO removal have independent badges. A DNG's accepted
+preview tone retains file-matrix attribution. Rejected fits never acquire a badge.
+
+Diagnostics travel with decoded source facts or successful current-content worker
+results; remote facts have a 64 KiB LRU budget and disappear on eviction, forget or
+source-cache clear. Render-cache hits and old smart previews without decoded facts
+honestly show unavailable until an original is decoded. No decode is forced for
+the readout. Camera-profile data and validated origin are cached atomically.
+
+This is diagnostic visibility only: pixel algorithms, geometry/export/zoom fixes,
+`LOOK_VERSION = 13` and `RENDER_CACHE_VERSION = 70` remain unchanged. It does not
+improve image colour or establish camera calibration parity. Validation is
+synthetic, automated and windowless; desktop launch, personal library/media,
+installation and publication are outside this preparation.
+
 ## Pixel inspection and 1600% zoom candidate
 
 Prepared from the tested export-safety fork `789269c3`. Upstream references are

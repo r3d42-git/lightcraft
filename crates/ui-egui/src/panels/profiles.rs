@@ -38,6 +38,9 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     // a long name is cut short (with …) at the panel's edge
     let g = one_line(ui.painter(), crate::i18n::profile_label(&d.profile.id, name), t.font(14.0), t.text_label, cr.width() - 84.0 - 24.0);
     ui.painter().galley(pos2(cr.left() + 84.0, cr.center().y - g.size().y / 2.0), g, t.text_label);
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 0, bottom: 10 }).show(ui, |ui| {
+        colour_source(app, ui, id);
+    });
     if d.profile.id != "lc.color" {
         super::edit::control(app, ui, &d, "profile.amount", true);
         ui.add_space(6.0);
@@ -203,6 +206,137 @@ fn cell_ui(
         } else if !applied {
             let _ = app.run("develop.profile", json!({"id": p_id, "amount": 100}));
             ui.data_mut(|m| m.remove::<(PhotoId, String)>(egui::Id::new("last-profile-hover")));
+        }
+    }
+}
+
+/// Read from the selected photo's decoded source, never from the previously displayed preview.
+pub(super) fn colour_source(app: &LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
+    if !app.session.catalog.photo(id).is_some_and(|p| p.develops_raw()) {
+        return;
+    }
+    let info = app.session.source_info(id);
+    let text = colour_source_text(info.colour_source.as_ref());
+    let t = Tokens::get(ui.ctx());
+    let response = ui.add(egui::Label::new(egui::RichText::new(text).font(t.font(12.0)).color(t.text_dim)).wrap());
+    register(ui.ctx(), "label:cameraColourSource", response.rect);
+}
+
+fn colour_source_text(source: Option<&lightcraft_pipeline::ColourSource>) -> String {
+    use lightcraft_pipeline::ColourBasis;
+    let Some(source) = source else { return crate::i18n::tr("Camera colour: not available until the original is decoded").to_string() };
+    let mut label = match &source.basis {
+        ColourBasis::FileMatrices => crate::i18n::tr("Camera colour: raw's own matrices").to_string(),
+        ColourBasis::CameraProfile { model, local } => {
+            if *local {
+                crate::i18n::tr("Camera colour: {model} profile (local)").replace("{model}", model)
+            } else {
+                crate::i18n::tr("Camera colour: {model} profile (built in)").replace("{model}", model)
+            }
+        }
+        ColourBasis::CameraJpeg => crate::i18n::tr("Camera colour: fitted to the camera JPEG").to_string(),
+        ColourBasis::PartialCameraJpeg => crate::i18n::tr("Camera colour: partial camera JPEG fit").to_string(),
+        ColourBasis::Spectral => crate::i18n::tr("Camera colour: spectral sensitivities (no accepted colour fit)").to_string(),
+        ColourBasis::Neutral => crate::i18n::tr("Camera colour: neutral (no accepted colour fit)").to_string(),
+    };
+    if source.monochrome_tone {
+        label.push_str(" · ");
+        label.push_str(crate::i18n::tr("Tone from black-and-white camera JPEG"));
+    }
+    if source.dark_tone {
+        label.push_str(" · ");
+        label.push_str(crate::i18n::tr("Tone from near-black camera JPEG"));
+    }
+    if source.dro_tone_removed {
+        label.push_str(" · ");
+        label.push_str(crate::i18n::tr("DRO tone removed"));
+    }
+    label
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lightcraft_catalog::{MediaKind, Op, Photo, Source};
+    use lightcraft_engine::media::SourceLevel;
+    use lightcraft_pipeline::{ColourBasis, ColourSource, SourceInfo};
+    use std::{sync::Arc, time::Duration};
+
+    #[test]
+    fn colour_readout_follows_selection_in_both_panels() {
+        let sources = [
+            (ColourBasis::FileMatrices, "raw's own matrices", "eigene Matrizen"),
+            (ColourBasis::CameraProfile { model: "Test Camera".into(), local: true }, "profile (local)", "(lokal)"),
+            (ColourBasis::CameraProfile { model: "Test Camera".into(), local: false }, "profile (built in)", "(integriert)"),
+            (ColourBasis::CameraJpeg, "fitted to the camera JPEG", "an das Kamera-JPEG angepasst"),
+            (ColourBasis::PartialCameraJpeg, "partial camera JPEG fit", "teilweise an das Kamera-JPEG angepasst"),
+            (ColourBasis::Spectral, "spectral sensitivities", "spektrale Empfindlichkeiten"),
+            (ColourBasis::Neutral, "neutral (no accepted colour fit)", "neutral (keine akzeptierte Farbanpassung)"),
+        ];
+        let mut session = lightcraft_engine::Session::new();
+        let mut ids = Vec::new();
+        for i in 0..=sources.len() {
+            let raw = i < sources.len();
+            let name = format!("synthetic-{i}.{}", if raw { "ARW" } else { "jpg" });
+            let id = session.catalog.alloc_photo_id();
+            let mut photo =
+                Photo::new(id, Source::File { path: name.clone() }, &name, if raw { "ARW" } else { "JPEG" }, 32, 32, "2026-10-23T00:00:00");
+            photo.kind = if raw { MediaKind::Raw } else { MediaKind::Image };
+            session.catalog.apply(Op::AddPhoto { photo: Box::new(photo) }).unwrap();
+            ids.push(id);
+        }
+        let bases: Vec<_> = sources.iter().map(|(basis, _, _)| basis.clone()).collect();
+        let loader: lightcraft_engine::media::FileLoader = Arc::new(move |path, _| {
+            let index = path.strip_prefix("synthetic-").and_then(|p| p.split('.').next()).and_then(|p| p.parse::<usize>().ok()).unwrap();
+            Ok((
+                lightcraft_raster::Rgb32f::new(32, 32),
+                SourceInfo {
+                    raw: true,
+                    colour_source: bases.get(index).map(|basis| ColourSource {
+                        basis: basis.clone(),
+                        monochrome_tone: true,
+                        dro_tone_removed: true,
+                        dark_tone: true,
+                    }),
+                    ..Default::default()
+                },
+            ))
+        });
+        let app = LightcraftApp::new(session, crate::Services { png: None, ..Default::default() });
+        let mut h = crate::headless::Headless::new(app, [1400.0, 1400.0], 1.0);
+        let timeout = Duration::from_secs(30);
+        for language in ["en", "de"] {
+            for panel in ["edit", "profiles"] {
+                h.app.session.media.clear_sources();
+                for (i, id) in ids.iter().enumerate() {
+                    h.request("engine.execute", json!({"command":"library.select", "params":{"ids":[id.0], "active":id.0}}), timeout);
+                    h.request("ui.set", json!({"view":"detail", "right":panel, "language":language}), timeout);
+                    h.step();
+                    let text = h.painted_text().join("\n");
+                    assert_eq!(h.app.widgets.iter().any(|(name, _)| name == "label:cameraColourSource"), i < sources.len(), "{panel}: {i}");
+                    if i < sources.len() {
+                        assert!(text.contains(if language == "de" { "nach dem Dekodieren" } else { "not available until" }), "{text}");
+                    }
+                    if i < sources.len() {
+                        h.app.session.media.file_loader = Some(loader.clone());
+                        h.app.session.source_now(*id, SourceLevel::Preview).unwrap();
+                        h.app.session.media.file_loader = None;
+                        h.step();
+                        let text = h.painted_text().join("\n");
+                        assert!(text.contains(if language == "de" { sources[i].2 } else { sources[i].1 }), "{panel} {language} {i}: {text}");
+                        for (en, de) in [
+                            ("Tone from black-and-white camera JPEG", "Tonwerte aus dem Schwarzweiß-Kamera-JPEG"),
+                            ("Tone from near-black camera JPEG", "Tonwerte aus dem nahezu schwarzen Kamera-JPEG"),
+                            ("DRO tone removed", "DRO-Tonwertanhebung entfernt"),
+                        ] {
+                            assert!(text.contains(if language == "de" { de } else { en }), "{text}");
+                        }
+                        assert_eq!(text.contains("Test Camera"), i == 1 || i == 2, "{text}");
+                    } else {
+                        assert!(!text.contains(if language == "de" { "Kamerafarbe:" } else { "Camera colour:" }), "{text}");
+                    }
+                }
+            }
         }
     }
 }

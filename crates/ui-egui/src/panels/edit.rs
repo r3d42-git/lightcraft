@@ -187,6 +187,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                 }
             });
         });
+        super::profiles::colour_source(app, ui, id);
     });
     if d.profile.id != "lc.color" {
         control(app, ui, &d, "profile.amount", true);

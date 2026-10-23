@@ -2088,6 +2088,7 @@ mod color_image_tests {
             rendered,
             gpu_fallback: None,
             loaded: None,
+            colour_source: None,
             quick: None,
             display: None,
         };

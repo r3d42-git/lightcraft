@@ -453,7 +453,7 @@ fn load_bytes_now(
         // the camera's measured matrices (`Photo::relative_wb` decides the same from the catalog's camera)
         let scale = WbScaleOf::new(raw.format, &raw.color, raw.wb_multipliers, &raw.metadata);
         // the source's segmentation mattes (DNG semantic masks), read while the starting colour is fitted
-        let ((xy, t, camera_look), mattes) = rayon::join(
+        let ((xy, t, camera_look, colour_source), mattes) = rayon::join(
             || {
                 let removed = dng_lens_ops.map(|ops| std::mem::replace(&mut raw.opcodes.list3, ops));
                 // With the opcodes restored, the proxy already includes vignetting; do not apply it twice.
@@ -555,6 +555,7 @@ fn load_bytes_now(
                 legacy_relative_wb: scale.legacy_relative,
                 camera_color,
                 camera_tone,
+                colour_source: Some(colour_source),
                 mattes,
                 local_tone,
                 // (the catalog knows the original's size: `media::source_info`)

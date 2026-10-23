@@ -244,6 +244,7 @@ pub fn decode(bytes: &[u8]) -> Result<(Rgb32f, Option<CameraTone>, Option<Source
         lens: f.lens,
         camera_color: f.camera_color.map(Arc::new),
         camera_tone: tone,
+        colour_source: None,
         mattes: (!mattes.is_empty()).then(|| Arc::new(mattes)),
         local_tone: f.local_tone.map(Arc::new),
         native_long: None,

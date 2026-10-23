@@ -360,6 +360,7 @@ impl TitleCompose {
             key: self.key(),
             rendered: Ok(lightcraft_pipeline::Rendered { image, histogram, deep: None }),
             loaded: None,
+            colour_source: None,
             quick: None,
             display: None,
             gpu_fallback: None,

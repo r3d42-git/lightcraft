@@ -120,13 +120,25 @@ pub fn save(profile: &CameraProfile, dir: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn cache() -> &'static Mutex<HashMap<String, Option<Arc<CameraProfile>>>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Option<Arc<CameraProfile>>>>> = OnceLock::new();
+/// A resolved profile and its origin, cached together so provenance cannot drift from the data.
+#[derive(Clone, Debug)]
+pub struct ResolvedProfile {
+    pub profile: Arc<CameraProfile>,
+    pub local: bool,
+}
+
+fn cache() -> &'static Mutex<HashMap<String, Option<ResolvedProfile>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<ResolvedProfile>>>> = OnceLock::new();
     CACHE.get_or_init(Default::default)
 }
 
 /// The profile for camera `model`: from [`dir`], else built in; read once per process.
 pub fn get(model: &str) -> Option<Arc<CameraProfile>> {
+    resolved(model).map(|p| p.profile)
+}
+
+/// The profile and the origin of the exact cached data used by the fitter.
+pub fn resolved(model: &str) -> Option<ResolvedProfile> {
     let model = model.trim();
     if model.is_empty() {
         return None;
@@ -135,10 +147,16 @@ pub fn get(model: &str) -> Option<Arc<CameraProfile>> {
     if let Some(hit) = cache.get(model) {
         return hit.clone();
     }
-    let path = dir().map(|d| d.join(file_name(model)));
+    let profile = resolve_from(model, dir().as_deref());
+    cache.insert(model.to_owned(), profile.clone());
+    profile
+}
+
+fn resolve_from(model: &str, directory: Option<&Path>) -> Option<ResolvedProfile> {
+    let path = directory.map(|d| d.join(file_name(model)));
     let profile = match path {
         Some(path) if path.is_file() => match load(&path) {
-            Ok(p) if p.model.trim() == model => Some(Arc::new(p)),
+            Ok(p) if p.model.trim() == model => Some(ResolvedProfile { profile: Arc::new(p), local: true }),
             Ok(p) => {
                 eprintln!("lightcraft: ignoring camera profile {}: it is for {:?}, not {model:?}", path.display(), p.model);
                 None
@@ -150,9 +168,7 @@ pub fn get(model: &str) -> Option<Arc<CameraProfile>> {
         },
         _ => None,
     };
-    let profile = profile.or_else(|| bundled(model).map(Arc::new));
-    cache.insert(model.to_owned(), profile.clone());
-    profile
+    profile.or_else(|| bundled(model).map(|p| ResolvedProfile { profile: Arc::new(p), local: false }))
 }
 
 /// Changes when the profiles folder's contents change (per process): part of the render cache
@@ -327,6 +343,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
 
         assert_ne!(before_key, after_key, "a changed profile must not reuse the previous render cache");
+    }
+
+    #[test]
+    fn provenance_follows_validated_profile_not_file_presence() {
+        let dir = std::env::temp_dir().join(format!("lc-profile-origin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(file_name("ILCE-7M4"));
+        let builtin = resolve_from("ILCE-7M4", None).unwrap();
+        assert!(!builtin.local);
+        let local = profile();
+        save(&local, &dir).unwrap();
+        let resolved = resolve_from("ILCE-7M4", Some(&dir)).unwrap();
+        assert!(resolved.local);
+        assert_eq!(*resolved.profile, local);
+        std::fs::write(&path, b"broken").unwrap();
+        assert!(!resolve_from("ILCE-7M4", Some(&dir)).unwrap().local);
+        let mut other = local;
+        other.model = "another model".into();
+        std::fs::write(&path, serde_json::to_vec(&other).unwrap()).unwrap();
+        assert!(!resolve_from("ILCE-7M4", Some(&dir)).unwrap().local);
+        assert!(resolve_from("No Such Camera", Some(&dir)).is_none());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
