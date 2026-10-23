@@ -66,6 +66,17 @@ pub enum Slot {
     HdrHistogram,
 }
 
+/// Photo inspection preserves individual pixels when enlarged; reduced images stay smooth.
+/// Stand-ins, thumbnails and composed slideshow images keep linear filtering in both directions.
+fn texture_options(slot: Slot) -> egui::TextureOptions {
+    match slot {
+        Slot::Main | Slot::Before | Slot::Region | Slot::RegionBefore | Slot::Compare(_) | Slot::CompareRegion(_) | Slot::Second | Slot::Hover => {
+            egui::TextureOptions { magnification: egui::TextureFilter::Nearest, ..egui::TextureOptions::LINEAR }
+        }
+        _ => egui::TextureOptions::LINEAR,
+    }
+}
+
 pub struct Tex {
     pub key: u64,
     pub photo: PhotoId,
@@ -911,7 +922,7 @@ impl Renderer {
             let name = format!("{slot:?}");
             match self.textures.get_mut(&slot) {
                 Some(t) => {
-                    t.tex.set(color, egui::TextureOptions::LINEAR);
+                    t.tex.set(color, texture_options(slot));
                     t.pixels = pixels;
                     t.key = r.key;
                     t.photo = r.photo;
@@ -921,7 +932,7 @@ impl Renderer {
                     t.quick = r.quick;
                 }
                 None => {
-                    let tex = ctx.load_texture(name, color, egui::TextureOptions::LINEAR);
+                    let tex = ctx.load_texture(name, color, texture_options(slot));
                     self.textures.insert(
                         slot,
                         Tex {
@@ -1004,7 +1015,20 @@ impl Renderer {
 
     /// CPU copies of the current textures by id (see [`Self::keep_pixels`]).
     pub fn cpu_textures(&self) -> HashMap<egui::TextureId, crate::softpaint::CpuTexture> {
-        self.textures.values().filter_map(|t| Some((t.tex.id(), crate::softpaint::CpuTexture::linear(t.pixels.clone()?)))).collect()
+        self.textures
+            .iter()
+            .filter_map(|(slot, t)| {
+                let options = texture_options(*slot);
+                Some((
+                    t.tex.id(),
+                    crate::softpaint::CpuTexture {
+                        image: t.pixels.clone()?,
+                        magnification: options.magnification,
+                        minification: options.minification,
+                    },
+                ))
+            })
+            .collect()
     }
 
     /// Drop the import review thumbnails (a new review, or the dialog closed).
@@ -1294,6 +1318,94 @@ mod thumbnail_tests {
     }
     fn request(app: &mut crate::LightcraftApp) {
         crate::panels::grid::request_thumb(app, PhotoId(1), 256, 10);
+    }
+
+    /// Exercise both texture uploads, the delta mirror used by Headless, and the CPU overrides
+    /// used by the native shadow screenshot. Synthetic checker pixels make interpolation visible.
+    #[test]
+    fn zoom_pixel_filter_uploads_and_shadow_match_at_one_and_two_x() {
+        use crate::headless::HeadlessView;
+        use egui::{Color32, Rect, pos2, vec2};
+        let inspected =
+            [Slot::Main, Slot::Before, Slot::Region, Slot::RegionBefore, Slot::Compare(0), Slot::CompareRegion(1), Slot::Second, Slot::Hover];
+        let smooth = [
+            Slot::Thumb(PhotoId(1)),
+            Slot::ThumbQuick(PhotoId(1)),
+            Slot::Preview,
+            Slot::Variant(7),
+            Slot::Import(0),
+            Slot::Slide(PhotoId(1).into()),
+            Slot::SlidePreview,
+        ];
+        for (slot, pixel_blocks) in inspected.into_iter().map(|s| (s, true)).chain(smooth.into_iter().map(|s| (s, false))) {
+            let (mut app, work, ctx) = fixture();
+            let mut normal = HeadlessView::new();
+            normal.ctx = ctx;
+            let mut shadow = HeadlessView::new();
+            for round in 0..2 {
+                let job = app.session.render_job(PhotoId(1), 8 + round, 8 + round, false, true).unwrap();
+                app.renderer.request(slot, job, 100);
+                let (_, job) = take_job(&work);
+                let mut result = job.run();
+                result.rendered.as_mut().unwrap().image = lightcraft_raster::Rgba8 {
+                    width: 2,
+                    height: 2,
+                    data: vec![[255, 0, 0, 255], [0, 0, 255, 255], [0, 0, 255, 255], [255, 0, 0, 255]],
+                };
+                finish(&mut app, &work, &normal.ctx, slot, result);
+                let id = app.renderer.textures.get(&slot).unwrap().tex.id();
+                for ppp in [1.0, 2.0] {
+                    // Zoom is physical screen pixels per image pixel, independent of Retina scale.
+                    for factor in [2_usize, 8, 16] {
+                        let side = 2 * factor;
+                        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(side as f32 / ppp, side as f32 / ppp));
+                        for view in [&mut normal, &mut shadow] {
+                            view.run(HeadlessView::raw_input(vec2(40.0, 40.0), ppp, 0.0, vec![]), |ui| {
+                                ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("photo"))).image(
+                                    id,
+                                    rect,
+                                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                                    Color32::WHITE,
+                                );
+                            });
+                        }
+                        let image = normal.paint(&HashMap::new());
+                        let mirrored = shadow.paint(&app.renderer.cpu_textures());
+                        assert!(image.pixels == mirrored.pixels, "screenshot mismatch: {slot:?}, upload {round}, {ppp}x, zoom {}", factor * 100);
+                        if pixel_blocks {
+                            for y in 0..side {
+                                for x in 0..side {
+                                    let expected = if (x / factor + y / factor) % 2 == 0 { Color32::RED } else { Color32::BLUE };
+                                    assert_eq!(image.pixels[y * image.size[0] + x], expected, "{slot:?}, upload {round}, {ppp}x, ({x}, {y})");
+                                }
+                            }
+                        } else {
+                            let middle = image.pixels[(factor - 1) * image.size[0] + factor - 1];
+                            assert!(middle.r() > 0 && middle.b() > 0, "{slot:?} must retain linear magnification: {middle:?}");
+                        }
+                    }
+                    // A checker reduced to one physical pixel averages red and blue, for every slot.
+                    let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1.0 / ppp, 1.0 / ppp));
+                    for view in [&mut normal, &mut shadow] {
+                        view.run(HeadlessView::raw_input(vec2(40.0, 40.0), ppp, 0.0, vec![]), |ui| {
+                            ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("photo"))).image(
+                                id,
+                                rect,
+                                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                                Color32::WHITE,
+                            );
+                        });
+                    }
+                    let image = normal.paint(&HashMap::new());
+                    assert!(image.pixels == shadow.paint(&app.renderer.cpu_textures()).pixels, "minified screenshot mismatch: {slot:?}");
+                    let pixel = image.pixels[0];
+                    assert!(
+                        (i16::from(pixel.r()) - 128).abs() <= 1 && pixel.g() == 0 && (i16::from(pixel.b()) - 128).abs() <= 1,
+                        "{slot:?} must retain linear minification: {pixel:?}"
+                    );
+                }
+            }
+        }
     }
 
     fn relink_destination() -> std::path::PathBuf {

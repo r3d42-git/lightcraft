@@ -4768,7 +4768,7 @@ mod tests {
         assert!((edge.left() - area.left()).abs() < 0.01 && (edge.bottom() - area.bottom()).abs() < 0.01, "{edge:?} vs {area:?}");
 
         h.request("ui.zoom", json!({"factor": 1e20}), t);
-        assert_eq!(h.app.ui.zoom, Zoom::Percent(800.0));
+        assert_eq!(h.app.ui.zoom, Zoom::Percent(1600.0));
         h.request("ui.zoom", json!({"factor": 0.000001}), t);
         assert_eq!(h.app.ui.zoom, Zoom::Fit);
         assert_eq!(h.app.ui.pan, (0.5, 0.5));
@@ -4816,6 +4816,16 @@ mod tests {
             h.request("ui.hoverWidget", json!({"id": "canvas:image"}), t);
             h.request("ui.zoom", json!({"factor": 2}), t);
             assert!(matches!(h.app.ui.zoom, Zoom::Percent(_)), "pinch in {right}");
+            h.request("ui.zoom", json!({"factor": 1e20}), t);
+            assert_eq!(h.app.ui.zoom, Zoom::Percent(1600.0), "maximum pinch in {right}");
+            h.request("ui.scroll", json!({"dx": 100000.0, "dy": -100000.0}), t);
+            for _ in 0..40 {
+                h.step();
+            }
+            let image = h.app.image_rect.unwrap();
+            let area = h.app.canvas_rect.unwrap().shrink(if right == "crop" { 48.0 } else { 24.0 });
+            assert!(image.left() <= area.left() + 0.01 && image.right() >= area.right() - 0.01, "horizontal pan limit in {right}");
+            assert!(image.top() <= area.top() + 0.01 && image.bottom() >= area.bottom() - 0.01, "vertical pan limit in {right}");
             assert_eq!(h.app.session.catalog.photo(active).unwrap().develop, settings, "navigation must not edit the photo");
         }
         h.request("ui.set", json!({"fullscreen": true, "zoom": "fit"}), t);
@@ -4883,6 +4893,26 @@ mod tests {
             assert_eq!(image.center().y, area.center().y, "smaller axis must stay centred");
             assert!(image.left() <= area.left() && image.right() >= area.right(), "pan exposed space outside the photo");
         }
+    }
+
+    #[test]
+    fn zoom_1600_commands_and_navigation_are_bounded_and_atomic() {
+        use crate::state::Zoom;
+        let mut h = demo([1000.0, 700.0]);
+        h.app.run("view.navigate", json!({"zoom": {"percent": 800}, "pan": [0.4, 0.6]})).unwrap();
+        for expected in [1600.0, 1600.0] {
+            h.app.run("view.zoomIn", json!({})).unwrap();
+            assert_eq!(h.app.ui.zoom, Zoom::Percent(expected));
+        }
+        h.app.run("view.zoomOut", json!({})).unwrap();
+        assert_eq!(h.app.ui.zoom, Zoom::Percent(800.0));
+        h.app.run("view.navigate", json!({"zoom": {"percent": 1600}, "pan": [0.3, 0.7]})).unwrap();
+        assert_eq!(h.app.ui.zoom, Zoom::Percent(1600.0));
+        let error = h.app.run("view.navigate", json!({"zoom": {"percent": 1600.1}, "pan": [0.8, 0.2]})).unwrap_err();
+        assert!(error.contains("1600"), "{error}");
+        assert_eq!(h.app.ui.zoom, Zoom::Percent(1600.0));
+        assert_eq!(h.app.ui.pan, (0.3, 0.7));
+        assert_eq!(crate::state::CLICK_ZOOMS, [100, 200, 300, 400, 800]);
     }
 
     /// The Navigator appears when zoomed in; clicking it pans to that point.

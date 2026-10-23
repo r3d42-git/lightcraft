@@ -5,6 +5,34 @@ This fork starts at the unchanged LightCraft `v0.13.0` release,
 `r3d/upstream-base.json`. This is a local development implementation, not a released
 replacement for the official application.
 
+## Pixel inspection and 1600% zoom candidate
+
+Prepared from the tested export-safety fork `789269c3`. Upstream references are
+[issue #2643 / PR #2645](https://github.com/storytold/lightcraft/pull/2645) at
+`91aaed72759f45b479823ee487f9efb58d6307a7` and
+[issue #2652 / PR #2653](https://github.com/storytold/lightcraft/pull/2653) at
+`a7d887c8582e20c9480b77251b985d60e004e03c`.
+
+The local filtering policy is deliberately narrower than PR #2645: detail,
+Before/After, Compare/Reference, second-window and hovered-look textures use
+nearest-neighbour magnification with linear minification. Thumbnails, loading
+stand-ins, variants, import previews and composed slides retain linear filtering.
+Both texture uploads and the CPU texture overrides used by native headless
+screenshots share that policy. A Fit view that enlarges a final render may also
+show the new magnification; this is a texture sampling rule, not a label-based
+100% switch. Fractional zoom can produce uneven pixel widths.
+
+Keyboard steps, pinch/wheel and `view.navigate` share the new 1600% maximum.
+Click/Z/Space ratios remain 1:1 through 8:1. Source resolution and export output
+are unchanged. The existing native-size window renderer and #2499's display-fit
+hold are retained, as are all colour, optics and export-safety changes.
+
+Validation for this preparation is automated and windowless only, including
+synthetic pixel output at 200/800/1600%, 1x/2x scaling, upload replacement,
+minification, screenshot texture parity and zoom/navigation boundaries. No
+desktop application launch, installation or publication is authorized here.
+Automated checks are not a native-window/compositor visual acceptance test.
+
 ## Export safety candidate
 
 Prepared on top of the installed fork's `15af97c584315f145532b192b236fb2925805819`,

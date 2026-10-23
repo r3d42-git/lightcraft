@@ -45,6 +45,9 @@ impl RightPanel {
     }
 }
 
+/// Maximum percentage for continuous navigation and keyboard zoom steps.
+pub const MAX_ZOOM: f32 = 1600.0;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Zoom {

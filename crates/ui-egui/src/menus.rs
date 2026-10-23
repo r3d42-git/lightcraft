@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::LightcraftApp;
 use crate::pick::{PickRequest, Picked};
-use crate::state::{BeforeAfter, Dialog, RightPanel, ViewMode, Zoom};
+use crate::state::{BeforeAfter, Dialog, MAX_ZOOM, RightPanel, ViewMode, Zoom};
 
 /// (id, label, shortcut, menu path)
 pub type UiCommand = (&'static str, &'static str, Option<&'static str>, &'static str);
@@ -923,13 +923,13 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
             Ok(json!({"ratio": app.ui.click_zoom / 100}))
         }
         "view.zoomIn" | "view.zoomOut" => {
-            let steps = [25.0, 50.0, 100.0, 200.0, 400.0, 800.0];
+            let steps = [25.0, 50.0, 100.0, 200.0, 400.0, 800.0, MAX_ZOOM];
             let cur = match app.ui.zoom {
                 Zoom::Percent(p) => p,
                 _ => 25.0,
             };
             let next = if id == "view.zoomIn" {
-                steps.iter().find(|s| **s > cur).copied().unwrap_or(800.0)
+                steps.iter().find(|s| **s > cur).copied().unwrap_or(MAX_ZOOM)
             } else {
                 steps.iter().rev().find(|s| **s < cur).copied().unwrap_or(0.0)
             };
@@ -950,8 +950,8 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
             // Validate the complete request before changing either part of the viewport.
             let zoom = match p.get("zoom") {
                 Some(v) => match serde_json::from_value::<Zoom>(v.clone()) {
-                    Ok(Zoom::Percent(p)) if !p.is_finite() || p <= 0.0 || p > 800.0 => {
-                        return Some(Err("view.navigate: zoom percent must be greater than 0 and at most 800".into()));
+                    Ok(Zoom::Percent(p)) if !p.is_finite() || p <= 0.0 || p > MAX_ZOOM => {
+                        return Some(Err(format!("view.navigate: zoom percent must be greater than 0 and at most {MAX_ZOOM}")));
                     }
                     Ok(z) => z,
                     Err(e) => return Some(Err(format!("view.navigate: {e}"))),

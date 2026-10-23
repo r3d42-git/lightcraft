@@ -120,11 +120,15 @@ Kelvin on a Kelvin raw pass `"scale": "kelvin"` or use `develop.set` / `develop.
 
 Image navigation is also available directly as the UI command `view.navigate`, with
 `{zoom?: "fit" | "fill" | {"percent": number}, pan?: [x, y]}`. Percentage zoom accepts fractional
-values greater than 0 and at most 800; pan is the normalized image centre, with coordinates from 0 to 1.
-Pinching keeps the image point under the pointer steady and zooms between Fit and 800%; two-finger
+values greater than 0 and at most 1600; pan is the normalized image centre, with coordinates from 0 to 1.
+Pinching keeps the image point under the pointer steady and zooms between Fit and 1600%; two-finger
 scrolling pans in both axes and respects the operating system's scrolling direction and momentum.
 These gestures work in Detail (including editing tools and full-screen preview), Compare and Reference
-views, and only apply over their image areas. Panning stops at the image edges.
+views, and only apply over their image areas. Panning stops at the image edges. Zoom In / Out steps extend to 1600%; click / Z / Space ratios
+remain 1:1 through 8:1. Photo inspection textures (Detail, Before/After, Compare, Reference, the second
+window and hovered looks) use nearest-neighbour magnification to expose pixel blocks; minification,
+thumbnails, preview stand-ins, variants, import previews and slideshow images keep linear filtering.
+The native headless screenshot override uses the same photo filtering as ordinary headless rendering.
 
 The camera's focus point ([focus-points.md](focus-points.md)) is `meta.focus` in `photo.inspect`: `{rect: {x0, y0,
 x1, y1}, mode?, area?, tracking?}`, normalized to the upright photo (absent when the file records none).

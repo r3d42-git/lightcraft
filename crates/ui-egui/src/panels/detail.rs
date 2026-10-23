@@ -10,7 +10,7 @@ use serde_json::json;
 
 use crate::LightcraftApp;
 use crate::render::Slot;
-use crate::state::{BeforeAfter, RightPanel, ToolOverlay, Zoom};
+use crate::state::{BeforeAfter, MAX_ZOOM, RightPanel, ToolOverlay, Zoom};
 use crate::theme::Tokens;
 use crate::widgets::register;
 
@@ -236,7 +236,7 @@ pub(crate) fn navigate_gesture(app: &mut LightcraftApp, ui: &mut egui::Ui, resp:
     let mut zoom = app.ui.zoom;
     let size = if factor != 1.0 {
         // Start at the displayed scale (including Fit/Fill and an interrupted click animation).
-        let pct = (img.width() * ppp * 100.0 / native[0].max(1) as f32 * factor).clamp(fit_pct.min(800.0), 800.0);
+        let pct = (img.width() * ppp * 100.0 / native[0].max(1) as f32 * factor).clamp(fit_pct.min(MAX_ZOOM), MAX_ZOOM);
         zoom = if pct <= fit_pct { Zoom::Fit } else { Zoom::Percent(pct) };
         fit_rect(area, aspect, zoom, native, ppp, (0.5, 0.5)).size()
     } else {
