@@ -1,5 +1,23 @@
 # What's new in LightCraft
 
+## 2026-10-23
+
+### Exports preserve access controls and leave photo sidecars alone
+- Keyword and effect-preset exports protect catalogued originals and existing sidecars (#1944, #2564),
+  including Unix hard-link aliases and macOS Unicode spelling aliases. Paths reserved for a photo's XMP sidecar
+  are refused before creation (#2658), including when the original is offline.
+- Atomic replacement keeps POSIX owner/group and access mode, and native macOS ACLs, before any new content is
+  published. Failure to retain these controls aborts the write. A private, ACL-cleared staging directory prevents
+  inherited grants from exposing replacement bytes. Special-permission files are refused rather than carrying
+  setuid/setgid bits onto generated content. Native Windows/Linux ACL transfer is not provided by the macOS helper.
+
+## 2026-10-22
+
+### Export Effect Presets leaves your originals alone
+- Export Effect Presets… (`mask.exportEffects`) now refuses a path that is a photo's original or its XMP sidecar, as
+  the other exports do, and writes the file atomically (issue #2564). It used to write the presets over whatever file
+  it was given, and a failed write (a full disk) could leave a cut-off file where an earlier export was.
+
 ## 2026-10-21
 
 ### Sharper resampling in HDR and panorama merges

@@ -1318,6 +1318,8 @@ mod tests_denoise;
 #[cfg(test)]
 mod tests_export;
 #[cfg(test)]
+mod tests_export_safety;
+#[cfg(test)]
 mod tests_face_models;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

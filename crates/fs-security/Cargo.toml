@@ -1,0 +1,9 @@
+[package]
+name = "lightcraft-fs-security"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Narrow safe access to macOS ACLs and canonical file-name comparison"
+
+[lints]
+workspace = true

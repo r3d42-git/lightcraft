@@ -31,6 +31,90 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub use lightcraft_fs_security::canonical_names_equal;
+
+/// A staging file and its optional private parent. A private parent prevents pre-opened
+/// descriptors from observing replacement bytes before the old access controls are restored.
+struct TempFile {
+    path: PathBuf,
+    private_dir: Option<PathBuf>,
+    cleanup: File,
+    published: bool,
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if !self.published && self.private_dir.is_some() {
+            // Only an unpublished staging inode is touched. A successful rename removed this
+            // path, so the published destination's ACL and mode are never changed by cleanup.
+            let _ = lightcraft_fs_security::clear_acl(&self.cleanup);
+        }
+        let _ = fs::remove_file(&self.path);
+        if let Some(dir) = &self.private_dir {
+            let _ = fs::remove_dir(dir);
+        }
+    }
+}
+
+struct ReplacementSecurity {
+    permissions: fs::Permissions,
+    #[cfg(unix)]
+    owner: (u32, u32),
+    acl: lightcraft_fs_security::Acl,
+}
+
+impl ReplacementSecurity {
+    fn read(path: &Path) -> io::Result<Option<Self>> {
+        match fs::symlink_metadata(path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+            Ok(_) => {}
+        }
+        Self::check_metadata(&fs::metadata(path)?)?;
+        // Request the same write access as the old in-place writer, without truncation. This
+        // also avoids silently replacing a read-only destination merely because its parent is writable.
+        let file = OpenOptions::new().write(true).open(path)?;
+        let meta = file.metadata()?;
+        Self::check_metadata(&meta)?;
+        Ok(Some(Self {
+            permissions: meta.permissions(),
+            #[cfg(unix)]
+            owner: {
+                use std::os::unix::fs::MetadataExt;
+                (meta.uid(), meta.gid())
+            },
+            acl: lightcraft_fs_security::Acl::read(&file)?,
+        }))
+    }
+
+    fn check_metadata(meta: &fs::Metadata) -> io::Result<()> {
+        if !meta.is_file() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "replacement target is not a regular file"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if meta.permissions().mode() & 0o7000 != 0 {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "refusing to replace a file with special permission bits"));
+            }
+        }
+        Ok(())
+    }
+
+    fn apply(&self, file: &File) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, fchown};
+            let now = file.metadata()?;
+            if (now.uid(), now.gid()) != self.owner {
+                fchown(file, Some(self.owner.0), Some(self.owner.1))?;
+            }
+        }
+        file.set_permissions(self.permissions.clone())?;
+        self.acl.apply(file)
+    }
+}
+
 thread_local! {
     static FAIL_AFTER: Cell<Option<u64>> = const { Cell::new(None) };
     static SYNCS: Cell<u64> = const { Cell::new(0) };
@@ -108,18 +192,62 @@ pub fn sync_dir(dir: &Path) {
 }
 
 /// A new, empty temp file next to `path` (hidden, unique in this process and folder).
-fn create_temp(path: &Path) -> io::Result<(PathBuf, File)> {
+fn create_temp(path: &Path, private: bool) -> io::Result<(TempFile, File)> {
     static N: AtomicU64 = AtomicU64::new(0);
     if path.file_name().is_none() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{} is not a file path", path.display())));
     }
     let dir = parent_of(path);
     for _ in 0..1000 {
-        let tmp = dir.join(format!(".lightcraft-{}-{}.tmp", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let staging = dir.join(format!(".lightcraft-{}-{}.tmp", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let private_dir = if private {
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            match builder.create(&staging) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+            // macOS mode bits alone do not suppress inherited ACL grants. Clear them before
+            // creating any child file. A descriptor opened before this step grants no later
+            // directory search permission to other users.
+            let result = File::open(&staging).and_then(|d| lightcraft_fs_security::clear_acl(&d));
+            if let Err(e) = result {
+                let _ = fs::remove_dir(&staging);
+                return Err(e);
+            }
+            Some(staging.clone())
+        } else {
+            None
+        };
+        let tmp = if private { staging.join("contents") } else { staging };
         match OpenOptions::new().write(true).create_new(true).open(&tmp) {
-            Ok(f) => return Ok((tmp, f)),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
+            Ok(f) => match f.try_clone() {
+                Ok(cleanup) => return Ok((TempFile { path: tmp, private_dir, cleanup, published: false }, f)),
+                Err(e) => {
+                    let _ = fs::remove_file(&tmp);
+                    if let Some(d) = &private_dir {
+                        let _ = fs::remove_dir(d);
+                    }
+                    return Err(e);
+                }
+            },
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                if let Some(d) = &private_dir {
+                    let _ = fs::remove_dir(d);
+                }
+                continue;
+            }
+            Err(e) => {
+                if let Some(d) = &private_dir {
+                    let _ = fs::remove_dir(d);
+                }
+                return Err(e);
+            }
         }
     }
     Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("no free temp file name in {}", dir.display())))
@@ -127,8 +255,12 @@ fn create_temp(path: &Path) -> io::Result<(PathBuf, File)> {
 
 /// Write a temp file next to `path` with what `fill` writes, synced to disk when `sync`. On
 /// failure the temp file is removed. Returns its path and length.
-fn write_temp(path: &Path, sync: bool, fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<(PathBuf, u64)> {
-    let (tmp, file) = create_temp(path)?;
+fn write_temp(path: &Path, sync: bool, replacing: bool, fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<(TempFile, u64)> {
+    let security = if replacing { ReplacementSecurity::read(path)? } else { None };
+    let (tmp, file) = create_temp(path, security.is_some())?;
+    if let Some(security) = &security {
+        security.apply(&file)?;
+    }
     let r = (|| {
         let limit = FAIL_AFTER.with(Cell::get);
         let mut w = Limited { inner: io::BufWriter::with_capacity(1 << 20, file), n: 0, limit };
@@ -143,10 +275,7 @@ fn write_temp(path: &Path, sync: bool, fill: &mut dyn FnMut(&mut dyn Write) -> i
     })();
     match r {
         Ok(n) => Ok((tmp, n)),
-        Err(e) => {
-            let _ = fs::remove_file(&tmp);
-            Err(e)
-        }
+        Err(e) => Err(e),
     }
 }
 
@@ -171,11 +300,9 @@ pub fn write_atomic_nosync(path: &Path, data: &[u8]) -> io::Result<()> {
 
 /// Temp file (synced when `sync`) renamed over `path`, then the folder synced when `sync`.
 fn replace_with(path: &Path, sync: bool, fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<u64> {
-    let (tmp, n) = write_temp(path, sync, fill)?;
-    if let Err(e) = fs::rename(&tmp, path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
+    let (mut tmp, n) = write_temp(path, sync, true, fill)?;
+    fs::rename(&tmp.path, path)?;
+    tmp.published = true;
     if sync {
         sync_dir(parent_of(path));
     }
@@ -196,17 +323,18 @@ pub fn write_new_unique(candidates: &mut dyn Iterator<Item = PathBuf>, data: &[u
     let Some(first) = candidates.peek().cloned() else {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "no file name to write"));
     };
-    let (tmp, _) = write_temp(&first, true, &mut |w| w.write_all(data))?;
+    let (mut tmp, _) = write_temp(&first, true, false, &mut |w| w.write_all(data))?;
     let r = (|| {
         // Kept (issue #134 point 4): these files replace raws (Convert / Copy as DNG) or become
         // library photos (merges). On a local disk the read usually comes from the cache, but on a
         // network volume it can go back to the server, and next to encoding a DNG it costs little.
-        if !same_content(&tmp, data)? {
+        if !same_content(&tmp.path, data)? {
             return Err(io::Error::other("the written file reads back different (failing drive or connection?)"));
         }
         for path in candidates.by_ref().take(100_000) {
-            match publish_new(&tmp, &path) {
+            match publish_new(&tmp.path, &path) {
                 Ok(()) => {
+                    tmp.published = true;
                     sync_dir(parent_of(&path));
                     return Ok(path);
                 }
@@ -217,7 +345,7 @@ pub fn write_new_unique(candidates: &mut dyn Iterator<Item = PathBuf>, data: &[u
         Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{}: no free file name", first.display())))
     })();
     // after a hard link the temp name is a second name of the new file; after a rename it's gone
-    let _ = fs::remove_file(&tmp);
+    drop(tmp);
     r
 }
 
@@ -407,6 +535,132 @@ mod tests {
         assert!(same_file(&p, &d.join("sub/../x.jpg")));
         assert!(!same_file(&p, &d.join("y.jpg")));
         assert!(!same_file(&p, &d.join("missing.jpg")));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_is_private_and_has_original_ownership_before_fill() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = temp("private-fill");
+        let p = d.join("private.txt");
+        fs::write(&p, b"old private bytes").unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+        let before = fs::metadata(&p).unwrap();
+        write_atomic_with(&p, &mut |w| {
+            let staging = fs::read_dir(&d).unwrap().flatten().find(|e| e.file_type().unwrap().is_dir()).unwrap().path();
+            assert_eq!(fs::metadata(&staging).unwrap().permissions().mode() & 0o777, 0o700);
+            let file = fs::metadata(staging.join("contents")).unwrap();
+            assert_eq!(file.permissions().mode() & 0o777, 0o600);
+            assert_eq!((file.uid(), file.gid()), (before.uid(), before.gid()));
+            assert_eq!(fs::read(&p).unwrap(), b"old private bytes");
+            w.write_all(b"new private bytes")
+        })
+        .unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"new private bytes");
+        assert_eq!(names(&d), vec!["private.txt"]);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn special_permission_bits_fail_before_fill_without_touching_the_destination() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = temp("special-mode");
+        let p = d.join("special.txt");
+        fs::write(&p, b"keep special").unwrap();
+        // Sticky is retained on ordinary user-owned files even where the OS strips set-id.
+        let mode = 0o1600;
+        fs::set_permissions(&p, fs::Permissions::from_mode(mode)).unwrap();
+        assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o7777, mode);
+        let mut filled = false;
+        assert_eq!(
+            write_atomic_with(&p, &mut |_| {
+                filled = true;
+                Ok(())
+            })
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(!filled);
+        assert_eq!(fs::read(&p).unwrap(), b"keep special");
+        assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o7777, mode);
+        assert_eq!(names(&d), vec!["special.txt"]);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_directory_is_rejected_before_fill_without_staging_artifacts() {
+        let d = temp("directory-target");
+        let p = d.join("directory");
+        fs::create_dir(&p).unwrap();
+        let mut filled = false;
+        assert_eq!(
+            write_atomic_with(&p, &mut |_| {
+                filled = true;
+                Ok(())
+            })
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(!filled);
+        assert!(p.is_dir());
+        assert_eq!(names(&d), vec!["directory"]);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_replacement_of_an_ordinary_symlink_keeps_its_referent_unchanged() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let d = temp("ordinary-link");
+        let source = d.join("source.txt");
+        let alias = d.join("alias.txt");
+        fs::write(&source, b"keep referent").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&source, &alias).unwrap();
+        write_atomic(&alias, b"export").unwrap();
+        assert!(!fs::symlink_metadata(&alias).unwrap().is_symlink());
+        assert_eq!(fs::read(&alias).unwrap(), b"export");
+        assert_eq!(fs::read(&source).unwrap(), b"keep referent");
+        assert_eq!(fs::metadata(&alias).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn staging_drops_inherited_grants_but_new_files_retain_them() {
+        fn acl(path: &Path) -> Vec<String> {
+            let out = std::process::Command::new("/bin/ls").arg("-lde").arg(path).output().unwrap();
+            assert!(out.status.success());
+            String::from_utf8(out.stdout).unwrap().lines().skip(1).map(str::trim).map(str::to_owned).collect()
+        }
+        let d = temp("staging-acl");
+        let p = d.join("existing.txt");
+        fs::write(&p, b"old").unwrap();
+        let out = std::process::Command::new("/bin/chmod")
+            .args(["+a", "group:everyone allow read,write,file_inherit,directory_inherit"])
+            .arg(&d)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        write_atomic_with(&p, &mut |w| {
+            let staging = fs::read_dir(&d).unwrap().flatten().find(|e| e.file_type().unwrap().is_dir()).unwrap().path();
+            assert!(acl(&staging).is_empty(), "staging directory must not inherit access grants");
+            assert!(acl(&staging.join("contents")).is_empty());
+            w.write_all(b"replacement")
+        })
+        .unwrap();
+        assert!(acl(&p).is_empty());
+        let new = d.join("new.txt");
+        write_new(&new, b"new").unwrap();
+        assert!(
+            acl(&new).iter().any(|line| line.contains("inherited") && line.contains("allow")),
+            "publishing and cleanup must keep a new file's inherited ACL"
+        );
+        assert_eq!(names(&d), vec!["existing.txt", "new.txt"]);
         let _ = fs::remove_dir_all(&d);
     }
 }

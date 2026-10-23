@@ -3118,6 +3118,7 @@ dependencies = [
  "chrono",
  "crc32fast",
  "lightcraft-develop",
+ "lightcraft-fs-security",
  "lightcraft-geom",
  "lightcraft-meta",
  "lightcraft-raw",
@@ -3299,6 +3300,10 @@ dependencies = [
  "sha2",
  "webpki-roots",
 ]
+
+[[package]]
+name = "lightcraft-fs-security"
+version = "0.13.0"
 
 [[package]]
 name = "lightcraft-geocode"

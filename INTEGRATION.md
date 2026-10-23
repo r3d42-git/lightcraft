@@ -5,6 +5,38 @@ This fork starts at the unchanged LightCraft `v0.13.0` release,
 `r3d/upstream-base.json`. This is a local development implementation, not a released
 replacement for the official application.
 
+## Export safety candidate
+
+Prepared on top of the installed fork's `15af97c584315f145532b192b236fb2925805819`,
+including its camera-preview geometry correction. Sources are upstream
+[#2015](https://github.com/storytold/lightcraft/pull/2015) at `3734c22fae0396da04cde4ff15e2b8f27db91344`,
+[#2634](https://github.com/storytold/lightcraft/pull/2634) at `07d2556ead33726b3d32ec504bec4c5e805ead43`,
+and [#2658](https://github.com/storytold/lightcraft/pull/2658) at `1aea62dde04c96912b690f6ed481e166870f81b6`.
+These are a combined local candidate, not a new upstream release.
+
+Keyword and mask-effect exports validate their final destination against catalog
+originals and both XMP sidecar spellings, including absent sidecars, directory
+aliases and Unix hard links. macOS canonical Unicode name equivalence also applies
+to reserved sidecar names. An unrelated folder may use the same name. Keyword text
+output and missing-parent errors remain; mask-effect exports still add the default
+extension and create nested output folders.
+
+The shared atomic writer retains existing regular files' POSIX mode, owner/group,
+and native macOS ACLs. It checks existing write access without truncation, stages
+replacement bytes inside a private directory cleared of inherited ACLs, and applies
+the old access controls before filling the new file. Failure leaves the previous
+destination and removes staging artifacts. Files with special mode bits are
+refused, rather than transferring privilege bits onto generated content. Ordinary
+symlink destinations are replaced atomically; their referents remain unchanged.
+New-file permission/inheritance defaults are retained.
+
+`crates/fs-security` is a dependency-free L0 helper around documented macOS system
+APIs; its narrow unsafe boundary is listed in `AGENTS.md`. No registry dependencies
+are introduced or upgraded. Native Windows/Linux ACL transfer is not supplied by
+this macOS helper. Validation must include the native macOS ACL tests, engine/UI
+export paths, failed-write cleanup, the complete CI gates, and an isolated native
+app run. No application installation, push, PR, tag or release is part of this work.
+
 ## v0.13.0 integration
 
 The seven committed local changes from the tested v0.11.0 fork were replayed in a
