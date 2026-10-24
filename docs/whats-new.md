@@ -1,5 +1,13 @@
 # What's new in LightCraft
 
+## 2026-10-24
+
+### Quitting on macOS removes the library owner note
+- Quitting LightCraft on macOS no longer leaves `catalog.lock.owner` in the library folder. The note,
+  which names the program that has the library open, stayed behind after Quit and the window's close
+  button, pointing at a process that no longer existed. The app now removes it at final process exit,
+  after saving the library and waiting for background work.
+
 ## 2026-10-23
 
 ### Exports preserve access controls and leave photo sidecars alone
