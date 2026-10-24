@@ -1,5 +1,11 @@
 # What's new in LightCraft
 
+## 2026-10-24
+
+### The histogram stays in view
+- The histogram stays at the top of the Edit panel while its sliders scroll under it (issue #2679, PR #2741).
+  Its clipping buttons and EXIF strip stay visible too.
+
 ## 2026-10-23
 
 ### Exports preserve access controls and leave photo sidecars alone
