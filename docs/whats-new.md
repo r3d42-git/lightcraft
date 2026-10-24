@@ -2,6 +2,10 @@
 
 ## 2026-10-24
 
+### Less directional grain in noisy raws
+- AHD blends horizontal and vertical interpolation when neither has a clear homogeneity advantage (PR #2698).
+  This reduces maze-like noise in flat areas; demosaicing before white balance remains unchanged.
+
 ### The histogram stays in view
 - The histogram stays at the top of the Edit panel while its sliders scroll under it (issue #2679, PR #2741).
   Its clipping buttons and EXIF strip stay visible too.
