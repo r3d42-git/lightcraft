@@ -1,6 +1,6 @@
 # Lightroom parity checklist
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (LR-VIEW-HISTOGRAM: the histogram stays above scrolling Edit controls, #2741; camera-colour provenance diagnostic #1332, no calibration/count change; LR-MERGE-HDR / LR-MERGE-PANO: Lanczos-3 warps; LR-IMP-LOCAL: browsing from the sidebar records the folder; LR-VIEW-ZOOM: only a full-size drag within 20 ms clears a slow-drag verdict; LR-IMP-ADD-DIALOG: hierarchical import album destination reconciled with main, #2362; KEY-SLIDER-NUDGE: vertical wheel nudges need a click or drag in the row; leaving it disarms them; LR-EDIT-OPTICS-PROFILE: Fujifilm nine-knot lens tables read at the plain radius; LR-VIEW-ZOOM: only a full-size drag within 20 ms clears a slow-drag verdict; LRC-LIB-LIBFOLDERS, LR-BEHAV-BG-TASKS: Synchronize Folder's scan shows its folder listing and stops it on ✕; LRC-LIB-LIBFOLDERS: Synchronize Folder says a folder is up to date; LR-LIB-STACK: filmstrip stack badge click; LRC-LIB-REFVIEW / CATALOG-SWITCH: Escape preserves edits; catalog-local pins; deleted and malformed references refused; LRC-LIB-COMPARE: the Info panel labels the active photo while culling, #2398; KEYC-RATING: `\` shows / hides the Filter Bar in the grids; LR-VIEW-PHOTOGRID: the grid reads only the photos an import batch or an edit touched, not the whole list; earlier: LRC-PRINT-PAGE: Print Page Options; LR-META-XMP: fewer false unimported-XMP warnings) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** patch (GPU hue defined at zero chroma; render cache 72, camera look 13; statuses, counts and ranked gaps unchanged; earlier changes in revision history) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 The measured, row-by-row checklist: one row per Lightroom feature, menu item and shortcut, what we
 have and what is missing. It answers *does the feature exist?* (feature breadth). Whether it is good
@@ -798,6 +798,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | patch | LR-BEHAV-GPU: define hue at zero chroma in colour tools (#2844); render cache 72, camera look 13; statuses and counts unchanged |
 | 2026-10-24 | patch | LR-VIEW-HISTOGRAM: fixed histogram above scrolling Edit controls (#2741); status unchanged |
 | 2026-10-23 | patch | LR-PROF-CAMERACOLOR: adapt #1332 diagnostic provenance to current DNG/dark-tone/geometry paths; English/German selected-RAW readout; status and counts unchanged |
 | 2026-10-21 | patch | LR-IMP-ADD-DIALOG: reconcile #2362 with current main; deleted-album guard and hierarchical picker retained; counts unchanged |

@@ -1,5 +1,12 @@
 # What's new in LightCraft
 
+## 2026-10-25
+
+### Black GPU pixels keep a defined hue
+- Colour tools use hue zero for zero-chroma pixels instead of WGSL's undefined `atan2(0, 0)`
+  (PR #2844). On affected drivers this lets a positive vignette lift black pixels as the CPU does.
+  Render cache 72 invalidates older thumbnails; camera-look calibration stays at version 13.
+
 ## 2026-10-24
 
 ### Less directional grain in noisy raws
