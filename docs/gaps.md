@@ -1,6 +1,6 @@
 # Gaps: where LightCraft falls short of Lightroom
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-23 · **Change:** minor (camera-colour provenance diagnostic #1332, no calibration/count change; gap 28: F8 shows / hides the right panel; import review album hierarchy, #2362; gap 20: Minolta MRW decodes; gap 10: 551 models verified; gap 15: Print Page Options — page numbers, page info, crop marks; gap 15: Print Page Options — page numbers, page info, crop marks; gap 28: `\` shows / hides the Filter Bar in the grids; gap 21: Indonesian interface shipped, every message but What's New; gap 27: the Windows x64 installer verified on Windows 11; the Settings → Apps uninstall confirmation remains)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-25 · **Change:** minor (camera-colour provenance diagnostic #1332, no calibration/count change; gap 28: F8 shows / hides the right panel; import review album hierarchy, #2362; gap 20: Minolta MRW decodes; gap 10: 551 models verified; gap 15: Print Page Options — page numbers, page info, crop marks; gap 15: Print Page Options — page numbers, page info, crop marks; gap 28: `\` shows / hides the Filter Bar in the grids; gap 21: Indonesian interface shipped, every message but What's New; gap 27: the Windows x64 installer verified on Windows 11; the Settings → Apps uninstall confirmation remains)
 
 Every known shortfall, one entry each, ranked by user impact (how many Lightroom users hit it, and
 how hard it blocks them), then by effort. **Agents pick work from the top** (the first entry nobody is
@@ -79,6 +79,7 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | patch | LR-BEHAV-GPU: request eframe LOW_LATENCY for wgpu windows (#2919); no native latency claim; statuses and counts unchanged |
 | 2026-10-23 | patch | LR-PROF-CAMERACOLOR: adapt #1332 diagnostic provenance to current DNG/dark-tone/geometry paths; English/German selected-RAW readout; status and counts unchanged |
 | 2026-10-21 | minor | Gap 28 shrinks: F8 shows / hides the right panel (`view.rightPanel`); rating `[` `]`, flag cycling and F1 help were already bound, so the entry lists only filter-bar keys, Tab / ⇧Tab and F5; 2–4 h (was 4–8) |
 | 2026-10-20 | minor | #2362: import destination albums use the shared hierarchy/search picker instead of a flat name list; existing import workflows retained; ranked gaps/readiness counts unchanged |

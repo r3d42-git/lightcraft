@@ -108,6 +108,14 @@ renderer last. `LIGHTCRAFT_GPU_BACKEND=dx12 | vulkan | gl | glow` (or `WGPU_BACK
 first because a broken Vulkan driver can crash the process uncatchably (#136). Compute keeps its own
 device and falls back to the CPU as before.
 
+**The wgpu window requests one frame in flight.** `window_gpu::base_options` starts from
+`NativeOptions::default().wgpu_options`, preserving eframe's `SurfaceConfig::LOW_LATENCY`
+instead of the bare `WgpuConfiguration::default()` high-throughput surface. The request is
+vsync with one queued frame; wgpu can clamp it and the glow renderer ignores these options.
+An upstream Apple M2 Max measurement at 120 Hz found about 18 ms becoming 10 ms between
+presentation and WindowServer compositing. Input-to-screen latency, 60 Hz behaviour and this
+fork's native window have not been measured. Live macOS resizing still uses three drawables.
+
 **Troubleshooting a crash at startup (Windows).** Start LightCraft from a `.cmd` file or a terminal
 with `set LIGHTCRAFT_GPU_BACKEND=dx12` (the default since #136), or `=off` to keep the GPU out of
 rendering; `set VK_LOADER_DRIVERS_DISABLE=*igvk64*` (Vulkan loader) hides a specific Vulkan driver
