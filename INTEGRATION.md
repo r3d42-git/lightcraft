@@ -1,9 +1,39 @@
 # R3D optics integration
 
-This fork starts at the unchanged LightCraft `v0.13.0` release,
-`23e181283cb448205d865e8cd288b56afe987986`. The machine-readable base is
+This fork integrates the unchanged LightCraft `v0.14.0` release,
+`03c88c166c054c009db2a47187d59991f6232b85`, into its tested R3D feature line. The machine-readable base is
 `r3d/upstream-base.json`. This is a local development implementation, not a released
 replacement for the official application.
+
+## v0.14.0 integration
+
+Upstream v0.14.0 is merged into the existing R3D history. The isolated native
+identity, configuration/library environment variables, read-only optional optics
+helper, conservative resolver and optional crop API remain. Existing geometry,
+accepted RAW colour provenance, 1600% pixel inspection, native macOS ACL export
+preservation and original/sidecar protection, owner-note exit cleanup, AHD blend,
+German/layout corrections, low-latency surface request and zero-chroma GPU fix
+remain in place.
+
+Upstream owns keyword export (#2015) and the complete German terminology update
+(#2800); their overlapping fork hunks are shared rather than duplicated. The
+fixed histogram remains above the Edit scroll area and now uses upstream's tonal
+drag controls and shared clipping-button hit rectangles. Both fixed-layout and
+new drag regression modules remain registered. GPU integration tests move under
+`tests/it` with the upstream declaration module, retaining the zero-chroma test.
+The recent-library launch chooser uses `LIGHTCRAFT_R3D_LIBRARY` and the R3D default
+library; it does not inherit the official application's library environment.
+
+`RENDER_CACHE_VERSION = 73` invalidates both upstream cache 70 and older R3D cache
+72 for the combined pipeline. `LOOK_VERSION = 13` stays above upstream 12: the
+upstream change in camera fitting is a test correction only, so the existing R3D
+geometry-gated fit semantics are unchanged. Local workspace crates in Cargo.lock
+use 0.14.0. Historical version references below describe their original states.
+
+The checkout-specific development defaults are now `.tools/target-update-0.14.0`
+and `test-runtime/update-0.14.0/{config,library,input}`, with control port 18473.
+Validation and native visual acceptance are recorded separately; source integration
+alone is not evidence of a successful build, launch or image-quality check.
 
 ## Camera colour provenance candidate
 
@@ -238,7 +268,7 @@ cargo build --locked -p lightcraft -p lightcraft-cli
 ```
 
 If the pinned archives are absent, add `--download` to the setup command.
-Only copies placed in `test-runtime/update-0.13.0/input` are passed to the test app.
+Only copies placed in `test-runtime/update-0.14.0/input` are passed to the test app.
 The development launcher uses control port 18473. The official application is
 neither stopped nor launched by these commands.
 

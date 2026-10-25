@@ -20,8 +20,8 @@ unverändert an das Modell übergeben; die Beispiele verwenden dessen englische 
 
 Die Begriffe folgen der Upstream-Durchsicht in PR #2800 (2026-10-24, mit einem Agenten
 erstellt und laut PR von einem Muttersprachler stichprobenartig geprüft; Versionshinweise
-ausgenommen). Der Fork übernimmt 107 geänderte vorhandene Werte; ein hier noch nicht vorhandener
-Schlüssel bleibt unberücksichtigt. Neue Texte verwenden ebenfalls diese Begriffe:
+ausgenommen). v0.14.0 enthält diese Durchsicht vollständig. Fork-eigene Ergänzungen und
+die native Layoutabnahme bleiben ungeprüft. Neue Texte verwenden ebenfalls diese Begriffe:
 
 | Englisch | Deutsch | Anmerkung |
 |---|---|---|
@@ -56,8 +56,8 @@ cargo test -p lightcraft-ui-egui i18n::tests
 LIGHTCRAFT_LANGUAGE=de lightcraft-cli snapshot --demo -o deutsch.png --size 1600x1000
 ```
 
-Die Tests prüfen Katalogabdeckung, Platzhalter, Sprachwechsel per Menü und Steuerkanal,
-Speicherung, Datumsformate, unveränderte Benutzernamen und gerenderte Texte sowie Umlaute
-und ß. Ein weiterer Render-Test prüft die Schaltflächenbreiten; der Importtest prüft
+Die Tests prüfen Platzhalter, Sprachwechsel per Menü und Steuerkanal, Speicherung,
+Datumsformate, unveränderte Benutzernamen und gerenderte Texte sowie Umlaute und ß. Fehlende
+Übersetzungen erscheinen auf Englisch; `i18n::tests::translation_gaps_report` listet sie auf. Ein weiterer Render-Test prüft die Schaltflächenbreiten; der Importtest prüft
 auch den Sprachwechsel nach der Hintergrundprüfung der Quellen. Akzeptierte Sprachangaben umfassen `de`, `de-DE`, `de_AT.UTF-8` und `de-CH`;
 gespeichert wird stets `de`. Weitere Hinweise stehen in [localization.md](localization.md).

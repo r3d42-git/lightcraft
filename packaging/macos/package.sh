@@ -99,9 +99,9 @@ done
 sign() {
   # Hardened runtime + secure timestamp for a real identity; ad-hoc can't be timestamped.
   local ts=(--timestamp)
-  [ "$IDENTITY" = "-" ] && ts=(--timestamp=none)
+  [[ "$IDENTITY" = "-" ]] && ts=(--timestamp=none)
   local kc=()
-  [ -n "${MACOS_KEYCHAIN:-}" ] && kc=(--keychain "$MACOS_KEYCHAIN")
+  [[ -n "${MACOS_KEYCHAIN:-}" ]] && kc=(--keychain "$MACOS_KEYCHAIN")
   codesign --force --sign "$IDENTITY" ${kc[@]+"${kc[@]}"} "${ts[@]}" "$@"
 }
 
@@ -196,16 +196,16 @@ rm -f "$DMG"
 # create -srcfolder preserves the signed app and the existing .DS_Store layout.
 # hdiutil may transiently return "Resource busy" on CI; retry boundedly.
 hdiutil_retry() {
-  local attempt
+  local verb="$1" attempt
   for attempt in 1 2 3 4 5; do
     if hdiutil "$@"; then
       return 0
     fi
-    if [ "$attempt" = 5 ]; then
-      echo "error: hdiutil $1 failed after five attempts" >&2
+    if [[ "$attempt" = 5 ]]; then
+      echo "error: hdiutil $verb failed after five attempts" >&2
       return 1
     fi
-    warn "hdiutil $1 attempt $attempt failed; retrying"
+    warn "hdiutil $verb attempt $attempt failed; retrying"
     sleep $((attempt * 10))
   done
 }
@@ -236,7 +236,7 @@ verify_dmg_app() {
   if [ "$rc" = 0 ] && [ "$NOTARIZE" = 1 ]; then
     spctl --assess --type execute -vvv "$copy/LightCraft R3D.app" || rc=1
   fi
-  if [ "$rc" != 0 ]; then
+  if [[ "$rc" != 0 ]]; then
     echo "error: published-image app verification failed; reject $DMG" >&2
     xattr -lr "$mount/LightCraft R3D.app" >&2 || true
   fi
@@ -248,7 +248,7 @@ verify_dmg_app() {
   return "$rc"
 }
 verify_dmg_app
-if [ "$NOTARIZE" = 1 ]; then
+if [[ "$NOTARIZE" = 1 ]]; then
   notarize "$DMG"
   xcrun stapler staple "$DMG"
   xcrun stapler validate "$DMG"
@@ -269,7 +269,7 @@ codesign --verify --strict --verbose=2 "$CLI_DIR/lightcraft-cli"
 rm -f "$CLI_ZIP"
 ditto -c -k --keepParent "$CLI_DIR" "$CLI_ZIP"
 # A bare Mach-O can't carry a stapled ticket; Gatekeeper looks the notarization up online.
-if [ "$NOTARIZE" = 1 ]; then notarize "$CLI_ZIP"; fi
+if [[ "$NOTARIZE" = 1 ]]; then notarize "$CLI_ZIP"; fi
 
 "$WORK/bin/lightcraft-cli" --version
 echo "==> done"

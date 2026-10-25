@@ -62,7 +62,8 @@ impl SettingsHashes {
 }
 
 /// Bump when the pipeline's output changes, to invalidate cached thumbnails.
-pub const RENDER_CACHE_VERSION: u64 = 72;
+// 73: v0.14.0 integrated output; newer than upstream 70 and the previous R3D cache 72.
+pub const RENDER_CACHE_VERSION: u64 = 73;
 
 /// Thumbnails render at one of these long edges (so window/cell size changes reuse the cache).
 pub const THUMB_SIZES: [usize; 4] = [128, 256, 384, 512];
