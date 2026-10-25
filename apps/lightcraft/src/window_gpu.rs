@@ -135,8 +135,11 @@ pub fn choose(files: &Files) -> Chosen {
 }
 
 /// eframe's defaults with the app's backends and DX12 shader compiler (issues #136, #471).
+/// The wgpu surface requests LOW_LATENCY (one queued frame), as eframe does by default.
+/// The bare WgpuConfiguration default requests HIGH_THROUGHPUT (two). This can reduce
+/// present-to-composite latency; it does not apply to the glow fallback or measure input latency.
 pub fn base_options() -> WgpuConfiguration {
-    let mut c = WgpuConfiguration::default();
+    let mut c = eframe::NativeOptions::default().wgpu_options;
     if let WgpuSetup::CreateNew(n) = &mut c.wgpu_setup {
         n.instance_descriptor.backends = backend::window_backends();
         n.instance_descriptor.backend_options = backend::backend_options();
@@ -267,6 +270,20 @@ mod tests {
         none.arm(dx);
         assert!(!none.armed() && !relaunch_after_failure(&none));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The wgpu window requests eframe's low-latency surface; no window or device is created.
+    #[test]
+    fn window_surface_keeps_one_frame_in_flight() {
+        let surface = base_options().surface;
+        assert_eq!(surface, eframe::NativeOptions::default().wgpu_options.surface);
+        assert_eq!(surface, eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY);
+        assert_eq!(surface.desired_maximum_frame_latency, Some(1));
+        assert_eq!(surface.present_mode, wgpu::PresentMode::AutoVsync);
+        assert_ne!(surface, WgpuConfiguration::default().surface, "egui-wgpu's own default is the high-throughput one");
+        if !cfg!(windows) {
+            assert_eq!(choose(&Files::new(None)).wgpu_options.surface, surface);
+        }
     }
 
     /// The crash report: a pipeline that fails validation must come back as an error, never as
