@@ -1,5 +1,11 @@
 # What's new in LightCraft
 
+## 2026-10-25
+
+### German terms and narrow Edit panels
+- German terminology and punctuation are more consistent (107 existing catalog values from upstream #2800).
+- Edit header buttons wrap when translations need more room; White Balance and Color Mixer rows stay within narrow panels (upstream #2883, including #2804).
+
 ## 2026-10-24
 
 ### Less directional grain in noisy raws
