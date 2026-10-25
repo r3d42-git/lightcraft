@@ -187,6 +187,17 @@ fn scale_patch(base: &Value, patch: &Value, t: f64) -> Value {
 /// through the control specs, as every merge does ([`DevelopSettings::merged`]).
 pub fn apply_partial(s: &DevelopSettings, partial: &Value, amount: f64) -> DevelopSettings {
     let patch = if (amount - 1.0).abs() < 1e-9 { Cow::Borrowed(partial) } else { Cow::Owned(scale_patch(&s.to_json(), partial, amount)) };
+    // Auto application metadata belongs to its source photo. Even an imported preset containing
+    // a full settings object may transfer only the edits, never an "Auto applied here" marker.
+    let patch = if patch.get("auto_tone").is_some() {
+        let mut filtered = patch.into_owned();
+        if let Some(object) = filtered.as_object_mut() {
+            object.remove("auto_tone");
+        }
+        Cow::Owned(filtered)
+    } else {
+        patch
+    };
     // (a white balance without a scale keeps its old meaning: `DevelopSettings::merged`)
     s.merged(&patch).unwrap_or_else(|_| s.clone())
 }

@@ -106,7 +106,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     ui.painter().text(pos2(hr.left() + 24.0, hr.bottom() - 10.0), Align2::LEFT_CENTER, crate::i18n::tr("Edit"), t.semibold(15.0), t.text);
     egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 8, bottom: 14 }).show(ui, |ui| {
         let tip = reset_tip(&app.ui.settings.keymap, ui.ctx().os() == egui::os::OperatingSystem::Mac);
-        let clicks = header_buttons(ui, crate::is_bw(&d), d.hdr.enabled, &tip);
+        let clicks = header_buttons(ui, d.auto_tone_active(), crate::is_bw(&d), d.hdr.enabled, &tip);
         if clicks.auto {
             let _ = app.run("develop.auto", json!({}));
             app.toast(ui.ctx(), crate::i18n::tr("Auto settings applied"));
@@ -2091,11 +2091,11 @@ struct HeaderClicks {
 /// The Edit header's buttons: Auto, B&W and HDR on the left, Reset on the right. A button that doesn't fit on the
 /// row starts the next one (long translations in a narrow panel, such as German *Zurücksetzen* beside HDR), so none
 /// covers another; Reset stays right-aligned on whichever row it lands.
-fn header_buttons(ui: &mut egui::Ui, bw: bool, hdr: bool, reset_tip: &str) -> HeaderClicks {
+fn header_buttons(ui: &mut egui::Ui, auto: bool, bw: bool, hdr: bool, reset_tip: &str) -> HeaderClicks {
     const GAP: f32 = 8.0;
     let mut clicks = HeaderClicks::default();
     let avail = ui.available_width();
-    let left = [("auto", "Auto", false), ("bw", "B&W", bw), ("hdr", "HDR", hdr)];
+    let left = [("auto", "Auto", auto), ("bw", "B&W", bw), ("hdr", "HDR", hdr)];
     // rows of `left` indices, filled greedily; `used` is the width taken on the current (last) row
     let mut rows: Vec<Vec<usize>> = Vec::new();
     let mut row: Vec<usize> = Vec::new();
@@ -2125,7 +2125,7 @@ fn header_buttons(ui: &mut egui::Ui, bw: bool, hdr: bool, reset_tip: &str) -> He
             ui.spacing_mut().item_spacing.x = GAP;
             for &i in row {
                 let (id, label, active) = left[i];
-                let mut resp = text_button(ui, id, crate::i18n::tr(label), active);
+                let mut resp = crate::widgets::filled_text_button(ui, id, crate::i18n::tr(label), active);
                 if id == "hdr" {
                     // HDR editing, next to B&W as Lightroom has it
                     resp = resp.on_hover_text(crate::i18n::tr("Edit in HDR: highlights above SDR white, for HDR exports and displays"));
@@ -2205,7 +2205,7 @@ mod tests {
                     let raw = crate::headless::HeadlessView::raw_input(vec2(width, 200.0), 1.0, frame as f64 / 60.0, vec![]);
                     let mut out = ctx.run_ui(raw, |ui| {
                         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-                            header_buttons(ui, false, false, "");
+                            header_buttons(ui, false, false, false, "");
                         });
                     });
                     out.textures_delta.clear();
@@ -2230,6 +2230,49 @@ mod tests {
         assert!(wrapped.contains(&(Locale::De, 222.0)), "German wraps in the default panel: {wrapped:?}");
         // English keeps its single row from the default width up
         assert!(!wrapped.iter().any(|&(l, w)| l == Locale::En && w >= 222.0), "{wrapped:?}");
+    }
+
+    #[test]
+    fn edit_header_selected_buttons_have_solid_fills() {
+        let language = crate::i18n::language();
+        crate::i18n::set_language(crate::i18n::Locale::De);
+        let mut view = crate::headless::HeadlessView::new();
+        for (name, active) in
+            [("inactive", [false, false, false]), ("auto", [true, false, false]), ("bw-hdr", [false, true, true]), ("all-active", [true, true, true])]
+        {
+            let mut rects = Vec::new();
+            for frame in 0..2 {
+                let raw = crate::headless::HeadlessView::raw_input(vec2(400.0, 64.0), 1.0, frame as f64 / 60.0, vec![]);
+                view.run(raw, |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        header_buttons(ui, active[0], active[1], active[2], "");
+                    });
+                });
+                rects = crate::widgets::take_registry(&view.ctx);
+            }
+            let image = view.paint(&std::collections::HashMap::new());
+            let tokens = crate::theme::Tokens::get(&view.ctx);
+            for (id, selected) in ["auto", "bw", "hdr"].into_iter().zip(active) {
+                let rect = rects.iter().find(|(key, _)| key == &format!("button:{id}")).unwrap().1;
+                // Sample a fill pixel away from the stroke, rounded corner and label.
+                let p = rect.left_top() + vec2(5.0, 5.0);
+                let fill = image.pixels[p.y as usize * image.size[0] + p.x as usize];
+                assert_eq!(fill, if selected { tokens.text } else { tokens.button }, "{name}: {id}");
+            }
+            if let Ok(path) = std::env::var("LIGHTCRAFT_AUTO_HEADER_SHOTS") {
+                let path = std::path::Path::new(&path);
+                std::fs::create_dir_all(path).unwrap();
+                let rgba = lightcraft_raster::Rgba8 {
+                    width: image.size[0],
+                    height: image.size[1],
+                    data: image.pixels.iter().map(|p| p.to_array()).collect(),
+                };
+                let png =
+                    lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&rgba), &lightcraft_codecs::EncodeMeta::default()).unwrap();
+                std::fs::write(path.join(format!("header-{name}.png")), png).unwrap();
+            }
+        }
+        crate::i18n::set_language(language);
     }
 
     #[test]

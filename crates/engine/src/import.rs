@@ -282,7 +282,10 @@ pub fn import_defaults(p: &Photo) -> lightcraft_develop::DevelopSettings {
 /// Does the photo still look as the camera rendered it (its embedded camera preview is then a
 /// fair stand-in)? Not when a default preset changed it on import.
 pub fn has_import_look(p: &Photo) -> bool {
-    *p.develop == p.camera_defaults()
+    let mut defaults = p.camera_defaults();
+    // The Auto indicator is history metadata, not a change to the camera's appearance.
+    defaults.auto_tone = p.develop.auto_tone;
+    *p.develop == defaults
 }
 
 /// User defaults applied on import (Settings → Import; saved in the library's `prefs.json`).

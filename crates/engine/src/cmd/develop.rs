@@ -291,7 +291,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         }
                     };
                     // a fresh start renders with the current process (a section or slider reset doesn't change it)
-                    s.develop_op(id, DevelopSettings { process: ProcessVersion::LATEST, ..fresh }, "Reset")
+                    s.develop_op(id, DevelopSettings { process: ProcessVersion::LATEST, auto_tone: None, ..fresh }, "Reset")
                 })
                 .collect();
             s.commit("Reset", Op::Batch { ops })?;
@@ -391,14 +391,8 @@ pub fn specs() -> Vec<CommandSpec> {
             let d = s.develop_of(id).unwrap_or_default();
             let a = lightcraft_pipeline::auto::auto_tone(&src, &info, &d);
             edit(s, "develop.auto", "Auto", |d| {
-                d.light.exposure = a.exposure;
-                d.light.contrast = a.contrast;
-                d.light.highlights = a.highlights;
-                d.light.shadows = a.shadows;
-                d.light.whites = a.whites;
-                d.light.blacks = a.blacks;
-                d.color.vibrance = a.vibrance;
-                d.color.saturation = a.saturation;
+                a.apply_to(d);
+                d.mark_auto_tone();
                 Ok(())
             })?;
             Ok(serde_json::to_value(a).unwrap_or_default())

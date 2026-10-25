@@ -113,6 +113,11 @@ pub struct DevelopSettings {
     pub treatment: Treatment,
     pub wb: WhiteBalance,
     pub light: Light,
+    /// The eight controls last set by Auto, in order: exposure, contrast, highlights, shadows,
+    /// whites, blacks, vibrance, saturation. Per-photo UI/history metadata; ignored by rendering
+    /// hashes and unedited detection, and excluded from preset/copy groups.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_tone: Option<[f64; 8]>,
     /// HDR editing: highlights above SDR white, and the SDR rendition derived from them. Not written while it is
     /// the default, so settings without HDR keep their JSON and `hash64` (and every cached preview stays valid).
     #[serde(skip_serializing_if = "Hdr::is_default")]
@@ -152,6 +157,7 @@ impl Default for DevelopSettings {
             treatment: Treatment::Color,
             wb: WhiteBalance::default(),
             light: Light::default(),
+            auto_tone: None,
             hdr: Hdr::default(),
             curve: ToneCurve::default(),
             color: ColorAdj::default(),

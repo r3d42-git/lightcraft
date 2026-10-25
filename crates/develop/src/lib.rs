@@ -80,9 +80,44 @@ impl DevelopSettings {
         }
     }
 
-    /// Stable 64-bit hash of the settings (FNV-1a over canonical JSON), for preview cache keys.
+    fn auto_tone_values(&self) -> [f64; 8] {
+        [
+            self.light.exposure,
+            self.light.contrast,
+            self.light.highlights,
+            self.light.shadows,
+            self.light.whites,
+            self.light.blacks,
+            self.color.vibrance,
+            self.color.saturation,
+        ]
+    }
+
+    /// Record the controls actually applied by Auto. Stored with the photo so undo/redo, history
+    /// restore and reopening retain the button state, without affecting its rendered appearance.
+    pub fn mark_auto_tone(&mut self) {
+        let values = self.auto_tone_values();
+        self.auto_tone = values.iter().all(|v| v.is_finite()).then_some(values);
+    }
+
+    /// Auto is selected only while all eight controls still equal the last Auto result.
+    /// Other edits (including white balance, B&W and HDR) do not change this indication.
+    pub fn auto_tone_active(&self) -> bool {
+        let values = self.auto_tone_values();
+        values.iter().all(|v| v.is_finite()) && self.auto_tone == Some(values)
+    }
+
+    /// Stable 64-bit hash of render settings (FNV-1a over canonical JSON), for preview cache keys.
+    /// Per-photo Auto button metadata cannot change pixels and is deliberately excluded.
     pub fn hash64(&self) -> u64 {
-        let s = serde_json::to_string(self).unwrap_or_default();
+        let render_settings = if self.auto_tone.is_some() {
+            let mut settings = self.clone();
+            settings.auto_tone = None;
+            std::borrow::Cow::Owned(settings)
+        } else {
+            std::borrow::Cow::Borrowed(self)
+        };
+        let s = serde_json::to_string(render_settings.as_ref()).unwrap_or_default();
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         for b in s.as_bytes() {
             h ^= *b as u64;
@@ -98,6 +133,7 @@ impl DevelopSettings {
         let d = DevelopSettings::default();
         a.wb = d.wb;
         a.process = d.process;
+        a.auto_tone = None;
         a == d
     }
 
@@ -362,5 +398,65 @@ mod tests {
         assert!(s.enhance.denoise_enabled());
         s.reset_section(Section::Detail);
         assert_eq!(s.enhance.denoise_on, None);
+    }
+}
+
+#[cfg(test)]
+mod auto_tone_state_tests {
+    use super::*;
+
+    #[test]
+    fn auto_state_roundtrips_without_changing_render_hash_or_unedited_status() {
+        let mut s = DevelopSettings::default();
+        let original_hash = s.hash64();
+        assert!(s.to_json().get("auto_tone").is_none());
+        assert!(!s.auto_tone_active());
+        s.mark_auto_tone();
+        assert!(s.auto_tone_active());
+        assert_eq!(s.hash64(), original_hash);
+        assert!(s.is_unedited());
+        let restored = DevelopSettings::from_json(&s.to_json()).unwrap();
+        assert_eq!(s, restored);
+        assert!(restored.auto_tone_active());
+        let old = DevelopSettings::from_json(&serde_json::json!({})).unwrap();
+        assert!(old.auto_tone.is_none() && !old.auto_tone_active());
+        assert!(extract_groups(&s, &SettingsGroup::ALL).get("auto_tone").is_none());
+        let copied = apply_partial(&DevelopSettings::default(), &extract_groups(&s, &SettingsGroup::ALL), 1.0);
+        assert!(!copied.auto_tone_active(), "copy/preset values cannot invent an Auto application");
+        let imported = apply_partial(&DevelopSettings::default(), &s.to_json(), 1.0);
+        assert!(!imported.auto_tone_active(), "a full-settings imported preset cannot transfer the marker");
+    }
+
+    #[test]
+    fn every_auto_control_invalidates_selection_and_other_edits_do_not() {
+        let mut s = DevelopSettings::default();
+        s.mark_auto_tone();
+        for key in [
+            "light.exposure",
+            "light.contrast",
+            "light.highlights",
+            "light.shadows",
+            "light.whites",
+            "light.blacks",
+            "color.vibrance",
+            "color.saturation",
+        ] {
+            let mut changed = s.clone();
+            assert!(controls::set(&mut changed, key, 1.0));
+            assert!(!changed.auto_tone_active(), "{key}");
+            assert!(controls::set(&mut changed, key, 0.0));
+            assert!(changed.auto_tone_active(), "restoring {key}");
+        }
+        s.wb.temp = 4800.0;
+        s.treatment = Treatment::Bw;
+        s.hdr.enabled = true;
+        s.crop.geometry.angle = 3.0;
+        assert!(s.auto_tone_active());
+        s.light.exposure = f64::NAN;
+        assert!(!s.auto_tone_active());
+        s.mark_auto_tone();
+        assert_eq!(s.auto_tone, None);
+        s.auto_tone = Some([f64::INFINITY; 8]);
+        assert!(!s.auto_tone_active());
     }
 }

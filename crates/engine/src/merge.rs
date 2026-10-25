@@ -356,14 +356,8 @@ fn render_preview(
 
 fn apply_auto(s: &mut DevelopSettings, src: &Rgb32f, info: &SourceInfo) {
     let a = lightcraft_pipeline::auto::auto_tone(src, info, s);
-    s.light.exposure = a.exposure;
-    s.light.contrast = a.contrast;
-    s.light.highlights = a.highlights;
-    s.light.shadows = a.shadows;
-    s.light.whites = a.whites;
-    s.light.blacks = a.blacks;
-    s.color.vibrance = a.vibrance;
-    s.color.saturation = a.saturation;
+    a.apply_to(s);
+    s.mark_auto_tone();
 }
 
 /// `dir/<stem>-<suffix>.dng`, then `-2`, `-3`… (the candidates for a merge's output).

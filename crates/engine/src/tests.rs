@@ -431,6 +431,92 @@ fn masks_crop_and_render() {
 }
 
 #[test]
+fn adaptive_auto_preserves_other_edits_and_is_one_undo_step() {
+    let mut s = demo();
+    s.execute("develop.wb", &json!({"mode": "custom", "temp": 4800.0, "tint": 11.0})).unwrap();
+    s.execute("develop.set", &json!({"control": "effects.clarity", "value": 13.0})).unwrap();
+    s.execute("crop.aspect", &json!({"aspect": "1x1"})).unwrap();
+    let before = active_dev(&s);
+    let result = s.execute("develop.auto", &json!({})).unwrap();
+    let after = active_dev(&s);
+    assert_eq!(result["exposure"].as_f64(), Some(after.light.exposure));
+    let mut unchanged = after.clone();
+    unchanged.light = before.light;
+    unchanged.auto_tone = before.auto_tone;
+    unchanged.color.vibrance = before.color.vibrance;
+    unchanged.color.saturation = before.color.saturation;
+    assert_eq!(unchanged, before, "Auto may only replace its eight controls and button metadata");
+    assert_ne!(after, before, "the procedural scene must exercise a real edit");
+    s.undo_step().unwrap();
+    assert_eq!(active_dev(&s), before);
+    s.redo_step().unwrap();
+    assert_eq!(active_dev(&s), after);
+    s.execute("develop.auto", &json!({})).unwrap();
+    assert_eq!(active_dev(&s), after, "repeated Auto must not creep");
+}
+
+#[test]
+fn auto_button_follows_its_controls_undo_reset_and_the_active_photo() {
+    let mut s = demo();
+    let first = s.active().unwrap();
+    let other = s.catalog.photos().map(|p| p.id).find(|id| *id != first).unwrap();
+    assert!(!active_dev(&s).auto_tone_active());
+    s.execute("develop.auto", &json!({})).unwrap();
+    let applied = active_dev(&s);
+    assert!(applied.auto_tone_active());
+    let roundtrip = lightcraft_develop::DevelopSettings::from_json(&applied.to_json()).unwrap();
+    assert!(roundtrip.auto_tone_active());
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": applied.light.exposure + 0.25})).unwrap();
+    assert!(!active_dev(&s).auto_tone_active());
+    s.undo_step().unwrap();
+    assert!(active_dev(&s).auto_tone_active());
+    s.redo_step().unwrap();
+    assert!(!active_dev(&s).auto_tone_active());
+    s.undo_step().unwrap();
+    s.execute("develop.wb", &json!({"mode": "custom", "temp": 4700.0})).unwrap();
+    assert!(active_dev(&s).auto_tone_active(), "white balance is outside Auto's eight controls");
+    s.execute("library.select", &json!({"ids": [other.0], "active": other.0})).unwrap();
+    assert!(!active_dev(&s).auto_tone_active(), "Auto belongs to the photo");
+    s.execute("library.select", &json!({"ids": [first.0], "active": first.0})).unwrap();
+    assert!(active_dev(&s).auto_tone_active());
+    s.execute("develop.reset", &json!({})).unwrap();
+    assert!(!active_dev(&s).auto_tone_active());
+    assert!(active_dev(&s).auto_tone.is_none());
+    s.undo_step().unwrap();
+    assert!(active_dev(&s).auto_tone_active());
+}
+
+#[test]
+fn auto_sync_copies_controls_without_auto_application_metadata() {
+    let mut s = demo();
+    let first = s.active().unwrap();
+    let other = s.catalog.photos().map(|p| p.id).find(|id| *id != first).unwrap();
+    s.execute("library.select", &json!({"ids": [first.0, other.0], "active": first.0})).unwrap();
+    s.execute("develop.autoSync", &json!({"on": true})).unwrap();
+    s.execute("develop.auto", &json!({})).unwrap();
+    let applied = active_dev(&s);
+    let synced = s.develop_of(other).unwrap();
+    assert!(applied.auto_tone_active());
+    assert_eq!(synced.light, applied.light);
+    assert_eq!(synced.color, applied.color);
+    assert!(synced.auto_tone.is_none());
+    assert!(!synced.auto_tone_active());
+}
+
+#[test]
+fn auto_metadata_keeps_the_embedded_camera_preview_valid() {
+    use lightcraft_catalog::{Photo, PhotoId, Source};
+    let mut photo = Photo::new(PhotoId(100), Source::File { path: "synthetic.ARW".into() }, "synthetic.ARW", "ARW", 32, 32, "");
+    let mut settings = photo.camera_defaults();
+    settings.mark_auto_tone();
+    photo.develop = std::sync::Arc::new(settings.clone());
+    assert!(crate::import::has_import_look(&photo));
+    settings.light.exposure = 0.25;
+    photo.develop = std::sync::Arc::new(settings);
+    assert!(!crate::import::has_import_look(&photo));
+}
+
+#[test]
 fn versions_history_and_reset() {
     let mut s = demo();
     s.execute("develop.set", &json!({"control": "light.exposure", "value": 1.0})).unwrap();
