@@ -32,6 +32,13 @@ and the complete CR3 correspondence route for EXIF orientations 1–8 with non-u
 The opt-in `corpus_cr3_profile_geometry_diagnostics` test exports `geometry.tsv` and plain,
 selected, and JPEG proxy PNGs when `LIGHTCRAFT_CR3_DIAGNOSTICS` names an output directory.
 It reads CR3 files from `$LIGHTCRAFT_CORPUS/raw` and the normal configured lens database.
+The TSV appends `status` and `reason` columns. `measured` means both proxy calls returned
+images; acceptance or rejection is recorded separately in the existing measurement columns.
+If either call returns no proxy, the row records `missing_plain_proxy`,
+`missing_chosen_proxy`, or `missing_both_proxies`, leaves all measurement fields empty,
+and exports no PNGs for that file. The diagnostic continues with the next CR3. The reason
+does not attribute a cause: the proxy API returns only `None`, which can cover unavailable
+previews or sensor proxies. An unavailable row is not a passed geometry or colour check.
 The PNGs show linear proxy RGB converted to sRGB, without a camera tone curve; they are geometry
 inspection aids, not developed image fidelity comparisons. Real-sample assessment and unchanged
 fallback controls are required before any publication. This experiment does not establish

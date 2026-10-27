@@ -2708,6 +2708,109 @@ fn cr3_profile_geometry_shares_orientation_and_applies_white_balance_once() {
     }
 }
 
+/// Sensor, JPEG and clipping samples returned by the diagnostic proxy calls.
+type DiagnosticProxy = (Rgb32f, Rgb32f, Vec<bool>);
+
+/// Preserve missing-proxy cases in the diagnostic TSV without inventing geometry or fit results.
+/// `proxies` exposes no rejection reason, so the row records only which call returned `None`.
+fn diagnostic_proxies_or_report(
+    name: &str,
+    raw: &RawImage,
+    profile_warp: bool,
+    plain: Option<DiagnosticProxy>,
+    chosen: Option<DiagnosticProxy>,
+    report: &mut String,
+) -> Option<(DiagnosticProxy, DiagnosticProxy)> {
+    let status = match (plain, chosen) {
+        (Some(plain), Some(chosen)) => return Some((plain, chosen)),
+        (None, Some(_)) => "missing_plain_proxy",
+        (Some(_), None) => "missing_chosen_proxy",
+        (None, None) => "missing_both_proxies",
+    };
+    let mut fields = vec![String::new(); 17];
+    fields[0] = name.to_owned();
+    fields[1] = raw.metadata.model.clone().unwrap_or_default();
+    fields[2] = format!("{:?}", raw.orientation);
+    fields[3] = profile_warp.to_string();
+    fields[15] = status.to_owned();
+    fields[16] = "proxies returned None; underlying cause unavailable".to_owned();
+    report.push_str(&fields.join("\t"));
+    report.push('\n');
+    None
+}
+
+/// Build a small RGB CR3-shaped raw and embedded JPEG without opening any real photo.
+fn diagnostic_proxy_fixture() -> (RawImage, Vec<u8>) {
+    let (w, h) = (96, 64);
+    let scene = profile_geometry_scene(w, h);
+    let mut raw = raw_of(RawFormat::Cr3, "Synthetic", "Uncalibrated", Default::default());
+    raw.width = w;
+    raw.height = h;
+    raw.cpp = 3;
+    raw.data = lightcraft_raw::RawData::F32(scene.data.iter().flatten().copied().collect());
+    raw.black = lightcraft_raw::BlackLevel::uniform(0.0);
+    raw.white = vec![1.0];
+    raw.active_area = lightcraft_raw::Rect::new(0, 0, w, h);
+    raw.crop = raw.active_area;
+    raw.linearized = true;
+    raw.wb_multipliers = Some([1.0; 3]);
+    let pixels: Vec<u8> = scene.data.iter().flatten().map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8).collect();
+    let image = lightcraft_codecs::EncodeImage::new(w as u32, h as u32, 3, lightcraft_codecs::Samples::U8(&pixels));
+    let jpeg = lightcraft_codecs::encode_jpeg(&image, 98, lightcraft_codecs::ChromaSubsampling::S444, &Default::default()).unwrap();
+    let mut file = b"II*\0\x08\0\0\0\x02\0".to_vec();
+    for (tag, value) in [(0x0201u16, 38u32), (0x0202, jpeg.len() as u32)] {
+        file.extend(tag.to_le_bytes());
+        file.extend(4u16.to_le_bytes());
+        file.extend(1u32.to_le_bytes());
+        file.extend(value.to_le_bytes());
+    }
+    file.extend(0u32.to_le_bytes());
+    file.extend(jpeg);
+    (raw, file)
+}
+
+/// Exercise the corpus diagnostic's actual proxy-result handling across missing and available inputs.
+#[test]
+fn cr3_diagnostics_report_missing_proxies_and_continue() {
+    let (mut raw, bytes) = diagnostic_proxy_fixture();
+    let transform = lightcraft_raw::color::camera_transform(&raw, D65);
+    let available = proxies(&raw, &bytes, &transform, PROXY, 0.0, None, None).unwrap();
+    // A valid spectral transform does not guarantee a usable sensor proxy. This synthetic
+    // single-channel raw lacks a CFA, so the established proxy path deliberately returns None.
+    let camera = lightcraft_raw::spectral::find(Some("Canon"), "Canon EOS R8").unwrap();
+    raw.color.color_matrix = camera.color_matrix.map(Some);
+    raw.color.forward_matrix = camera.forward_matrix.map(Some);
+    raw.color.illuminant = [17, 21];
+    raw.cpp = 1;
+    raw.data = lightcraft_raw::RawData::U16(vec![0; raw.width * raw.height]);
+    let calibrated = lightcraft_raw::color::camera_transform(&raw, D65);
+    assert!(!calibrated.matrix_is_fallback);
+    let missing = proxies(&raw, &bytes, &calibrated, PROXY, 0.0, None, None);
+    assert!(missing.is_none());
+    let mut report = String::new();
+    for (plain, chosen, status) in [
+        (missing.clone(), missing.clone(), "missing_both_proxies"),
+        (missing.clone(), Some(available.clone()), "missing_plain_proxy"),
+        (Some(available.clone()), missing, "missing_chosen_proxy"),
+    ] {
+        assert!(diagnostic_proxies_or_report(status, &raw, true, plain, chosen, &mut report).is_none());
+    }
+    let (plain, chosen) = diagnostic_proxies_or_report("available", &raw, false, Some(available.clone()), Some(available.clone()), &mut report)
+        .expect("a later usable file must still reach measurement and image export");
+    let bits = |image: &Rgb32f| image.data.iter().flatten().map(|v| v.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&plain.0), bits(&available.0));
+    assert_eq!(chosen.1.data, available.1.data);
+    let rows: Vec<_> = report.lines().collect();
+    assert_eq!(rows.len(), 3, "available proxies must not create an unavailable row");
+    for row in rows {
+        let fields: Vec<_> = row.split('\t').collect();
+        assert_eq!(fields.len(), 17);
+        assert_eq!(fields[0], fields[15], "all three missing cases retain distinct statuses");
+        assert!(fields[4..15].iter().all(|v| v.is_empty()), "unavailable metrics, gates and fits stay empty");
+        assert_eq!(fields[16], "proxies returned None; underlying cause unavailable");
+    }
+}
+
 /// Opt-in diagnostic only: never opens the app or changes a catalogue. It exports the actual
 /// selected correspondences, and reports rejection as rejection rather than decoder success.
 #[test]
@@ -2718,7 +2821,7 @@ fn corpus_cr3_profile_geometry_diagnostics() {
     let output = std::path::PathBuf::from(output);
     std::fs::create_dir_all(&output).unwrap();
     let mut report = String::from(
-        "file\tmodel\torientation\tprofile_warp\tgeometry_accepted\tplain_alignment\tchosen_alignment\tplain_structure\tchosen_structure\tplain_pairs\tchosen_pairs\tplain_look\tchosen_look\tframed_gate_scores\toriginal_gate_scores\n",
+        "file\tmodel\torientation\tprofile_warp\tgeometry_accepted\tplain_alignment\tchosen_alignment\tplain_structure\tchosen_structure\tplain_pairs\tchosen_pairs\tplain_look\tchosen_look\tframed_gate_scores\toriginal_gate_scores\tstatus\treason\n",
     );
     let mut paths: Vec<_> = std::fs::read_dir(corpus.join("raw"))
         .unwrap()
@@ -2735,8 +2838,15 @@ fn corpus_cr3_profile_geometry_diagnostics() {
         let lens = lens_geometry(&raw.opcodes.list3);
         raw.opcodes.list3.retain(|op| !op.is_lens_correction());
         let transform = lightcraft_raw::color::camera_transform(&raw, lightcraft_raw::color::as_shot_white_xy(&raw));
-        let plain = proxies(&raw, &bytes, &transform, PROXY, 0.0, lens.as_ref(), None).unwrap();
-        let chosen = proxies(&raw, &bytes, &transform, PROXY, 0.0, lens.as_ref(), correction.as_ref()).unwrap();
+        let plain = proxies(&raw, &bytes, &transform, PROXY, 0.0, lens.as_ref(), None);
+        let chosen = proxies(&raw, &bytes, &transform, PROXY, 0.0, lens.as_ref(), correction.as_ref());
+        let name = path.file_name().unwrap().to_string_lossy();
+        let Some((plain, chosen)) =
+            diagnostic_proxies_or_report(&name, &raw, correction.as_ref().is_some_and(|l| l.warp.is_some()), plain, chosen, &mut report)
+        else {
+            std::fs::write(output.join("geometry.tsv"), &report).unwrap();
+            continue;
+        };
         let framed_scores = super::proxy::geometry_framed_scores();
         let original_scores = super::proxy::geometry_gate_scores();
         let accepted = plain.0.data.iter().flatten().zip(chosen.0.data.iter().flatten()).any(|(a, b)| a.to_bits() != b.to_bits());
@@ -2746,9 +2856,8 @@ fn corpus_cr3_profile_geometry_diagnostics() {
         };
         let before = fit_preview(&raw, &bytes, &transform, lens.as_ref(), None).0.is_some();
         let after = fit_preview(&raw, &bytes, &transform, lens.as_ref(), correction.as_ref()).0.is_some();
-        let name = path.file_name().unwrap().to_string_lossy();
         report.push_str(&format!(
-            "{name}\t{}\t{:?}\t{}\t{accepted}\t{:.6}\t{:.6}\t{}\t{}\t{}\t{}\t{before}\t{after}\t{framed_scores:?}\t{original_scores:?}\n",
+            "{name}\t{}\t{:?}\t{}\t{accepted}\t{:.6}\t{:.6}\t{}\t{}\t{}\t{}\t{before}\t{after}\t{framed_scores:?}\t{original_scores:?}\tmeasured\t\n",
             raw.metadata.model.as_deref().unwrap_or(""),
             raw.orientation,
             correction.as_ref().is_some_and(|l| l.warp.is_some()),
