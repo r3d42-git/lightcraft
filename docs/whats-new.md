@@ -1,5 +1,10 @@
 # What's new in LightCraft
 
+## 2026-10-27 (R3D candidate)
+
+### SDR histogram after HDR editing
+- Switching HDR off keeps the SDR histogram during subsequent slider drags; the retained histogram from the last HDR drag is used only for HDR edits.
+
 ## 2026-10-25
 
 ### German terms and narrow Edit panels

@@ -358,3 +358,5 @@ parents would lose merge-specific integration fixes.
 ## Local PR candidates — 2026-10-27
 
 PR #3038, head `ff913833de19cbb017c79c596cc31d3cbe75f2b4`, declares the 18 shipped UI languages for macOS system dialogs. The R3D bundle identity remains. AppKit follows system/app language preferences; a LightCraft-only language switch does not force native dialog language. Native dialog acceptance remains pending.
+
+PR #2981, head `daf46b16f13bd7c2a9713efbdd63eda20a98219c`, gates the retained live HDR histogram on HDR being enabled. The fixed histogram layout, tonal drag controls and active HDR button remain. No rendering/cache/LOOK version changes.
