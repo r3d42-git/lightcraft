@@ -61,6 +61,7 @@ pub mod open_path;
 pub mod optics_metadata;
 pub mod originals;
 mod pdf;
+pub mod prep;
 pub mod preset_import;
 pub mod preset_luminar;
 pub mod presets;
@@ -390,6 +391,12 @@ pub struct Session {
     pub slideshow_export: Option<std::sync::Arc<slideshow_export::ExportRun>>,
     /// The last (or running) Build Previews.
     pub preview_build: Option<std::sync::Arc<cmd::previews::PreviewBuild>>,
+    /// Preparing photos in the background: settings (app-wide and this library's) and the build
+    /// it runs ([`prep`]).
+    pub prep: prep::PrepState,
+    /// The long edge (px) the loupe renders at on this screen, as the frontend last said
+    /// (0: not known). Standard previews are built at least this big, so the loupe can use them.
+    pub loupe_edge: usize,
     /// Develop defaults applied on import (persisted in prefs.json).
     pub import_defaults: import::ImportDefaults,
     /// Disk budget of the library's thumbnail cache in MB (0 = default; persisted in prefs.json).
@@ -526,6 +533,8 @@ impl Session {
             folder_changes: None,
             activity: Default::default(),
             preview_build: None,
+            prep: Default::default(),
+            loupe_edge: 0,
             slideshow_export: None,
             import_defaults: import::ImportDefaults::default(),
             cache_mb: 0,
@@ -1450,3 +1459,6 @@ mod tests_sync;
 mod tests_view_follow;
 #[cfg(test)]
 mod tests_xmp;
+
+#[cfg(test)]
+mod tests_preview_prep;

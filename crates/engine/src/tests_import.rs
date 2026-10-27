@@ -166,6 +166,98 @@ fn browsing_a_folder_lists_its_photos_without_adding_them() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// PERF-CULL-1: the Local view reads only what the library lacks, newest file first for the default
+/// (newest capture first) sort, so the first screen is read first; other sorts follow their key.
+#[test]
+fn browsing_queues_unknown_files_in_the_order_the_view_shows_them() {
+    use lightcraft_catalog::{Sort, SortKey};
+    let dir = temp_dir("browse-order");
+    let set_time = |p: &Path, secs: u64| {
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        std::fs::File::options().write(true).open(p).unwrap().set_modified(t).unwrap();
+    };
+    for (name, seed, secs) in [("a.png", 1u8, 300u64), ("b.png", 2, 100), ("c.png", 3, 200)] {
+        write_png(&dir.join(name), seed);
+        set_time(&dir.join(name), 1_700_000_000 + secs);
+    }
+    let mut s = Session::new().with_fs();
+    let known = dir.join("b.png").to_string_lossy().to_string();
+    s.execute("library.import", &json!({"paths": [known.clone()]})).unwrap();
+    let files: Vec<String> = ["a.png", "b.png", "c.png", "gone.png"].iter().map(|n| dir.join(n).to_string_lossy().to_string()).collect();
+    let (input, _) = crate::import::ScanInput::new(&mut s, &[]);
+    let names = |v: Vec<String>| v.iter().map(|f| Path::new(f).file_name().unwrap().to_string_lossy().to_string()).collect::<Vec<_>>();
+    // newest first, the file already in the library left out, an unreadable one last
+    let q = crate::import::browse_queue(&input, files.clone(), &Sort::default());
+    assert_eq!(names(q), ["a.png", "c.png", "gone.png"]);
+    let q = crate::import::browse_queue(&input, files.clone(), &Sort { ascending: true, ..Sort::default() });
+    assert_eq!(names(q), ["c.png", "a.png", "gone.png"]);
+    let q = crate::import::browse_queue(&input, files.clone(), &Sort { key: SortKey::FileName, ascending: false, ..Sort::default() });
+    assert_eq!(names(q), ["gone.png", "c.png", "a.png"]);
+    // by size an unreadable file is last in both directions (it was sized 0, first when ascending)
+    for ascending in [true, false] {
+        let q = crate::import::browse_queue(&input, files.clone(), &Sort { key: SortKey::FileSize, ascending, ..Sort::default() });
+        assert_eq!(names(q).last().map(String::as_str), Some("gone.png"), "ascending {ascending}");
+    }
+    let q = crate::import::browse_queue(&input, files, &Sort { key: SortKey::Rating, ..Sort::default() });
+    assert_eq!(names(q), ["gone.png", "c.png", "a.png"], "new photos tie on rating: by name, descending as the view");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Browsing a folder with its subfolders lists nothing inside the library's own folder (the
+/// import that follows would read it as photos), as the import's scan skips it.
+#[test]
+fn browsing_with_subfolders_skips_the_librarys_own_folder() {
+    let dir = temp_dir("browse-skip-lib");
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    let mut s = Session::new().with_fs();
+    s.open_library(dir.join("lib"), false).unwrap();
+    write_png(&dir.join("a.png"), 1);
+    write_png(&dir.join("lib").join("inside.png"), 2);
+    let (input, _) = crate::import::ScanInput::new(&mut s, &[]);
+    let root = dir.to_string_lossy().to_string();
+    let names = |v: Vec<String>| v.iter().map(|f| Path::new(f).file_name().unwrap().to_string_lossy().to_string()).collect::<Vec<_>>();
+    assert_eq!(names(crate::import::browse_files(&input, &root, true).unwrap()), ["a.png"]);
+    assert_eq!(names(crate::import::browse_files(&input, &root, false).unwrap()), ["a.png"]);
+    // the library's folder chosen itself, with or without its subfolders
+    let lib = dir.join("lib").to_string_lossy().to_string();
+    assert!(crate::import::browse_files(&input, &lib, false).unwrap().is_empty());
+    assert!(crate::import::browse_files(&input, &lib, true).unwrap().is_empty());
+    // a folder that can't be listed is an error, not an empty folder (its photos aren't "gone")
+    let missing = dir.join("not-there").to_string_lossy().to_string();
+    assert!(crate::import::browse_files(&input, &missing, false).is_err());
+    assert!(crate::import::browse_files(&input, &missing, true).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Browsing's queue breaks ties the way the catalog does (by name, in the view's direction), and
+/// the import- and edit-date sorts, where new photos tie, go by name rather than file time.
+#[test]
+fn browsing_breaks_ties_by_name_in_the_views_direction() {
+    use lightcraft_catalog::{Sort, SortKey};
+    let dir = temp_dir("browse-ties");
+    // names and file times run in opposite directions; x and y share a time and a size
+    for (name, secs) in [("x.png", 100u64), ("y.png", 100), ("z.png", 50)] {
+        write_png(&dir.join(name), 7);
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + secs);
+        std::fs::File::options().write(true).open(dir.join(name)).unwrap().set_modified(t).unwrap();
+    }
+    let files: Vec<String> = ["y.png", "z.png", "x.png"].iter().map(|n| dir.join(n).to_string_lossy().to_string()).collect();
+    let order = |key: SortKey, ascending: bool| {
+        let mut f = files.clone();
+        crate::import::browse_order(&mut f, &Sort { key, ascending, ..Sort::default() });
+        f.iter().map(|f| Path::new(f).file_name().unwrap().to_string_lossy().to_string()).collect::<Vec<_>>()
+    };
+    assert_eq!(order(SortKey::CaptureDate, false), ["y.png", "x.png", "z.png"]);
+    assert_eq!(order(SortKey::CaptureDate, true), ["z.png", "x.png", "y.png"]);
+    for key in [SortKey::ImportDate, SortKey::EditDate, SortKey::Rating] {
+        assert_eq!(order(key, true), ["x.png", "y.png", "z.png"], "{key:?}");
+        assert_eq!(order(key, false), ["z.png", "y.png", "x.png"], "{key:?}");
+    }
+    assert_eq!(order(SortKey::FileSize, true), ["x.png", "y.png", "z.png"]);
+    assert_eq!(order(SortKey::FileSize, false), ["z.png", "y.png", "x.png"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Photos a.png, b.png, c.png imported from `old`, then: a renamed into `moved`; b renamed, with
 /// an impostor (same name and size, other bytes) under its old name; c gone, with two impostors.
 fn renamed_and_ambiguous_scene(tag: &str) -> (std::path::PathBuf, Session) {
@@ -2295,4 +2387,20 @@ fn a_file_arriving_beside_its_raws_stem_reads_its_own_sidecar() {
     assert_eq!(r["sidecars"], 0, "{r}");
     assert_eq!(read(&s, "IMG_3.TIF"), 0, "the catalogued raw owns IMG_3.xmp");
     let _ = std::fs::remove_dir_all(&src);
+}
+
+/// R3D Auto's history-only marker does not turn a profile-only look into a new pixel edit.
+#[test]
+fn profile_only_camera_preview_ignores_auto_indicator_metadata() {
+    use lightcraft_catalog::{Photo, PhotoId, Source};
+    let mut p = Photo::new(PhotoId(701), Source::File { path: "test.cr3".into() }, "test.cr3", "CR3", 6000, 4000, "2026-10-27");
+    p.kind = lightcraft_catalog::MediaKind::Raw;
+    let mut d = p.camera_defaults();
+    d.profile.id = "lc.vivid".into();
+    d.auto_tone = Some([0.0; 8]);
+    p.develop = std::sync::Arc::new(d.clone());
+    assert!(crate::import::looks_as_shot(&p));
+    d.light.exposure = 1.0;
+    p.develop = std::sync::Arc::new(d);
+    assert!(!crate::import::looks_as_shot(&p), "an actual exposure edit is not the camera look");
 }

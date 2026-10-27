@@ -184,6 +184,18 @@ fn preview_covering(bytes: &[u8], min_edge: Option<u32>) -> Option<Vec<u8>> {
     }
     let format = crate::probe(bytes);
     if format == Some(crate::RawFormat::Cr3) {
+        // a Canon CR3 keeps its full-size JPEG beside a 1620 px `PRVW` (and a 160 px `THMB`): a
+        // thumbnail decodes the small copy, not 45 MP of JPEG (about 150 ms a photo, the grid's
+        // "popcorn" on a folder of R5 / R5 C raws)
+        if let Some(min) = min_edge
+            && let Some(full) = cr3_full_jpeg(bytes)
+        {
+            let mut found = cr3_preview_box_list(bytes);
+            found.push(full);
+            if let Some(j) = smallest_covering(&found, full, min) {
+                return Some(trim_eoi(j).to_vec());
+            }
+        }
         return cr3_preview(bytes).map(|j| trim_eoi(j).to_vec());
     }
     if matches!(format, Some(crate::RawFormat::Crw | crate::RawFormat::Mrw | crate::RawFormat::X3f)) {
@@ -386,40 +398,90 @@ fn scan_for_jpeg(data: &[u8]) -> Option<Vec<u8>> {
 
 /// Canon CR3: the full-size JPEG track (see [`lightcraft_meta::cr3`]), else the `PRVW` / `THMB` boxes.
 fn cr3_preview(bytes: &[u8]) -> Option<&[u8]> {
+    cr3_full_jpeg(bytes).or_else(|| cr3_preview_boxes(bytes))
+}
+
+/// A CR3's full-size JPEG track, when it holds a DCT JPEG.
+fn cr3_full_jpeg(bytes: &[u8]) -> Option<&[u8]> {
     let full = lightcraft_meta::cr3::parse_cr3(bytes)
         .and_then(|c| c.tracks.iter().find(|t| t.kind == lightcraft_meta::cr3::Cr3TrackKind::Jpeg).and_then(|t| t.data));
-    if let Some(j) = full.and_then(|(at, len)| bytes.get(at..at.checked_add(len)?)).filter(|j| is_dct_jpeg(j)) {
-        return Some(j);
-    }
-    cr3_preview_boxes(bytes)
+    full.and_then(|(at, len)| bytes.get(at..at.checked_add(len)?)).filter(|j| is_dct_jpeg(j))
 }
+
+/// Marker-walk budget of the CR3 fallback: candidates can overlap (each claiming the rest of the file) and
+/// [`is_dct_jpeg`] walks each marker by marker, so walking every candidate would be quadratic in file size.
+/// The `THMB`/`PRVW` previews this finds are far below the cap together; once it is spent the scan stops.
+const CR3_MAX_WALK: usize = 8 << 20;
 
 /// Canon CR3 (ISO base media file): the `PRVW` box (Laurent Clévy's CR3 notes; layout confirmed on a CC0
 /// sample) is `u32 size, "PRVW", u32 0, u16 ?, u16 width, u16 height, u16 ?, u32 jpeg length, JPEG`; the smaller
 /// `THMB` box has the same shape. Returns the larger valid one.
 fn cr3_preview_boxes(bytes: &[u8]) -> Option<&[u8]> {
-    let mut best: Option<&[u8]> = None;
+    cr3_preview_box_list(bytes).into_iter().max_by_key(|j| j.len())
+}
+
+/// The valid JPEGs of a CR3's `PRVW` and `THMB` boxes, every one: a file may carry more than one
+/// `PRVW`, and the smallest that covers a size is picked from them all.
+fn cr3_preview_box_list(bytes: &[u8]) -> Vec<&[u8]> {
+    let mut out: Vec<&[u8]> = Vec::new();
+    let mut walked = 0usize;
+    // the boxes sit outside the media data: only the rest of the file is searched (the media data
+    // is most of the file, and a thumbnail is asked for every photo in view)
+    let file = bytes;
+    let regions: Vec<&[u8]> = match cr3_media_data(file) {
+        Some((start, end)) => [file.get(..start), file.get(end..)].into_iter().flatten().collect(),
+        None => vec![file],
+    };
     for tag in [b"PRVW", b"THMB"] {
-        let mut from = 0;
-        while let Some(i) = bytes.get(from..).and_then(|s| s.windows(4).position(|w| w == tag)).map(|p| p + from) {
-            from = i + 4;
-            let Some(start) = i.checked_sub(4) else { continue };
-            let be32 = |at: usize| bytes.get(at..at + 4).map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]) as usize);
-            let (Some(size), Some(len)) = (be32(start), be32(start + 20)) else { continue };
-            let j = start + 24;
-            if len < 4 || j + len > start + size.max(24) || j + len > bytes.len() {
-                continue;
-            }
-            let jpeg = &bytes[j..j + len];
-            if is_dct_jpeg(jpeg) {
-                if best.is_none_or(|b| b.len() < jpeg.len()) {
-                    best = Some(jpeg);
+        for &bytes in &regions {
+            let mut from = 0;
+            while let Some(i) = bytes.get(from..).and_then(|s| s.windows(4).position(|w| w == tag)).map(|p| p + from) {
+                from = i + 4;
+                let Some(start) = i.checked_sub(4) else { continue };
+                // (the sizes are the file's: checked, a 32-bit build must not wrap them)
+                let be32 = |at: usize| bytes.get(at..at.checked_add(4)?).map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]) as usize);
+                let (Some(size), Some(len)) = (be32(start), start.checked_add(20).and_then(be32)) else { continue };
+                let (Some(j), Some(box_end)) = (start.checked_add(24), start.checked_add(size.max(24))) else { continue };
+                let Some(end) = j.checked_add(len).filter(|e| len >= 4 && *e <= box_end && *e <= bytes.len()) else { continue };
+                let Some(jpeg) = bytes.get(j..end) else { continue };
+                // One that doesn't fit the budget left is skipped; a smaller one later may still fit.
+                if walked.saturating_add(jpeg.len()) > CR3_MAX_WALK {
+                    continue;
                 }
-                break;
+                walked = walked.saturating_add(jpeg.len());
+                if is_dct_jpeg(jpeg) {
+                    out.push(jpeg);
+                    // (past it: a tag inside its JPEG is not another box)
+                    from = end;
+                }
             }
         }
     }
-    best
+    out
+}
+
+/// Where a CR3's top-level `mdat` box lies (`start..end`, `end` clamped to the file): the media
+/// data, most of the file. `None` when there is none, or the boxes stop making sense first. The
+/// metadata and the small previews are in the other top-level boxes, before or after it.
+fn cr3_media_data(bytes: &[u8]) -> Option<(usize, usize)> {
+    let be32 = |at: usize| bytes.get(at..at.checked_add(4)?).map(|s| u64::from(u32::from_be_bytes([s[0], s[1], s[2], s[3]])));
+    let be64 = |at: usize| bytes.get(at..at.checked_add(8)?).map(|s| u64::from_be_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]));
+    let mut at = 0usize;
+    for _ in 0..64 {
+        let size = be32(at)?;
+        let len = match size {
+            // (a box running to the end of the file)
+            0 => u64::try_from(bytes.len().saturating_sub(at)).unwrap_or(u64::MAX),
+            1 => be64(at.checked_add(8)?)?,
+            n => n,
+        };
+        let next = usize::try_from(len).ok().filter(|l| *l >= 8).and_then(|l| at.checked_add(l));
+        if bytes.get(at.checked_add(4)?..at.checked_add(8)?) == Some(b"mdat".as_slice()) {
+            return Some((at, next.unwrap_or(bytes.len()).min(bytes.len())));
+        }
+        at = next?;
+    }
+    None
 }
 
 /// Trim trailing garbage after the last EOI when a stored length over-reports.
@@ -668,6 +730,91 @@ mod tests {
         assert_eq!(embedded_preview(&file).unwrap(), small);
     }
 
+    /// A CR3 whose `PRVW` box holds `prvw` and whose JPEG track holds `big`.
+    fn cr3_with(prvw_jpeg: &[u8], big: &[u8]) -> Vec<u8> {
+        let bx = |kind: &[u8; 4], body: &[u8]| -> Vec<u8> { [&((body.len() + 8) as u32).to_be_bytes()[..], kind, body].concat() };
+        let full = |kind: &[u8; 4], body: &[u8]| bx(kind, &[&[0u8; 4][..], body].concat());
+        let mut file = bx(b"ftyp", b"crx \0\0\0\x01crx isom");
+        let mut prvw = b"\0\0\0\0\0\x01\x06T\x048\0\x01".to_vec();
+        prvw.extend_from_slice(&(prvw_jpeg.len() as u32).to_be_bytes());
+        prvw.extend_from_slice(prvw_jpeg);
+        file.extend(bx(b"PRVW", &prvw));
+        let mut craw = vec![0u8; 82];
+        craw.extend(bx(b"JPEG", &[0; 4]));
+        let at = 4096u64;
+        let stsd = full(b"stsd", &[&1u32.to_be_bytes()[..], &bx(b"CRAW", &craw)].concat());
+        let stsz = full(b"stsz", &[0u32.to_be_bytes(), 1u32.to_be_bytes(), (big.len() as u32).to_be_bytes()].concat());
+        let co64 = full(b"co64", &[&1u32.to_be_bytes()[..], &at.to_be_bytes()].concat());
+        let trak = bx(b"trak", &bx(b"mdia", &bx(b"minf", &bx(b"stbl", &[stsd, stsz, co64].concat()))));
+        file.extend(bx(b"moov", &trak));
+        file.resize(at as usize, 0);
+        file.extend_from_slice(big);
+        file
+    }
+
+    /// A CR3 thumbnail decodes the 1620 px `PRVW` copy, not the full-size JPEG (PERF-THUMB-FIRST:
+    /// 150 ms a photo for the full one); a size the copy can't cover, and the largest preview, are
+    /// still the full JPEG; a `PRVW` of another shape is never taken for the picture.
+    #[test]
+    fn cr3_thumbnails_take_the_smallest_copy_that_covers_them() {
+        let (prvw, big) = (sized_jpeg(1620, 1080, 3, 300), sized_jpeg(6000, 4000, 3, 3000));
+        let file = cr3_with(&prvw, &big);
+        assert_eq!(embedded_preview_covering(&file, 512).unwrap(), prvw);
+        assert_eq!(embedded_preview_covering(&file, 1620).unwrap(), prvw);
+        assert_eq!(embedded_preview_covering(&file, 2000).unwrap(), big);
+        assert_eq!(embedded_preview(&file).unwrap(), big);
+        let letterboxed = cr3_with(&sized_jpeg(1620, 1215, 3, 300), &big);
+        assert_eq!(embedded_preview_covering(&letterboxed, 512).unwrap(), big, "another shape is not a copy");
+        for n in (0..file.len()).step_by(13) {
+            let _ = embedded_preview_covering(&file[..n], 512);
+        }
+    }
+
+    /// PERF-CULL-4: the smallest preview that covers the size asked for, of the largest one's shape;
+    /// the largest when none covers it. A CR3's 8192 px track, 1620 px `PRVW` and 160 px `THMB`.
+    #[test]
+    fn the_smallest_preview_covering_the_size_is_chosen() {
+        let bx = |kind: &[u8; 4], body: &[u8]| -> Vec<u8> { [&((body.len() + 8) as u32).to_be_bytes()[..], kind, body].concat() };
+        let full = |kind: &[u8; 4], body: &[u8]| bx(kind, &[&[0u8; 4][..], body].concat());
+        let boxed = |j: &[u8]| {
+            let mut b = b"\0\0\0\0\0\x01\x06\x54\x04\x38\0\x01".to_vec();
+            b.extend_from_slice(&(j.len() as u32).to_be_bytes());
+            b.extend_from_slice(j);
+            b
+        };
+        let (thmb, prvw, big) = (sized_jpeg(160, 107, 1, 50), sized_jpeg(1620, 1080, 1, 300), sized_jpeg(8192, 5464, 1, 3000));
+        let mut file = bx(b"ftyp", b"crx \0\0\0\x01crx isom");
+        file.extend(bx(b"THMB", &boxed(&thmb)));
+        file.extend(bx(b"PRVW", &boxed(&prvw)));
+        let mut craw = vec![0u8; 82];
+        craw.extend(bx(b"JPEG", &[0; 4]));
+        let at = 4096u64;
+        let stsd = full(b"stsd", &[&1u32.to_be_bytes()[..], &bx(b"CRAW", &craw)].concat());
+        let stsz = full(b"stsz", &[0u32.to_be_bytes(), 1u32.to_be_bytes(), (big.len() as u32).to_be_bytes()].concat());
+        let co64 = full(b"co64", &[&1u32.to_be_bytes()[..], &at.to_be_bytes()].concat());
+        let trak = bx(b"trak", &bx(b"mdia", &bx(b"minf", &bx(b"stbl", &[stsd, stsz, co64].concat()))));
+        file.extend(bx(b"moov", &trak));
+        file.resize(at as usize, 0);
+        file.extend_from_slice(&big);
+        assert_eq!(embedded_preview(&file).unwrap(), big);
+        assert_eq!(embedded_preview_covering(&file, 512).unwrap(), prvw, "a grid thumbnail");
+        assert_eq!(embedded_preview_covering(&file, 1620).unwrap(), prvw);
+        assert_eq!(embedded_preview_covering(&file, 100).unwrap(), thmb);
+        assert_eq!(embedded_preview_covering(&file, 2560).unwrap(), big, "a large loupe");
+        assert_eq!(embedded_preview_covering(&file, u32::MAX).unwrap(), big);
+        // a smaller preview of another shape (letterboxed 16:9) is never a stand-in for the 3:2 one
+        let mut wide = file.clone();
+        let p = wide.windows(4).position(|w| w == b"PRVW").unwrap();
+        // the JPEG starts 20 bytes after the tag; its frame height 7 bytes into it
+        let height = p + 20 + 7;
+        wide[height..height + 2].copy_from_slice(&911u16.to_be_bytes());
+        assert_eq!(embedded_preview_covering(&wide, 512).unwrap(), big);
+        // damaged files never panic
+        for n in (0..file.len()).step_by(7) {
+            let _ = embedded_preview_covering(&file[..n], 512);
+        }
+    }
+
     /// A structurally complete DCT JPEG (no real image data): `nc` components, `n` entropy bytes.
     fn scan_jpeg(nc: u8, n: usize) -> Vec<u8> {
         let mut j = vec![0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00];
@@ -729,5 +876,70 @@ mod tests {
         let mut f = b"FOVb\x02\0\x02\0".to_vec();
         f.extend_from_slice(&mosaic);
         assert_eq!(embedded_preview(&f), None);
+    }
+
+    /// A CR3's `PRVW` / `THMB` boxes are searched outside the media data only, but before and after
+    /// it: a `moov` after the `mdat` (its Canon `uuid` holding the `THMB`) still gives its preview, and
+    /// bytes inside the media data that look like a preview box are never taken for one.
+    #[test]
+    fn cr3_preview_boxes_after_the_media_data_are_found() {
+        let bx = |kind: &[u8; 4], body: &[u8]| -> Vec<u8> { [&((body.len() + 8) as u32).to_be_bytes()[..], kind, body].concat() };
+        let boxed = |j: &[u8]| {
+            let mut b = b"\0\0\0\0\0\x01\x06\x54\x04\x38\0\x01".to_vec();
+            b.extend_from_slice(&(j.len() as u32).to_be_bytes());
+            b.extend_from_slice(j);
+            b
+        };
+        let (thmb, in_media) = (sized_jpeg(160, 107, 1, 50), sized_jpeg(1620, 1080, 1, 300));
+        let mut file = bx(b"ftyp", b"crx \0\0\0\x01crx isom");
+        file.extend(bx(b"mdat", &bx(b"PRVW", &boxed(&in_media))));
+        file.extend(bx(b"moov", &bx(b"uuid", &[&[0x85u8; 16][..], &bx(b"THMB", &boxed(&thmb))].concat())));
+        assert_eq!(embedded_preview(&file).unwrap(), thmb);
+        for n in (0..file.len()).step_by(5) {
+            let _ = embedded_preview(&file[..n]);
+        }
+    }
+
+    /// Every valid `PRVW` of a CR3 is a candidate (CodeRabbit on #3055): with a small one first and
+    /// one that covers the size after it, a thumbnail takes the second, not the full-size track.
+    #[test]
+    fn a_cr3_with_two_prvw_boxes_offers_both() {
+        let bx = |kind: &[u8; 4], body: &[u8]| -> Vec<u8> { [&((body.len() + 8) as u32).to_be_bytes()[..], kind, body].concat() };
+        let full = |kind: &[u8; 4], body: &[u8]| bx(kind, &[&[0u8; 4][..], body].concat());
+        let boxed = |j: &[u8]| {
+            let mut b = b"\0\0\0\0\0\x01\x06\x54\x04\x38\0\x01".to_vec();
+            b.extend_from_slice(&(j.len() as u32).to_be_bytes());
+            b.extend_from_slice(j);
+            b
+        };
+        let (small, covering, big) = (sized_jpeg(300, 200, 1, 50), sized_jpeg(1620, 1080, 1, 300), sized_jpeg(8192, 5464, 1, 3000));
+        let mut file = bx(b"ftyp", b"crx \0\0\0\x01crx isom");
+        file.extend(bx(b"PRVW", &boxed(&small)));
+        file.extend(bx(b"PRVW", &boxed(&covering)));
+        let mut craw = vec![0u8; 82];
+        craw.extend(bx(b"JPEG", &[0; 4]));
+        let at = 4096u64;
+        let stsd = full(b"stsd", &[&1u32.to_be_bytes()[..], &bx(b"CRAW", &craw)].concat());
+        let stsz = full(b"stsz", &[0u32.to_be_bytes(), 1u32.to_be_bytes(), (big.len() as u32).to_be_bytes()].concat());
+        let co64 = full(b"co64", &[&1u32.to_be_bytes()[..], &at.to_be_bytes()].concat());
+        let trak = bx(b"trak", &bx(b"mdia", &bx(b"minf", &bx(b"stbl", &[stsd, stsz, co64].concat()))));
+        file.extend(bx(b"moov", &trak));
+        file.resize(at as usize, 0);
+        file.extend_from_slice(&big);
+        assert_eq!(embedded_preview_covering(&file, 1024).unwrap(), covering);
+        assert_eq!(embedded_preview_covering(&file, 200).unwrap(), small);
+    }
+
+    /// A CR3 preview box claiming the largest sizes a file can give is skipped, never wrapped or
+    /// panicked on (CodeRabbit on #3080: on a 32-bit build the plain sums could overflow).
+    #[test]
+    fn a_cr3_preview_box_with_hostile_sizes_is_skipped() {
+        let mut file = b"\0\0\0\x18ftypcrx \0\0\0\x01crx isom".to_vec();
+        file.extend_from_slice(&u32::MAX.to_be_bytes());
+        file.extend_from_slice(b"PRVW\0\0\0\0\0\x01\x06\x54\x04\x38\0\x01");
+        file.extend_from_slice(&u32::MAX.to_be_bytes());
+        file.extend_from_slice(&fake_jpeg(64));
+        assert!(embedded_preview(&file).is_none());
+        assert!(embedded_preview_covering(&file, 64).is_none());
     }
 }

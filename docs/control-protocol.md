@@ -390,3 +390,7 @@ A center `move` can include `before` (panel ID or null to append) for tab order.
 The equivalent `{"action": ...}` form accepts a serialized shared docking action;
 this is also the form emitted by the renderer. Protected-canvas and app-specific panel
 rules apply equally to both forms.
+
+### R3D culling timing
+
+`ui.inspect.perf.loupeSteps` reports the bounded recent timing of first camera preview, first full-size and developed render while stepping in Detail. These are measured presentation times, not decode-only benchmarks. The `bench-cull` CLI command uses its own temporary libraries and never writes beside source photos.

@@ -358,3 +358,13 @@ parents would lose merge-specific integration fixes.
 ## Isolated BM3D denoise candidate – 2026-10-27
 
 Selective #2982 port (57f974c2) on 3098c66a, retaining egui 0.36 and the normal AHD path. The denoised component performs its own Bayer reconstruction. With no valid selected ONNX model, Builtin is used; selected models remain alternatives. Consequently previously enabled photos whose selected model is missing can now render differently. No original is rewritten. Builtin cache fingerprint is builtin@5; render cache 73 and look version 13 are retained. Pending model-setup UI is removed only in this variant. #2929 is prepared in a separate worktree. No installed-app or native photographic acceptance is implied.
+
+## Culling core candidate (#3055)
+
+Selectively backported upstream head `7fa770fb94eb8211ddd08e6008876f1c4785c876` onto adaptive Auto v0.14.0. Incremental browse, camera-JPEG look-ahead, CR3 preview sizing and source badges retain the fork renderer, colour/optics, pixel zoom and original-file safety. Module-split paths were mapped onto this checkout; no egui upgrade. Validation recorded separately; local user acceptance pending.
+
+The dependent #3077 (`aa852a75`) and #3080 (`703f5727`) follow-ups add reusable built previews, bounded background preparation, a configurable disk budget and reserved stand-in workers. The fork Auto marker is ignored as presentation metadata in profile-only camera-preview eligibility. All three culling PRs are validated together as one feature chain before commit; no upstream module-layout or egui migration is included.
+
+## Combined denoise/culling source identity – 2026-10-27
+
+A deterministic completion-order test reproduces a late plain/previous-model decode repopulating the source cache after denoise readiness or a model switch. Decoded twins now retain their product key; Session acceptance requires both the original RAW identity and the current product identity. Plain sources remain reusable after product removal; unbound twins cannot claim to be plain. Render cache77 invalidates earlier derived previews; LOOK13 is unchanged. The separate optical-crop variant reserves78. Full combination CI and real cache-rebuild checks are required before commit.
