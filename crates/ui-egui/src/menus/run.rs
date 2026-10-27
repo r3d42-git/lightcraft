@@ -1678,7 +1678,7 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
                         let profiles = v["imported"].as_array().map_or(0, Vec::len);
                         if profiles > 0 {
                             parts.push(crate::i18n::tr_format!(
-                                "Imported {profiles} profile{} (Profile browser ▸ their groups)",
+                                "Imported {profiles} profile{} (Profile browser → their groups)",
                                 if profiles == 1 { "" } else { "s" },
                                 profiles = profiles
                             ));
