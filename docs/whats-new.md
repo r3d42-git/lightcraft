@@ -2,6 +2,9 @@
 
 ## 2026-10-27 (R3D candidate)
 
+### Sharper small exports
+- Export downscaling uses Lanczos-3 while previews retain their smooth filter. Screen and print output sharpening use a Gaussian luma mask with bounded edge overshoot.
+
 ### SDR histogram after HDR editing
 - Switching HDR off keeps the SDR histogram during subsequent slider drags; the retained histogram from the last HDR drag is used only for HDR edits.
 
