@@ -36,6 +36,8 @@ pub(crate) fn launch_imports(args: &[String]) -> (Vec<String>, Vec<String>) {
     launch_imports_in(args, cwd.as_deref(), home.as_deref())
 }
 
+/// Split launch arguments into importable paths and refusal notices. Relative paths use `cwd`;
+/// `home` identifies the whole home folder, which must not be imported.
 pub(crate) fn launch_imports_in(args: &[String], cwd: Option<&std::path::Path>, home: Option<&std::path::Path>) -> (Vec<String>, Vec<String>) {
     use lightcraft_engine::import::{LaunchPath, launch_path};
     let (mut files, mut notices) = (Vec::new(), Vec::new());

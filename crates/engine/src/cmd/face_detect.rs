@@ -297,6 +297,7 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"detector": LABEL, "applied": applied, "photos": results, "ms": started.elapsed().as_secs_f64() * 1000.0}))
 }
 
+/// Describe the face detection and face-model device query commands.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(

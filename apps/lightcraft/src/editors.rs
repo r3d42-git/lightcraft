@@ -111,6 +111,7 @@ fn windows_default_command(path: &str) -> Command {
     c
 }
 
+/// Resolve an external editor name to its platform launcher, reporting when PhotoCraft is missing.
 fn launcher(app: &str) -> Result<Launcher, String> {
     let app = app.trim();
     if app.is_empty() {

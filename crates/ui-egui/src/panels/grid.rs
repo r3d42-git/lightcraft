@@ -1214,6 +1214,7 @@ pub fn toggle_stack(app: &mut LightcraftApp, ctx: &egui::Context, id: PhotoId) {
     }
 }
 
+/// Draw the photo's grid context menu and dispatch the selected action.
 pub fn context_menu(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     if !app.session.selection.contains(id) {
         let _ = app.run("library.select", json!({"ids": [id.0]}));
