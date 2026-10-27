@@ -5,7 +5,8 @@ use super::proxy::{CLIP_TOLERANCE, LensGeometry, MIN_PREVIEW_FRACTION, proxies, 
 use super::tone::{HighlightCheck, highlights};
 use super::*;
 
-/// The look fitted to the file's camera JPEG, and whether that JPEG is black and white ([`monochrome`]).
+/// Fit the camera JPEG's look, using `correction` to align CR3 sensor/JPEG geometry when eligible;
+/// also report whether the JPEG is black and white ([`monochrome`]).
 pub(crate) fn fit_preview(
     raw: &RawImage,
     bytes: &[u8],

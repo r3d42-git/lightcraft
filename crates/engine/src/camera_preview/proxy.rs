@@ -82,7 +82,8 @@ pub(super) fn structure_agrees(sensor: &Rgb32f, reference: &Rgb32f) -> bool {
 
 /// Same-size proxies of the sensor (white-balanced, baseline exposure, through `transform`'s
 /// matrix: the generic camera ≈ sRGB model) and of the file's embedded camera JPEG (linear Rec.2020),
-/// and per proxy pixel whether any sensor sample it covers is clipped.
+/// and per proxy pixel whether any sensor sample it covers is clipped. `correction` proposes CR3
+/// correspondence geometry; it must pass the independent geometry gates without worsening the framing fallback.
 pub(super) fn proxies(
     raw: &RawImage,
     bytes: &[u8],
@@ -208,11 +209,15 @@ thread_local! {
     static LAST_FRAMED_SCORES: std::cell::Cell<Option<[f64; 4]>> = const { std::cell::Cell::new(None) };
 }
 
+/// Return this test thread's last `[train_before, train_after, held_before, held_after]`
+/// scores against the original sensor geometry.
 #[cfg(test)]
 pub(super) fn geometry_gate_scores() -> Option<[f64; 4]> {
     LAST_GEOMETRY_SCORES.get()
 }
 
+/// Return this test thread's last `[train_before, train_after, held_before, held_after]`
+/// scores comparing the CR3 proposal with the established framing fallback.
 #[cfg(test)]
 pub(super) fn geometry_framed_scores() -> Option<[f64; 4]> {
     LAST_FRAMED_SCORES.get()
@@ -418,6 +423,8 @@ pub(super) fn align_profile_geometry(
     align_profile_geometry_against(sensor, clipped, reference, correction, orientation, None)
 }
 
+/// Propose lens geometry plus bounded framing and require the original training/held-out gates.
+/// When supplied, the framed CR3 baseline must also be preserved or improved on both splits.
 fn align_profile_geometry_against(
     sensor: &Rgb32f,
     clipped: &Rgb32f,
@@ -448,7 +455,7 @@ fn align_profile_geometry_against(
 
 /// Colour training pairs of one raw for a camera profile: white-balanced camera RGB (with the
 /// baseline exposure) → its camera JPEG (linear Rec.2020). `None` for formats with their own
-/// colour matrices, other files or unusable previews.
+/// colour matrices, other files or unusable previews. `correction` may supply accepted CR3 geometry.
 pub(crate) fn profile_pairs(
     raw: &RawImage,
     bytes: &[u8],

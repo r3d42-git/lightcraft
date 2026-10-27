@@ -2428,6 +2428,7 @@ fn a_narrow_black_and_white_curve_that_darkens_the_bright_areas_is_refused() {
     }
 }
 
+/// Generate a deterministic textured sensor image for profile-warp correspondence tests.
 fn profile_geometry_scene(w: usize, h: usize) -> Rgb32f {
     let mut sensor = Rgb32f::new(w, h);
     for (i, p) in sensor.data.iter_mut().enumerate() {
@@ -2438,6 +2439,7 @@ fn profile_geometry_scene(w: usize, h: usize) -> Rgb32f {
     sensor
 }
 
+/// Return a deliberately strong radial warp for synthetic correspondence tests.
 fn synthetic_profile_lens() -> lightcraft_develop::EmbeddedLens {
     lightcraft_develop::EmbeddedLens {
         warp: Some(lightcraft_develop::EmbeddedWarp {
@@ -2449,6 +2451,7 @@ fn synthetic_profile_lens() -> lightcraft_develop::EmbeddedLens {
     }
 }
 
+/// Render the known lens and frame mapping used as ground truth by profile geometry tests.
 fn profile_geometry_target(sensor: &Rgb32f, lens: &lightcraft_develop::EmbeddedLens, framing: Cr3Framing) -> Rgb32f {
     let mut warp = lightcraft_pipeline::optics::Warp::identity(sensor.width as f64, sensor.height as f64);
     warp.lens = Some(*lens);
@@ -2460,6 +2463,7 @@ fn profile_geometry_target(sensor: &Rgb32f, lens: &lightcraft_develop::EmbeddedL
     })
 }
 
+/// Measure RMS colour error over finite, mutually valid proxy samples.
 fn geometry_rms(a: &Rgb32f, b: &Rgb32f) -> f64 {
     let mut error = 0.0;
     let mut n = 0;
@@ -2475,6 +2479,7 @@ fn geometry_rms(a: &Rgb32f, b: &Rgb32f) -> f64 {
     (error / f64::from(n)).sqrt()
 }
 
+/// Accept matching lens and framing geometry even when the JPEG has a nonlinear tone curve.
 #[test]
 fn external_profile_geometry_aligns_lens_and_framing_before_colour() {
     let sensor = profile_geometry_scene(384, 256);
@@ -2489,6 +2494,7 @@ fn external_profile_geometry_aligns_lens_and_framing_before_colour() {
     assert!(geometry_rms(&sensor, &expected) > 0.05, "synthetic mismatch is material");
 }
 
+/// Allow lens-only alignment while refusing unrelated, already aligned, or absent geometry.
 #[test]
 fn external_profile_geometry_accepts_lens_only_and_rejects_unrelated_or_already_aligned() {
     let sensor = profile_geometry_scene(384, 256);
@@ -2516,6 +2522,7 @@ fn external_profile_geometry_accepts_lens_only_and_rejects_unrelated_or_already_
     );
 }
 
+/// Preserve the developed crop and recover correspondences at both proxy sizes and all EXIF orientations.
 #[test]
 fn external_profile_geometry_preserves_oriented_default_crop_and_resolution() {
     let lens = synthetic_profile_lens();
@@ -2534,6 +2541,8 @@ fn external_profile_geometry_preserves_oriented_default_crop_and_resolution() {
     }
 }
 
+/// Forward accepted CR3 geometry through file-local fits, pooled pairs and DNG colour tags,
+/// while preserving the same outputs for other RAW formats.
 #[test]
 fn cr3_profile_geometry_reaches_file_and_pooled_pairs_in_the_default_crop() {
     use lightcraft_raw::{BlackLevel, RawData, Rect};
@@ -2623,6 +2632,7 @@ fn cr3_profile_geometry_reaches_file_and_pooled_pairs_in_the_default_crop() {
     assert_eq!(tags, expected_tags, "DNG tags use the resolved correspondence geometry too");
 }
 
+/// Keep clipped contributors in the resampled mask and mark out-of-frame samples invalid.
 #[test]
 fn correspondence_mask_keeps_every_contributing_clipped_sample_and_invalid_border() {
     let mut mask = Rgb32f::new(8, 6);
@@ -2637,6 +2647,7 @@ fn correspondence_mask_keeps_every_contributing_clipped_sample_and_invalid_borde
     assert!(reduced.data.iter().any(|p| p[0] > 0.0));
 }
 
+/// Apply oriented CR3 geometry once, with white balance applied once, across all EXIF orientations.
 #[test]
 fn cr3_profile_geometry_shares_orientation_and_applies_white_balance_once() {
     use lightcraft_raw::{BlackLevel, RawData, Rect};
@@ -2768,6 +2779,7 @@ fn corpus_cr3_profile_geometry_diagnostics() {
     }
 }
 
+/// Keep the accepted CR3 framing fallback when a proposed profile warp fails its paired comparison.
 #[test]
 fn cr3_rejected_profile_preserves_accepted_framing_fallback() {
     use lightcraft_raw::{BlackLevel, RawData, Rect};

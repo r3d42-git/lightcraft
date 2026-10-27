@@ -3,6 +3,7 @@ use super::*;
 
 // ------------------------------------------------------------------------------------- General
 
+/// Draw the General settings tab, including language and library-location controls.
 pub(super) fn general_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     row(ui, t, crate::i18n::tr("Language"), |ui| {
         let languages: Vec<_> = crate::i18n::Locale::for_picker().into_iter().map(|language| (language, language.name())).collect();

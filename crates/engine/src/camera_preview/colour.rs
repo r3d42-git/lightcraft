@@ -135,6 +135,7 @@ pub(crate) fn starting_colour_tags(raw: &mut RawImage, bytes: &[u8]) -> Option<C
     starting_colour_tags_with_correction(raw, bytes, correction.as_ref())
 }
 
+/// Build DNG colour tags using `correction` only for CR3 camera-JPEG correspondence geometry.
 pub(super) fn starting_colour_tags_with_correction(
     raw: &mut RawImage,
     bytes: &[u8],

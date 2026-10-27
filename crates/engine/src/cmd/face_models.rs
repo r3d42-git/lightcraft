@@ -501,6 +501,7 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"embedder": st.embedder}))
 }
 
+/// Enable or disable face recognition, requiring an installed recognition model when enabling it.
 fn enable(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "faces.enable";
     let dir = models_dir(s, C)?;
