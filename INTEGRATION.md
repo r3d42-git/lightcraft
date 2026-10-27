@@ -354,3 +354,7 @@ parents would lose merge-specific integration fixes.
 - Profiles are pinned for this prototype. Switching data under a running or
   previously edited library needs explicit version/migration handling before
   profile updates can become a normal user operation.
+
+## Local PR candidates — 2026-10-27
+
+PR #3038, head `ff913833de19cbb017c79c596cc31d3cbe75f2b4`, declares the 18 shipped UI languages for macOS system dialogs. The R3D bundle identity remains. AppKit follows system/app language preferences; a LightCraft-only language switch does not force native dialog language. Native dialog acceptance remains pending.
