@@ -21,7 +21,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-pub use disk::{DiskCache, decode_jpeg, encode_jpeg};
+pub use disk::{DiskCache, decode_jpeg, encode_jpeg, jpeg_dims};
 pub use hash::{Hash128, Hasher128, hash_bytes};
 use lightcraft_raster::Rgba8;
 pub use lru::{Lru, next_tick};
@@ -106,6 +106,36 @@ impl PreviewCache {
         let img = Arc::new(self.disk.as_ref()?.get(key)?);
         self.mem.lock().unwrap_or_else(|e| e.into_inner()).insert(key, img.clone(), cost(&img));
         Some(img)
+    }
+
+    /// The size of the image kept under `key` (memory, else disk: read from its file's header), without
+    /// loading it or changing what is kept.
+    pub fn dims(&self, key: Hash128) -> Option<(usize, usize)> {
+        if self.generation.read().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            return None;
+        }
+        if let Some(v) = self.mem.lock().unwrap_or_else(|e| e.into_inner()).peek(&key) {
+            return Some((v.width, v.height));
+        }
+        self.disk.as_ref()?.dims(key)
+    }
+
+    /// The memory LRU's copy of `key`, without looking on disk.
+    pub fn get_memory(&self, key: Hash128) -> Option<Arc<Rgba8>> {
+        if self.generation.read().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            return None;
+        }
+        self.mem.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
+    }
+
+    /// Keep `img` in memory only (it is never written to disk): for pictures that are cheap
+    /// enough to make again, such as a raw's decoded camera JPEG, but worth keeping for a revisit.
+    pub fn put_memory(&self, key: Hash128, img: Arc<Rgba8>) {
+        if self.generation.read().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            return;
+        }
+        let c = cost(&img);
+        self.mem.lock().unwrap_or_else(|e| e.into_inner()).insert(key, img, c);
     }
 
     pub fn put(&self, key: Hash128, img: Arc<Rgba8>) {

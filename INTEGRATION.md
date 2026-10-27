@@ -354,3 +354,9 @@ parents would lose merge-specific integration fixes.
 - Profiles are pinned for this prototype. Switching data under a running or
   previously edited library needs explicit version/migration handling before
   profile updates can become a normal user operation.
+
+## Culling core candidate (#3055)
+
+Selectively backported upstream head `7fa770fb94eb8211ddd08e6008876f1c4785c876` onto adaptive Auto v0.14.0. Incremental browse, camera-JPEG look-ahead, CR3 preview sizing and source badges retain the fork renderer, colour/optics, pixel zoom and original-file safety. Module-split paths were mapped onto this checkout; no egui upgrade. Validation recorded separately; local user acceptance pending.
+
+The dependent #3077 (`aa852a75`) and #3080 (`703f5727`) follow-ups add reusable built previews, bounded background preparation, a configurable disk budget and reserved stand-in workers. The fork Auto marker is ignored as presentation metadata in profile-only camera-preview eligibility. All three culling PRs are validated together as one feature chain before commit; no upstream module-layout or egui migration is included.

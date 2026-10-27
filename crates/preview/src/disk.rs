@@ -172,6 +172,21 @@ impl DiskCache {
         }
     }
 
+    /// The size (width, height) of the picture kept under `key`, read from the start of its file
+    /// only (no decode, no hit counted, nothing written): to tell whether a preview is there and
+    /// big enough without loading it.
+    pub fn dims(&self, key: Hash128) -> Option<(usize, usize)> {
+        use std::io::Read;
+        let p = self.path(key);
+        if !p.parent().is_some_and(is_real_dir) {
+            return None;
+        }
+        let f = std::fs::File::open(&p).or_else(|_| std::fs::File::open(self.named(key, OLD_EXT))).ok()?;
+        let mut head = Vec::with_capacity(HEADER_BYTES as usize);
+        f.take(HEADER_BYTES).read_to_end(&mut head).ok()?;
+        jpeg_dims(&head)
+    }
+
     pub fn put(&self, key: Hash128, img: &Rgba8) {
         let Some(bytes) = encode_jpeg(img) else { return };
         let p = self.path(key);
@@ -426,6 +441,20 @@ pub fn encode_jpeg(img: &Rgba8) -> Option<Vec<u8>> {
     enc.set_sampling_factor(jpeg_encoder::SamplingFactor::R_4_2_0);
     enc.encode(&rgb, img.width as u16, img.height as u16, jpeg_encoder::ColorType::Rgb).ok()?;
     Some(out)
+}
+
+/// How much of a cached file [`DiskCache::dims`] reads: the JPEG headers this cache writes come
+/// first and are a few hundred bytes.
+const HEADER_BYTES: u64 = 64 << 10;
+
+/// A JPEG's (width, height) from its headers (`None`: not a JPEG, or cut short before its frame header).
+pub fn jpeg_dims(bytes: &[u8]) -> Option<(usize, usize)> {
+    use zune_core::bytestream::ZCursor;
+    let mut d = zune_jpeg::JpegDecoder::new(ZCursor::new(bytes));
+    d.decode_headers().ok()?;
+    let info = d.info()?;
+    let (w, h) = (info.width as usize, info.height as usize);
+    (w > 0 && h > 0).then_some((w, h))
 }
 
 /// Decode a cached thumbnail (see [`encode_jpeg`]).

@@ -786,6 +786,16 @@ pub fn load_embedded_preview(bytes: &[u8], max_edge: usize) -> Option<(Rgb32f, S
 /// loupe and grid show it until the raw itself has been developed ([`crate::media::QuickJob`]). The smallest
 /// embedded JPEG that covers `max_edge` is decoded, not the largest.
 pub fn embedded_preview_srgb(bytes: &[u8], max_edge: usize) -> Option<lightcraft_raster::Rgba8> {
+    // a plain sRGB camera JPEG straight to 8-bit, as the quick path decodes it (PERF-CULL-3), so
+    // both paths give the same picture; anything else takes the general decode
+    let edge = u32::try_from(max_edge).unwrap_or(u32::MAX);
+    if lightcraft_raw::embedded_preview_color_space(bytes) != Some(lightcraft_raw::PreviewColorSpace::AdobeRgb)
+        && let Some(jpeg) = stand_in_image(bytes, Some(max_edge))
+        && matches!(jpeg, std::borrow::Cow::Owned(_))
+        && let Ok(Some((image, orientation))) = lightcraft_codecs::decode_jpeg_srgb8_fit(&jpeg, edge, edge)
+    {
+        return Some(image.oriented(preview_orientation(bytes, orientation)));
+    }
     let mut d = decode_raw_preview(bytes, fit_box(max_edge), Some(max_edge))?;
     if d.image.width.max(d.image.height) > max_edge {
         d.image = fit(&d.image, max_edge, max_edge, Filter::Box);
@@ -1056,6 +1066,12 @@ fn raf_preview_extent(prefix: &[u8]) -> Option<u64> {
 /// `adobe_rgb`: the container declares the preview Adobe RGB ([`PreviewRead::adobe_rgb`]), applied
 /// as [`decode_raw_preview`] applies it. `None` when the bytes are not a decodable image.
 fn quick_image_srgb(header: &[u8], window: &[u8], adobe_rgb: bool, max_edge: usize) -> Option<lightcraft_raster::Rgba8> {
+    // a plain sRGB camera JPEG (nearly all of them) straight to 8-bit (PERF-CULL-3: 45 MP preview
+    // of an EOS R5 C fitted to 2560 px, 194 → ~110 ms); anything else takes the general decode
+    let edge = u32::try_from(max_edge).unwrap_or(u32::MAX);
+    if !adobe_rgb && let Ok(Some((image, orientation))) = lightcraft_codecs::decode_jpeg_srgb8_fit(window, edge, edge) {
+        return Some(image.oriented(preview_orientation(header, orientation)));
+    }
     let decoded = if adobe_rgb && window.starts_with(&[0xff, 0xd8]) {
         lightcraft_codecs::decode_jpeg_with_fallback(window, fit_box(max_edge), lightcraft_codecs::NamedSpace::AdobeRgb)
     } else {
@@ -2796,12 +2812,14 @@ pub(crate) mod tests {
         assert_eq!((q.quick, q.key), (Some(QuickSource::Embedded), job.key));
         drop(job.clone().run());
         assert_eq!(s.quick_thumb_job(&job).unwrap().run().quick, Some(QuickSource::Cached));
-        // an edited raw: no embedded stand-in (it wouldn't show the edit)
+        // an edited raw: the embedded preview is still its first picture, but only a stand-in (the
+        // grid renders the real thumbnail behind it: never an empty cell)
         s.execute("library.select", &serde_json::json!({"ids": [id.0]})).unwrap();
         s.execute("develop.set", &serde_json::json!({"control": "light.exposure", "value": 1.0})).unwrap();
         let job = s.thumb_job(id, 128).unwrap();
-        assert!(s.quick_thumb_job(&job).is_none());
-        assert_eq!(s.quick_view_job(id, 1600, true).unwrap().run().quick, Some(QuickSource::Small));
+        assert_eq!(s.quick_thumb_job(&job).unwrap().run().quick, Some(QuickSource::Embedded));
+        assert!(!s.embedded_thumb_is_final(s.catalog.photo(id).unwrap()));
+        assert_eq!(s.quick_view_job(id, 1600, true).unwrap().run().quick, Some(QuickSource::Embedded));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

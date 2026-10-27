@@ -288,6 +288,22 @@ pub fn has_import_look(p: &Photo) -> bool {
     *p.develop == defaults
 }
 
+/// [`has_import_look`], or the only change is the profile, such as a default profile picked for a
+/// body's photos: the camera's JPEG then shows the photo as framed and exposed, a fair stand-in for
+/// a focus check at 100 %.
+pub fn looks_as_shot(p: &Photo) -> bool {
+    if has_import_look(p) {
+        return true;
+    }
+    let neutral = |d: &lightcraft_develop::DevelopSettings| {
+        let mut d = d.clone();
+        d.profile.id = lightcraft_develop::Profile::default().id;
+        d.auto_tone = None;
+        d
+    };
+    neutral(&p.develop) == neutral(&p.camera_defaults())
+}
+
 /// User defaults applied on import (Settings → Import; saved in the library's `prefs.json`).
 /// Presets are referenced by id; a preset that no longer exists is ignored.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -700,6 +716,87 @@ impl ScanInput {
     /// The library as the scan sees it (shared, for [`crate::sync`], which looks at the same one).
     pub(crate) fn library(&self) -> std::sync::Arc<lightcraft_catalog::Catalog> {
         std::sync::Arc::clone(&self.library)
+    }
+}
+
+/// What browsing a folder (Local) has to read: the files of `files` the library has no photo at,
+/// in the order the view will show them (see [`browse_order`]). Unlike [`scan_with`] nothing is
+/// read, so the import that follows adds the photos batch by batch as it reads them, and the first
+/// screen of a 3,000-raw wedding shows within a second instead of after every file was read
+/// (measured on 2,933 EOS R5 C CR3s: 30.6 s to the first photo before).
+pub fn browse_queue(input: &ScanInput, files: Vec<String>, sort: &lightcraft_catalog::Sort) -> Vec<String> {
+    let known = library_files(&input.library, &files);
+    let mut files: Vec<String> = files.into_iter().filter(|f| !known.contains_key(Path::new(f))).collect();
+    browse_order(&mut files, sort);
+    files
+}
+
+/// The files browsing `root` (Local) lists: the supported, non-hidden files in it, or below it
+/// with `subfolders`, never inside the library's own folder (as [`scan_with`] skips it).
+///
+/// A folder that can't be listed whole (gone, no access, a network share dropping out) is an
+/// error, not an empty or partial listing: the browse bookkeeping would take the files missing
+/// from it for files gone. (With `subfolders` the walk skips the folders below it that it can't
+/// read, as the import's scan does.)
+pub fn browse_files(input: &ScanInput, root: &str, subfolders: bool) -> std::io::Result<Vec<String>> {
+    // the library's folder itself, or a folder inside it: nothing to browse
+    if input.skip.as_deref().is_some_and(|lib| Path::new(root).starts_with(lib)) {
+        return Ok(Vec::new());
+    }
+    if subfolders {
+        // (the root itself must be there to be walked)
+        std::fs::read_dir(root)?;
+        return Ok(expand(&[root.to_string()], input.skip.as_deref()));
+    }
+    let mut v = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let f = entry?.path();
+        if f.is_file() && is_supported(&f) && !f.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) {
+            v.push(f.to_string_lossy().to_string());
+        }
+    }
+    v.sort();
+    Ok(v)
+}
+
+/// Order `files` the way a view sorted by `sort` will show them, as far as the file system can
+/// tell before the files are read: by modification time for the capture date (a camera's file
+/// time is its capture time, near enough to fill the first screen first), by name, or by size.
+/// New photos share one import time and have no edit time, so the import- and edit-date sorts
+/// show them by name. Ties go by name in the view's direction, as the catalog breaks them
+/// ([`lightcraft_catalog::Sort::order`]); new photos tie on rating too. Random keeps the given order. Files whose
+/// time or size can't be read go last.
+pub fn browse_order(files: &mut [String], sort: &lightcraft_catalog::Sort) {
+    use lightcraft_catalog::SortKey;
+    use lightcraft_catalog::query::cmp_name;
+    use std::cmp::Ordering;
+    let asc = sort.ascending;
+    let name = |f: &str| Path::new(f).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let directed = |o: Ordering| if asc { o } else { o.reverse() };
+    // `key` per file (`None`: unreadable, last in either direction), then the name, in the view's direction
+    let by_key = |files: &mut [String], key: &dyn Fn(&str) -> Option<u64>| {
+        let mut keyed: Vec<(Option<u64>, String, String)> = files.iter().map(|f| (key(f), name(f), f.clone())).collect();
+        keyed.sort_by(|a, b| match (a.0, b.0) {
+            (Some(x), Some(y)) => directed(x.cmp(&y).then_with(|| cmp_name(&a.1, &b.1))),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => directed(cmp_name(&a.1, &b.1)),
+        });
+        for (slot, (_, _, f)) in files.iter_mut().zip(keyed) {
+            *slot = f;
+        }
+    };
+    match sort.key {
+        SortKey::CaptureDate => by_key(files, &|f| {
+            let t = std::fs::metadata(f).and_then(|m| m.modified()).ok()?;
+            // (nanoseconds since the epoch fit a u64 until 2554; earlier times count as the epoch)
+            Some(t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)))
+        }),
+        SortKey::ImportDate | SortKey::EditDate | SortKey::Rating | SortKey::FileName => {
+            files.sort_by(|a, b| directed(cmp_name(&name(a), &name(b))));
+        }
+        SortKey::FileSize => by_key(files, &|f| std::fs::metadata(f).ok().map(|m| m.len())),
+        SortKey::Random => {}
     }
 }
 
@@ -1628,7 +1725,16 @@ impl Session {
             (Some(l), MediaKind::Raw) => Some((c.path.clone(), l.clone(), edge)),
             _ => None,
         };
-        Some(crate::media::QuickJob { request_id: 0, photo: id, key, cached: Vec::new(), embedded, small: Some(Box::new(small)) })
+        Some(crate::media::QuickJob {
+            request_id: 0,
+            photo: id,
+            key,
+            cached: Vec::new(),
+            embedded,
+            embedded_cache: None,
+            embedded_on_disk: false,
+            small: Some(Box::new(small)),
+        })
     }
 
     /// Use the system clock for import/edit times (native hosts).

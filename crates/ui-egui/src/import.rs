@@ -534,27 +534,31 @@ pub fn browse(app: &mut LightcraftApp, path: &str, subfolders: Option<bool>) -> 
     let (tx, rx) = std::sync::mpsc::channel();
     let p = progress.clone();
     let root = dir_s.clone();
+    let sort = app.session.sort;
     let job = move || {
-        let files: Vec<String> = if subfolders {
-            lightcraft_engine::import::expand(&[root], None)
-        } else {
-            let mut v: Vec<String> = std::fs::read_dir(&root)
-                .map(|rd| {
-                    rd.flatten()
-                        .map(|e| e.path())
-                        .filter(|f| {
-                            f.is_file()
-                                && lightcraft_engine::import::is_supported(f)
-                                && !f.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'))
-                        })
-                        .map(|f| f.to_string_lossy().to_string())
-                        .collect()
-                })
-                .unwrap_or_default();
-            v.sort();
-            v
+        // (never the library's own folder, which the import would otherwise read as photos)
+        let files = match lightcraft_engine::import::browse_files(&input, &root, subfolders) {
+            Ok(files) => files,
+            Err(e) => {
+                // nothing is sent: the scan ends as failed, and no record is taken for a file gone
+                log::warn!("browse: can't list {root}: {e}");
+                return;
+            }
         };
-        let _ = tx.send(scan_with(input, &files, &p));
+        // Nothing is read here: the import that follows reads the files and adds them batch by
+        // batch, first screen first, so the view fills while the rest is read (PERF-CULL-1).
+        let queue = lightcraft_engine::import::browse_queue(&input, files.clone(), &sort);
+        p.total.store(queue.len(), Ordering::Relaxed);
+        p.done.store(queue.len(), Ordering::Relaxed);
+        // the files the library knows come too, marked as such: the folder bookkeeping (browse
+        // times, records of files gone) needs the whole listing; only the queue is imported
+        let queued: std::collections::HashSet<&String> = queue.iter().collect();
+        let known: Vec<String> = files.iter().filter(|f| !queued.contains(f)).cloned().collect();
+        let known =
+            known.into_iter().map(|path| lightcraft_engine::import::ImportCandidate { path, duplicate: Some("path".into()), ..Default::default() });
+        let candidates =
+            queue.iter().cloned().map(|path| lightcraft_engine::import::ImportCandidate { path, ..Default::default() }).chain(known).collect();
+        let _ = tx.send(lightcraft_engine::import::ScanOutput { candidates, probes: Default::default() });
     };
     #[cfg(not(target_arch = "wasm32"))]
     std::thread::spawn(job);

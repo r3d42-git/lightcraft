@@ -14,6 +14,11 @@ use crate::state::{BeforeAfter, MAX_ZOOM, RightPanel, ToolOverlay, Zoom};
 use crate::theme::Tokens;
 use crate::widgets::register;
 
+mod look_ahead;
+use look_ahead::BEHIND;
+pub use look_ahead::LookAhead;
+pub(crate) use look_ahead::look_ahead;
+
 /// An in-progress on-canvas gesture.
 #[derive(Clone, Debug)]
 pub enum Gesture {
@@ -487,15 +492,16 @@ fn request_window(app: &mut LightcraftApp, c: &WindowCtx, v: &WindowView) -> Opt
 
 /// Draw `v`'s window texture over the whole-frame render, if it is the one asked for (or, in a
 /// drag, an earlier draft of it).
-fn draw_window(p: &egui::Painter, app: &LightcraftApp, c: &WindowCtx, v: &WindowView, wanted: &crate::region::RegionView) {
-    let Some(tex) = app.renderer.textures.get(&v.slot).filter(|t| t.photo == c.id) else { return };
+fn draw_window(p: &egui::Painter, app: &LightcraftApp, c: &WindowCtx, v: &WindowView, wanted: &crate::region::RegionView) -> bool {
+    let Some(tex) = app.renderer.textures.get(&v.slot).filter(|t| t.photo == c.id) else { return false };
     let Some(tile) = app.region_tiles.get(&(v.before, tex.key)).filter(|t| t.is_current(c.id, wanted.full, wanted.settings, c.interacting)) else {
-        return;
+        return false;
     };
     let (fw, fh) = (tile.full.0 as f32, tile.full.1 as f32);
     let at = v.img.min + vec2(tile.window.x as f32 / fw * v.img.width(), tile.window.y as f32 / fh * v.img.height());
     let dst = Rect::from_min_size(at, vec2(tile.window.w as f32 / fw * v.img.width(), tile.window.h as f32 / fh * v.img.height()));
     p.image(tex.tex.id(), dst, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    true
 }
 
 pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
@@ -653,10 +659,30 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     // one axis only. A box that matches the source to rounding is rendered at exactly its size.
     let short = |e: usize, a: f32| ((e as f32 / a).round() as usize).max(1);
     let (rw, rh) = if aspect >= 1.0 { (want, short(want, aspect)) } else { (short(want, 1.0 / aspect), want) };
+    // the most the loupe shows a whole photo at (the canvas's long side; a photo of another shape
+    // than this one may fill it): standard previews are built at least this big
+    if matches!(app.ui.zoom, Zoom::Fit) && !interacting && !split && !split_view {
+        let canvas_long = sizes.canvas_long;
+        if canvas_long.is_finite() && canvas_long >= 1.0 {
+            app.session.loupe_edge = canvas_long.ceil() as usize;
+        }
+    }
     // hover and before renders are stand-ins: the preview size is plenty and keeps them cheap
     let se = app.ui.settings.stand_in_edge(want, texture_side);
     let (sw, sh) = if aspect >= 1.0 { (se, short(se, aspect)) } else { (short(se, 1.0 / aspect), se) };
-    if let Some(job) = app.session.loupe_job(id, rw.max(8), rh.max(8), !crop_tool) {
+    // stepping fast (an arrow held down): the render waits until the photo stays, the camera JPEG
+    // or thumbnail shows meanwhile, and a render queued for a photo already left is dropped
+    let settling = !interacting && app.loupe_timing.settling(id, now);
+    if settling {
+        if app.renderer.textures.get(&Slot::Main).is_none_or(|t| t.photo != id) {
+            app.renderer.drop_queued(Slot::Main);
+        }
+        // the zoomed-in windows wait too (a region render decodes the raw as much as the frame)
+        app.renderer.drop_queued(Slot::Region);
+        app.renderer.drop_queued(Slot::RegionBefore);
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(crate::loupe_timing::SETTLE_SECS / 2.0));
+    }
+    if !settling && let Some(job) = app.session.loupe_job(id, rw.max(8), rh.max(8), !crop_tool) {
         let job = if interacting { job.draft() } else { job };
         // at rest the render is shrunk to exactly the size it is drawn at with a Lanczos filter on
         // the worker, so the window draws it texel for texel instead of shrinking it with 2-tap
@@ -665,6 +691,11 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         let job = job.with_overlay(overlay).with_proof(app.ui.soft_proof.then_some(app.ui.proof));
         let job = job.with_hidden_grading(app.ui.grading_hidden_for(id));
         app.renderer.request(Slot::Main, job, 100);
+        // the photo on screen comes first: background preparation waits while it is being made
+        // (not once it is there: asking every frame held the background build back for good)
+        if app.renderer.is_pending(Slot::Main) || app.renderer.textures.get(&Slot::Main).is_none_or(|t| t.photo != id) {
+            lightcraft_engine::prep::foreground();
+        }
         // a drag's draft that renders in a few ms (GPU) is drawn in this frame, not the next (zoomed
         // in, what changes on screen is the window's draft)
         #[cfg(not(target_arch = "wasm32"))]
@@ -689,13 +720,32 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     };
     // once this photo is on screen: prepare its neighbours in filmstrip order (source decoded and
     // kept, view render cached) so stepping to them is instant
-    if !interacting && !app.renderer.is_pending(Slot::Main) && app.renderer.textures.get(&Slot::Main).is_some_and(|t| t.photo == id) {
+    // (nor while a cell on screen waits for its first picture: those come before anything bigger)
+    if !interacting
+        && !app.renderer.is_pending(Slot::Main)
+        && app.renderer.textures.get(&Slot::Main).is_some_and(|t| t.photo == id)
+        && !app.pictures_busy(app.renderer.frame())
+    {
         let ids = app.session.visible_cloned();
-        if let Some(i) = ids.iter().position(|p| *p == id) {
-            let next = ids.get(i + 1).copied();
-            let prev = i.checked_sub(1).and_then(|j| ids.get(j)).copied();
-            for (n, nid) in [next, prev].into_iter().enumerate() {
-                let Some(nid) = nid else { continue };
+        let mode = prep_mode(app);
+        let prep = app.session.prep_settings();
+        let ahead = prep.ahead(mode);
+        // editing: the next photos are decoded and kept, ready for their edits (their view render is not
+        // what is wanted, and a cached one would leave the photo undecoded)
+        let develop = mode == lightcraft_engine::prep::Mode::Develop;
+        if let Some(i) = ids.iter().position(|p| *p == id).filter(|_| ahead > 0) {
+            let mut targets = app.look_ahead.targets_n(&ids, i, ahead, BEHIND);
+            if prep.scope(mode) == lightcraft_engine::prep::Scope::Marked {
+                targets.retain(|t| lightcraft_engine::prep::marked(&app.session, *t));
+            }
+            // a few at a time, nearest first (the pool keeps workers free for the photo the user goes to)
+            let mut room = PREFETCH_AT_ONCE.saturating_sub(app.renderer.prefetches_pending());
+            let todo: Vec<(usize, PhotoId)> = targets.into_iter().filter_map(|nid| ids.iter().position(|p| *p == nid).map(|at| (at, nid))).collect();
+            for (at, nid) in todo {
+                if room == 0 {
+                    break;
+                }
+                let n = prefetch_slot(at);
                 let Some(np) = app.session.catalog.photo(nid).cloned() else { continue };
                 let nf = Frame::with_lens(np.width.max(1) as usize, np.height.max(1) as usize, &np.develop, !crop_tool, np.embedded_lens.as_ref());
                 let na = nf.aspect() as f32;
@@ -703,8 +753,16 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
                 let nw =
                     app.ui.settings.prefetch_edge(nr.width().max(nr.height()) * ppp, output_px(&nf).into_iter().max().unwrap_or(1), texture_side);
                 let (w, h) = if na >= 1.0 { (nw, (nw as f32 / na) as usize) } else { ((nw as f32 * na) as usize, nw) };
-                if let Some(job) = app.session.loupe_job(nid, w.max(8), h.max(8), !crop_tool) {
-                    app.renderer.prefetch(Slot::Prefetch(n as u8), job, PREFETCH_PRIORITY);
+                if let Some(mut job) = app.session.loupe_job(nid, w.max(8), h.max(8), !crop_tool) {
+                    if develop {
+                        job.view_cache = None;
+                    }
+                    // (asked for already, in this slot: queued, running or made)
+                    if app.renderer.prefetch_asked(n, job.key) {
+                        continue;
+                    }
+                    room -= 1;
+                    app.renderer.prefetch(n, job, PREFETCH_PRIORITY);
                 }
             }
         }
@@ -714,6 +772,9 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         && let Some(q) = app.session.quick_view_job(id, want.max(8), !crop_tool)
     {
         app.renderer.request_quick(Slot::Preview, q, 110);
+    }
+    if !interacting {
+        look_ahead(app, id, want.max(8), !crop_tool);
     }
     let show_before = app.ui.before_after == BeforeAfter::Original || ui.input(|i| i.key_down(egui::Key::Backslash));
     if (split || show_before || split_view)
@@ -757,7 +818,8 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         }
     }
     let mut windows: Vec<(WindowView, crate::region::RegionView)> = Vec::new();
-    for v in window_views {
+    // (stepping fast: no window is asked for until the photo stays, as for the frame above)
+    for v in window_views.into_iter().filter(|_| !settling) {
         if let Some(view) = request_window(app, &window_ctx, &v) {
             windows.push((v, view));
         }
@@ -773,6 +835,23 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
             app.region_tiles.retain(|(b, _), _| *b != before);
             app.renderer.release(slot);
         }
+    }
+    // zoomed in on a raw as shot (unedited, or only its camera profile picked): its camera JPEG at
+    // full size under the window render, so a focus check doesn't wait for the raw (PERF-CULL-5;
+    // Capture One's Cull view shows the embedded JPEG at 100 % too). Released when the view is not zoomed any more (180 MB).
+    let camera_full = !windows.is_empty()
+        && hover_key.is_none()
+        && !split
+        && !show_before
+        && !split_view
+        && !interacting
+        && lightcraft_engine::import::looks_as_shot(&photo);
+    if camera_full {
+        if let Some(q) = app.session.embedded_full_job(id, native_long.min(texture_side)) {
+            app.renderer.request_quick(Slot::QuickFull, q, 98);
+        }
+    } else if app.renderer.textures.contains_key(&Slot::QuickFull) || app.renderer.is_pending(Slot::QuickFull) {
+        app.renderer.forget(Slot::QuickFull);
     }
     let p = ui.painter_at(canvas);
     // what a view slot shows: its own render of this photo, else the stand-ins (no blank frame
@@ -851,7 +930,6 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
             }
         }
     }
-    app.loupe_shown = Some((id, shown));
     // a wipe shows the Before whole-frame render on its side of the line…
     let line = crate::region::wipe_line(img_rect, canvas);
     if app.ui.before_after == BeforeAfter::Split
@@ -870,13 +948,53 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         let top = Rect::from_min_max(before_rect.min, pos2(before_rect.right(), before_rect.top() + v * before_rect.height()));
         p.image(tex.tex.id(), top, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, v)), Color32::WHITE);
     }
+    // the camera JPEG at full size, magnified like the whole-frame render, until the window is there
+    let mut camera_full_drawn = false;
+    if camera_full
+        && let Some(tex) = app.renderer.textures.get(&Slot::QuickFull).filter(|t| t.photo == id)
+        && crate::region::same_aspect(tex.size[0].max(1) as f32 / tex.size[1].max(1) as f32, display_aspect)
+    {
+        p.image(tex.tex.id(), img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        camera_full_drawn = true;
+    }
     // …and the window renders go over the whole-frame ones, all of them, where they belong in the
     // frame (clipped to their pane, or their side of the line)
+    let mut window_drawn = false;
+    // (the window of the view shown whole: the After side's in a split view, the Before's when the
+    // Before is shown alone; what the timing and the source shown are about)
+    let mut shown_window_drawn = false;
     for (v, view) in &windows {
         // (holding `\` in a wipe shows the Before everywhere: it is the Before view alone then)
         let mode = if show_before { BeforeAfter::Original } else { app.ui.before_after };
         let clip = crate::region::window_clip(mode, v.before, v.visible, canvas, img_rect);
-        draw_window(&p.with_clip_rect(clip), app, &window_ctx, v, view);
+        let drawn = draw_window(&p.with_clip_rect(clip), app, &window_ctx, v, view);
+        window_drawn |= drawn;
+        shown_window_drawn |= drawn && (!v.before || show_before);
+    }
+    // what is on screen is settled once the window renders are drawn: the camera JPEG at full size
+    // stands in for the whole-frame render until a window covers it
+    let shown = if camera_full_drawn && !window_drawn {
+        "embedded"
+    } else if shown_window_drawn && !matches!(shown, "render" | "cached") {
+        // a window rendered over a stand-in (thumbnail or camera JPEG) before the whole frame:
+        // the raw's own render is what is seen
+        "render"
+    } else {
+        shown
+    };
+    app.loupe_shown = Some((id, shown));
+    app.loupe_timing.observe(id, shown, now);
+    // no picture of this photo yet, or only a small one while its full-size stand-in is on its way:
+    // background work waits (the photo on screen comes first, at its cheapest first)
+    let coming = app.renderer.is_pending(Slot::Preview);
+    if (shown == "none" && (coming || app.renderer.is_pending(Slot::Main))) || (!crate::loupe_timing::is_full_size(shown) && coming) {
+        app.pictures_missing(app.renderer.frame());
+    }
+    // the camera's own JPEG is on screen, not LightCraft's rendering of the raw: say so (once), so
+    // colour and tone are not judged on it (PERF-CULL-4; Lightroom Classic badges its embedded
+    // previews). Not over a window render, which is LightCraft's own.
+    if !window_drawn && (shown == "embedded" || (shown == "thumb" && app.session.embedded_thumb_is_final(&photo))) {
+        camera_preview_badge(ui, canvas, img_rect.intersect(canvas));
     }
     if let Some((bg, g)) = before_badge {
         p.rect_filled(bg, 4.0, Color32::from_black_alpha(160));
@@ -1353,6 +1471,24 @@ fn filter_pill(app: &mut LightcraftApp, ui: &mut egui::Ui, canvas: Rect) {
     }
 }
 
+/// A small "Camera preview" label at the top right of the photo while the loupe shows the camera's
+/// embedded JPEG (widget `loupe:cameraPreview`), with what that means on hover.
+pub(super) fn camera_preview_badge(ui: &egui::Ui, canvas: Rect, over: Rect) {
+    let t = Tokens::get(ui.ctx());
+    let p = ui.painter_at(canvas);
+    let text = crate::i18n::tr("Camera preview");
+    let g = p.layout_no_wrap(text.to_string(), t.font(11.5), Color32::from_gray(225));
+    let size = vec2(g.size().x + 16.0, 18.0);
+    let over = if over.is_positive() { over } else { canvas };
+    let r = Rect::from_min_size(pos2(over.right() - size.x - 8.0, over.top() + 8.0), size);
+    p.rect_filled(r, 9.0, Color32::from_black_alpha(165));
+    p.galley(pos2(r.left() + 8.0, r.center().y - g.size().y / 2.0), g, Color32::from_gray(225));
+    register(ui, "loupe:cameraPreview", r);
+    let tip = crate::i18n::tr("The camera's own JPEG, shown until LightCraft has rendered the raw. Judge colour and tone on the rendered photo.");
+    let resp = ui.interact(r, egui::Id::new("camera-preview-badge"), Sense::hover()).on_hover_text(tip);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("{text}: {tip}")));
+}
+
 /// A raw shown from its embedded JPEG (issue #10): a pill at the canvas' top centre saying so;
 /// hovering it explains (registered as `notice:previewOnly:loupe`).
 fn preview_only_pill(ui: &mut egui::Ui, canvas: Rect, reason: &str) {
@@ -1452,6 +1588,26 @@ fn navigator(app: &mut LightcraftApp, ui: &mut egui::Ui, canvas: Rect, img: Rect
 
 /// Neighbour prefetch: below on-screen thumbnails, above background thumbnail refreshes.
 const PREFETCH_PRIORITY: u32 = 4;
+/// Photos prepared ahead at once (each render spreads over the cores already): the others wait,
+/// so the photo the user steps to next finds a worker free.
+const PREFETCH_AT_ONCE: usize = 2;
+/// Prepared-ahead slots, by the photo's place in the view: a step keeps the photos still ahead in
+/// the slots they have (nothing is asked for twice), and the jump to another part of the shoot
+/// replaces what was waiting.
+const PREFETCH_SLOTS: usize = 32;
+
+fn prefetch_slot(at: usize) -> Slot {
+    Slot::Prefetch((at % PREFETCH_SLOTS) as u8)
+}
+
+/// What the user is doing, for the background preparation: editing (a tool panel open), else
+/// culling a folder or browsing the library.
+pub fn prep_mode(app: &LightcraftApp) -> lightcraft_engine::prep::Mode {
+    match app.ui.right {
+        RightPanel::Edit | RightPanel::Crop | RightPanel::Remove | RightPanel::Masking | RightPanel::RedEye => lightcraft_engine::prep::Mode::Develop,
+        _ => lightcraft_engine::prep::Mode::of(&app.session),
+    }
+}
 
 /// How long a render may be on its way, with nothing new on screen, before the loupe says
 /// "Rendering…" (s): as long as the activity stack waits before it shows a task.
@@ -2974,6 +3130,9 @@ pub(crate) fn filmstrip(app: &mut LightcraftApp, ui: &mut egui::Ui, r: Rect) {
             }
             let img_area = Rect::from_min_max(cr.min + vec2(10.0, 22.0), cr.max - vec2(10.0, 8.0));
             super::grid::request_thumb(app, *id, (256.0 * ppp.min(2.0) / 2.0) as usize * 2, 8);
+            if local.intersects(vp) {
+                super::grid::note_cell(app, *id, ui.ctx().cumulative_pass_nr());
+            }
             let thumb = app.renderer.thumb(*id);
             if thumb.is_none() {
                 p.rect_filled(img_area, 0.0, t.skeleton);

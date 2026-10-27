@@ -730,8 +730,10 @@ pub fn request_thumb(app: &mut LightcraftApp, id: PhotoId, size: usize, priority
     }
     match quick {
         Some(q) => {
-            app.renderer.request_quick(Slot::ThumbQuick(id), q, priority + 1);
-            if !embedded_is_final && !app.renderer.is_pending(Slot::ThumbQuick(id)) {
+            app.renderer.request_quick(Slot::ThumbQuick(id), q, stand_in_priority(priority));
+            // (the real thumbnail behind the stand-in is background work: not while a cell on
+            // screen waits for its first picture)
+            if !embedded_is_final && !app.renderer.is_pending(Slot::ThumbQuick(id)) && !app.pictures_busy(app.renderer.frame()) {
                 app.renderer.request(Slot::Thumb(id), job, BACKGROUND_THUMB_PRIORITY);
             }
         }
@@ -752,8 +754,30 @@ pub(crate) fn skips_the_real_render(embedded_is_final: bool, from_embedded: bool
     embedded_is_final && from_embedded
 }
 
+/// A grid or filmstrip cell of photo `id` is on screen in frame `frame`: timed while it has no
+/// picture ([`crate::thumb_first`]), and while its first picture is on its way every background
+/// job waits ([`lightcraft_engine::prep::pictures_missing`]; not for a cell whose picture failed).
+pub(crate) fn note_cell(app: &mut LightcraftApp, id: PhotoId, frame: u64) {
+    let has = app.renderer.thumb(id).is_some();
+    app.thumb_first.note(frame, id, has, crate::now_ms());
+    if !has && (app.renderer.is_pending(Slot::ThumbQuick(id)) || app.renderer.is_pending(Slot::Thumb(id))) {
+        app.pictures_missing(app.renderer.frame());
+    }
+}
+
 /// Rendered thumbnails replacing embedded previews: after everything on screen.
 pub const BACKGROUND_THUMB_PRIORITY: u32 = 3;
+
+/// The stand-in (embedded JPEG or cached thumbnail) of a cell on screen: the cheapest picture for the
+/// whole view comes before anything bigger but the loupe's own photo (its stand-in, 110), so before
+/// the loupe's stand-ins made ahead (96) and every render (the user's rule: "lowest and fastest
+/// resolution preloaded first, then the next cheap one, then we worry about anything bigger").
+pub const STAND_IN_ON_SCREEN: u32 = 97;
+
+/// The priority of a cell's stand-in when the cell asks at `priority` (10: on screen).
+pub(crate) fn stand_in_priority(priority: u32) -> u32 {
+    if (10..STAND_IN_ON_SCREEN).contains(&priority) { STAND_IN_ON_SCREEN } else { priority + 1 }
+}
 
 fn cell(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool, onscreen: bool, ppp: f32) {
     let t = Tokens::get(ui.ctx());
@@ -788,6 +812,9 @@ fn cell(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square
     // thumbnail
     let size = thumb_px(img_rect.width().max(img_rect.height()), ppp);
     request_thumb(app, id, size, if onscreen { 10 } else { 5 });
+    if onscreen {
+        note_cell(app, id, ui.ctx().cumulative_pass_nr());
+    }
     if let Some(tex) = app.renderer.thumb(id) {
         let [tw, th] = tex.size;
         // Preserve the decoded preview's ratio when it differs from the catalog dimensions.

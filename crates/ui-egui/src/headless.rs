@@ -1026,6 +1026,10 @@ mod tests {
         assert!(bright > 30, "no text in the top bar ({bright} bright px)");
         // thumbnails arrived (photo textures were drawn)
         assert!(h.app.renderer.thumb_textures() > 0);
+        // and are counted for benchmarks, a count that eviction doesn't lower
+        let r = h.request("ui.inspect", json!({}), SETTLE);
+        let made = r["result"]["perf"]["thumbsMade"].as_u64().unwrap_or(0);
+        assert!(made >= h.app.renderer.thumb_textures() as u64, "{}", r["result"]["perf"]);
     }
 
     #[test]
@@ -3793,6 +3797,15 @@ mod tests {
         assert_eq!(h.app.session.visible_cloned().len(), 1);
         assert!(h.app.session.catalog.last_browsed(&root).is_some(), "the browsed folder");
         assert!(h.app.session.catalog.last_browsed(&day_s).is_some(), "the folder its photo is in");
+        // browsed again: a subfolder with only photos the library knows (nothing to import) still
+        // counts as browsed
+        h.app.session.catalog.apply(lightcraft_catalog::Op::SetBrowsed { folder: day_s.clone(), at: None }).unwrap();
+        assert!(h.app.session.catalog.last_browsed(&day_s).is_none());
+        let r = h.request("engine.execute", json!({"command": "library.browse", "params": {"path": root, "subfolders": true}}), t);
+        assert_eq!(r["result"]["scanning"], true, "{r}");
+        h.settle(SETTLE);
+        assert_eq!(h.app.session.visible_cloned().len(), 1);
+        assert!(h.app.session.catalog.last_browsed(&day_s).is_some(), "a folder of known photos only");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5446,5 +5459,81 @@ mod tests {
         assert_eq!(r["ok"], true);
         let r = h.request("ui.screenshot", json!({"headless": true}), SETTLE);
         assert_eq!(r["result"]["width"], 640, "{r}");
+    }
+
+    /// Note 47: stepping in the loupe to a photo whose preview was built shows that preview as the
+    /// photo (fitted to the loupe, no render), and standard previews are built at the loupe's size.
+    #[test]
+    fn the_loupe_shows_built_previews_without_rendering_again() {
+        use crate::render::Slot;
+        use lightcraft_engine::media::QuickSource;
+        let mut h = demo([1000.0, 700.0]);
+        let t = Duration::from_secs(10);
+        // nothing prepared ahead here: what the loupe shows comes from the build alone
+        h.request(
+            "engine.execute",
+            json!({"command": "prefs.setBackgroundPrep", "params": {"settings": {"library": {"ahead": 0, "previews": false}}}}),
+            t,
+        );
+        h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
+        h.settle(SETTLE);
+        let edge = h.app.session.loupe_edge;
+        assert!(edge > 100, "the loupe said its size: {edge}");
+        let ids = h.app.session.visible_cloned();
+        let all: Vec<u64> = ids.iter().map(|i| i.0).collect();
+        let r = h.request("engine.execute", json!({"command": "library.buildPreviews", "params": {"wait": true, "edge": edge, "ids": all}}), t);
+        assert_eq!(r["result"]["done"], ids.len(), "{r}");
+        let next = ids.get(1).copied().expect("a second photo");
+        h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [next.0], "active": next.0}}), t);
+        assert!(h.step_until(SETTLE, |h| h.app.renderer.textures.get(&Slot::Main).is_some_and(|t| t.photo == next)));
+        let main = h.app.renderer.textures.get(&Slot::Main).unwrap();
+        assert_eq!(main.quick, Some(QuickSource::Cached), "the built preview is the loupe's picture");
+        let r = h.request("ui.inspect", json!({}), t);
+        assert!(r["result"]["perf"]["previewCache"]["memEntries"].as_u64().unwrap_or(0) > 0, "{}", r["result"]["perf"]["previewCache"]);
+    }
+
+    /// The app-wide background preparation settings are kept with the app settings (`ui.json`):
+    /// the saved ones reach the session at launch, and a change made through the command is saved.
+    #[test]
+    fn app_wide_preparation_settings_are_saved_with_the_app_settings() {
+        let mut h = demo([1000.0, 700.0]);
+        let t = Duration::from_secs(10);
+        let mut saved = lightcraft_engine::prep::PrepSettings::default();
+        saved.library.ahead = 3;
+        // (as if read from ui.json before the first frame)
+        h.app.ui.settings.background_prep = saved;
+        h.app.prep_synced = false;
+        h.step();
+        assert_eq!(h.app.session.prep.app, saved, "the saved settings reach the session");
+        h.request("engine.execute", json!({"command": "prefs.setBackgroundPrep", "params": {"settings": {"library": {"ahead": 10}}}}), t);
+        h.step();
+        assert_eq!(h.app.ui.settings.background_prep.library.ahead, 10, "a change is kept with the app settings");
+        assert_eq!(h.app.session.prep.app.library.ahead, 10);
+    }
+
+    /// Note 48: the loupe prepares as many photos ahead as the settings say, a few at a time, and
+    /// none when that is off.
+    #[test]
+    fn the_loupe_prepares_the_photos_ahead_the_settings_ask_for() {
+        let mut h = demo([1000.0, 700.0]);
+        let t = Duration::from_secs(10);
+        let n = h.app.session.visible_cloned().len();
+        assert!(n >= 4, "the demo has photos to step through");
+        h.request("engine.execute", json!({"command": "prefs.setBackgroundPrep", "params": {"settings": {"library": {"ahead": 3}}}}), t);
+        h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
+        h.settle(SETTLE);
+        for _ in 0..40 {
+            h.step();
+        }
+        h.settle(SETTLE);
+        // the first photo: three ahead (no photo behind it)
+        assert_eq!(h.app.renderer.prefetch_slots_asked(), 3.min(n - 1));
+        h.app.renderer.forget_all();
+        h.request("engine.execute", json!({"command": "prefs.setBackgroundPrep", "params": {"settings": {"library": {"ahead": 0}}}}), t);
+        for _ in 0..40 {
+            h.step();
+        }
+        h.settle(SETTLE);
+        assert_eq!(h.app.renderer.prefetch_slots_asked(), 0, "off: nothing prepared ahead");
     }
 }

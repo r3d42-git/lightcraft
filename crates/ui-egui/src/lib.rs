@@ -26,6 +26,7 @@ pub mod import;
 pub mod lightroom_destination;
 pub mod lightroom_import;
 pub mod links;
+pub mod loupe_timing;
 pub mod menu_level;
 pub mod menubar;
 pub mod menus;
@@ -49,6 +50,7 @@ pub mod sync;
 pub mod tasks;
 pub mod text_field;
 pub mod theme;
+pub mod thumb_first;
 pub mod titlebar;
 pub mod widgets;
 pub mod window_place;
@@ -451,6 +453,19 @@ pub struct LightcraftApp {
     /// What the loupe drew last frame: photo and source ("render", "cached", "embedded", "small",
     /// "thumb", "none").
     pub loupe_shown: Option<(lightcraft_catalog::PhotoId, &'static str)>,
+    /// When each photo stepped to in the loupe first showed (`ui.inspect` → `perf.loupeSteps`).
+    pub loupe_timing: loupe_timing::LoupeTiming,
+    /// The app-wide background preparation settings were handed from the saved app settings to
+    /// the session ([`Self::background_prep`]).
+    prep_synced: bool,
+    /// How long thumbnails on screen wait for their first pixels (`ui.inspect` → `thumbFirst`).
+    pub thumb_first: thumb_first::ThumbFirst,
+    /// The frame ([`render::Renderer::frame`]) in which a cell on screen or the loupe last lacked its first picture
+    /// ([`LightcraftApp::pictures_missing`]).
+    pub pictures_missing_pass: Option<u64>,
+    /// The loupe's look-ahead: the photo it was made for, the direction of travel (+1 / -1), the
+    /// catalog revision and the edge, so it is worked out again only when one of them changes.
+    pub(crate) look_ahead: panels::detail::LookAhead,
     /// The window render the loupe asked for last, by job key (see [`region`]); kept for the few
     /// windows whose textures can be on screen, and for the inspector.
     pub region_view: Option<region::RegionView>,
@@ -534,6 +549,19 @@ pub struct LightcraftApp {
 }
 
 impl LightcraftApp {
+    /// A cell on screen or the loupe has no picture yet in frame `pass` ([`render::Renderer::frame`]), its first one on its way:
+    /// this window's own background requests (photos ahead, real thumbnails behind stand-ins) wait,
+    /// and so does the engine's background work ([`lightcraft_engine::prep::pictures_missing`]).
+    pub fn pictures_missing(&mut self, pass: u64) {
+        self.pictures_missing_pass = Some(pass);
+        lightcraft_engine::prep::pictures_missing();
+    }
+
+    /// Whether a picture was missing in frame `pass` or the one before.
+    pub fn pictures_busy(&self, pass: u64) -> bool {
+        self.pictures_missing_pass.is_some_and(|p| pass.saturating_sub(p) <= 1)
+    }
+
     pub fn new(mut session: Session, services: Services) -> Self {
         // AI mask requests run on the model's worker; frames apply their results (never wait)
         session.segmenter.background = true;
@@ -577,6 +605,11 @@ impl LightcraftApp {
             gesture: None,
             brush_live: None,
             loupe_shown: None,
+            loupe_timing: Default::default(),
+            prep_synced: false,
+            thumb_first: Default::default(),
+            pictures_missing_pass: None,
+            look_ahead: Default::default(),
             region_view: None,
             region_before_view: None,
             size_hold: Default::default(),
@@ -897,6 +930,32 @@ impl LightcraftApp {
         }
     }
 
+    /// The app-wide background preparation settings live with the app settings (`ui.json`): taken
+    /// into the session once, then a change made through `prefs.setBackgroundPrep` is saved with
+    /// them. Run at the start of every logic pass, before any command of that pass (also before
+    /// the fonts are ready and the window is drawn).
+    fn sync_prep_settings(&mut self) {
+        if !self.prep_synced {
+            self.session.prep.app = self.ui.settings.background_prep.sanitized();
+            self.prep_synced = true;
+        } else if self.session.prep.app != self.ui.settings.background_prep {
+            self.ui.settings.background_prep = self.session.prep.app;
+        }
+    }
+
+    /// Preparing photos in the background ([`lightcraft_engine::prep`]): the whole view's previews
+    /// once the user is culling in the loupe, built from the photo on screen in the direction of travel.
+    fn background_prep(&mut self, ctx: &egui::Context) {
+        let mode = panels::detail::prep_mode(self);
+        let loupe = self.ui.fullscreen || self.ui.view == state::ViewMode::Detail;
+        let at = if loupe { self.session.active() } else { None };
+        let backward = self.look_ahead.backward();
+        self.session.prep_tick(mode, at, backward);
+        if self.session.preview_build.as_ref().is_some_and(|b| b.running()) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+    }
+
     /// AI masks: apply finished background requests (clicks, descriptions, detail passes) and
     /// show their errors; start a zoomed-in detail pass once the clicking stops
     /// (`ui.detail_due`); watch the model download. Never waits for the model.
@@ -1142,6 +1201,7 @@ impl LightcraftApp {
 
     /// Per-frame logic before layout (control channel, renders, shortcuts, drops).
     pub fn logic(&mut self, ctx: &egui::Context) {
+        self.sync_prep_settings();
         i18n::set_language(self.ui.language);
         let t0 = now_ms();
         panels::library_problem::logic(self, ctx);
@@ -1583,6 +1643,7 @@ impl LightcraftApp {
         self.library_changed(&ctx);
         // panels set it again this frame while the pointer rests on a preset or profile
         self.hover_preview = None;
+        self.background_prep(&ctx);
         self.ai_mask_detail(&ctx);
         self.place_names_outcome(&ctx);
         if self.ui.fullscreen {
@@ -2337,3 +2398,6 @@ mod tests_model_setup;
 
 #[cfg(test)]
 mod tests_docking_acceptance;
+
+#[cfg(test)]
+mod tests_cull_tiers;

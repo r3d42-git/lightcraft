@@ -465,12 +465,19 @@ pub(crate) fn expanded(app: &LightcraftApp, name: &str) -> Option<Vec<MenuNode>>
     let has = active.is_some();
     Some(match name {
         "Previews" => {
-            let running = app.session.preview_build.as_ref().is_some_and(|b| !b.finished.load(std::sync::atomic::Ordering::Relaxed));
+            // (the background preparation's build gives way to one asked for here)
+            let running = app.session.preview_build.as_ref().is_some_and(|b| b.running() && !b.background);
+            let stoppable = app.session.preview_build.as_ref().is_some_and(|b| b.running());
+            // automatic: as big as the loupe on this screen shows photos (the engine's standard size)
+            let standard = match app.ui.settings.preview_limit {
+                0 => json!({"size": "standard"}),
+                edge => json!({"size": "standard", "edge": edge}),
+            };
             let scope = if app.session.selection.ids.len() > 1 { "Selected" } else { "Visible" };
             vec![
                 item(
                     "library.buildPreviews",
-                    json!({"size": "standard", "edge": app.ui.settings.standard_preview_edge()}),
+                    standard,
                     crate::i18n::tr_format!("Build Standard-Sized Previews ({scope})", scope = crate::i18n::tr(scope)),
                     None,
                     !running,
@@ -484,7 +491,7 @@ pub(crate) fn expanded(app: &LightcraftApp, name: &str) -> Option<Vec<MenuNode>>
                     !running,
                     None,
                 ),
-                item("library.cancelPreviews", Value::Null, "Stop Building Previews", None, running, None),
+                item("library.cancelPreviews", Value::Null, "Stop Building Previews", None, stoppable, None),
                 MenuNode::Separator,
                 // (read and written on a worker thread: the originals may be on a slow drive)
                 item(
