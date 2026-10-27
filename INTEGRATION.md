@@ -24,8 +24,9 @@ new drag regression modules remain registered. GPU integration tests move under
 The recent-library launch chooser uses `LIGHTCRAFT_R3D_LIBRARY` and the R3D default
 library; it does not inherit the official application's library environment.
 
-`RENDER_CACHE_VERSION = 73` invalidates both upstream cache 70 and older R3D cache
-72 for the combined pipeline. `LOOK_VERSION = 13` stays above upstream 12: the
+`RENDER_CACHE_VERSION = 78` invalidates upstream cache70 and previous R3D caches
+through the combined source/product-protected cache77 for this optical-crop variant.
+`LOOK_VERSION = 13` stays above upstream 12: the
 upstream change in camera fitting is a test correction only, so the existing R3D
 geometry-gated fit semantics are unchanged. Local workspace crates in Cargo.lock
 use 0.14.0. Historical version references below describe their original states.
@@ -377,4 +378,12 @@ PR #2981, head `daf46b16f13bd7c2a9713efbdd63eda20a98219c`, gates the retained li
 
 PR #2988, head `5490347d47a52d0cffc534302ae79134ade04091`, adds Lanczos-3 downscaling only to export jobs (CPU and GPU); preview/thumbnail requests retain Mitchell. Export request keys carry a distinct filter identity, and the resolved frame includes the filter in CPU/GPU stage-cache geometry keys. Output sharpening becomes a Gaussian luma unsharp mask with a local 10% overshoot bound and finite float-input handling. Original/sidecar protection and native ACL atomic writes are unchanged. Shared-stage-cache regressions exercise Smooth → Sharp → Smooth on CPU and Metal. Cache73 and LOOK13 remain unchanged at this conservative checkpoint because preview pixels are unchanged; the later #3012 crop variant is separate.
 
-The combined conservative candidate keeps render cache77 and LOOK13. It includes #3038, #2981, #2988, #2982 and the #3055/#3077/#3080 chain with late-source protection. Automatic optical crop #3012 and the #2929 download catalog are not included; the verified optional ONNX import remains available.
+The parent combined conservative candidate keeps render cache77 and LOOK13. It includes #3038, #2981, #2988, #2982 and the #3055/#3077/#3080 chain with late-source protection. That parent excludes automatic optical crop #3012 and the #2929 download catalog; the verified optional ONNX import remains available.
+
+## Separate optical-edge crop variant (#3012)
+
+Upstream head `c9e459d670a4af3faf9e1d476a9c56a1ba837dab` is ported last and separately above the combined denoise/culling/UI/export checkpoint `444feba9`. Active distortion/embedded profile/lateral CA corrections constrain the rendered crop in every colour plane. Automatic lateral CA is constrained after estimation too. Perspective alone still needs Constrain Crop. The uncropped crop-tool path (`apply_crop=false`) and conservative profile resolver remain unchanged.
+
+This changes the visible framing of existing corrected edits even with Constrain Crop off. With that switch off, the stored crop rectangle is not rewritten: automatic render fitting and the crop-tool overlay require separate native acceptance. `RENDER_CACHE_VERSION = 78` forces new previews, above the parent's combined77; `LOOK_VERSION = 13` is retained. No migration rewrites the user's edits. This remains an uninstalled local variant pending image/crop-tool acceptance.
+
+Validation uses `.tools/target-auto-edge-crop-20261027` and isolated `test-runtime/auto-edge-crop-0.14.0` paths. The evidence runner blocks desktop starts, the normal library and original-photo roots. No native-window or HDR-display acceptance is implied.

@@ -260,6 +260,26 @@ fn constrain_crop_removes_blank_areas() {
     assert!(blank_fraction(&c) < 0.002, "constrained: {}", blank_fraction(&c));
 }
 
+/// Issue #2361: lens corrections never show the blank past the photo's edge, with or without
+/// Constrain Crop, in every colour plane; perspective alone still needs Constrain Crop.
+#[test]
+fn lens_corrections_leave_no_blank_corners() {
+    let src = Rgb32f::from_fn(300, 200, |x, y| [0.05 + 0.002 * x as f32, 0.1 + 0.002 * y as f32, 0.3]);
+    for (distortion, ca) in [(-80.0, 0.0), (80.0, 0.0), (-40.0, 100.0), (0.0, -100.0)] {
+        let mut s = DevelopSettings::default();
+        s.optics.distortion = distortion;
+        s.optics.ca_red = ca;
+        s.optics.ca_blue = -ca;
+        let r = render(&src, &SourceInfo::default(), &s, &RenderRequest::fit(300, 300)).image;
+        assert!(blank_fraction(&r) < 0.002, "distortion {distortion}, CA {ca}: {}", blank_fraction(&r));
+    }
+    let mut s = DevelopSettings::default();
+    s.optics.distortion = -60.0;
+    s.geometry.vertical = -60.0;
+    let r = render(&src, &SourceInfo::default(), &s, &RenderRequest::fit(300, 300)).image;
+    assert!(blank_fraction(&r) > 0.03, "the keystone keeps its corners: {}", blank_fraction(&r));
+}
+
 #[test]
 fn transforms_preview_matches_export() {
     let src = lightcraft_scenes::demo_library()[4].render(960, 640);
@@ -523,4 +543,49 @@ fn auto_straighten_leaves_steep_lines_alone() {
     assert_eq!(level(&tilted_scene(20.0, 30.0)), None, "20° is not a horizon to level");
     let deg = level(&tilted_scene(8.0, 30.0)).expect("8° is");
     assert!((deg + 8.0).abs() < 0.5, "{deg}");
+}
+
+/// Per-channel embedded lens correction stays inside every colour plane after orientation,
+/// while the crop tool's uncropped source remains available.
+#[test]
+fn corrected_lens_crop_keeps_every_channel_inside_after_orientation() {
+    use lightcraft_geom::Orientation;
+    let src = Rgb32f::filled(240, 160, [0.03, 0.2, 0.6]);
+    let info = SourceInfo {
+        lens: Some(EmbeddedLens {
+            warp: Some(EmbeddedWarp {
+                planes: [[1.0, 0.12, 0.0, 0.0, 0.0, 0.0], [1.0, 0.06, 0.0, 0.0, 0.0, 0.0], [1.0, 0.18, 0.0, 0.0, 0.0, 0.0]],
+                center: Point::new(0.5, 0.5),
+                radius: 0.6,
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let req = RenderRequest::fit(240, 240);
+    let baseline = render(&src, &SourceInfo::default(), &DevelopSettings::default(), &req).image.get(120, 80);
+    for orientation in [Orientation::Normal, Orientation::Rotate90, Orientation::Rotate180, Orientation::Rotate270] {
+        let mut s = DevelopSettings { orientation, ..Default::default() };
+        s.optics.lens_profile = true;
+        let frame = crate::frame_for(&src, &info, &s, true);
+        let warp = frame.warp.as_ref().expect("profile correction warp");
+        let to_source = frame.crop.output_to_source(frame.ow, frame.oh, 1.0, 1.0);
+        for corner in [Point::new(0.0, 0.0), Point::new(1.0, 0.0), Point::new(0.0, 1.0), Point::new(1.0, 1.0)] {
+            for channel in 0..3 {
+                let p = warp.to_source(to_source.apply(corner), channel);
+                assert!(
+                    p.x >= -0.001 && p.y >= -0.001 && p.x <= frame.ow + 0.001 && p.y <= frame.oh + 0.001,
+                    "{orientation:?} channel {channel}: a crop corner reads outside its colour plane: {p:?}"
+                );
+            }
+        }
+        let corrected = render(&src, &info, &s, &req).image;
+        assert!(corrected.data.iter().all(|p| (0..3).all(|c| p[c].abs_diff(baseline[c]) <= 1)), "{orientation:?}: an edge has a blank colour plane");
+        let uncropped = crate::frame_for(&src, &info, &s, false);
+        assert_eq!(uncropped.crop.rect, lightcraft_geom::CropGeometry::default().rect, "the crop tool still sees the whole source");
+        s.optics.lens_profile = false;
+        let off = render(&src, &info, &s, &req).image;
+        let plain = render(&src, &SourceInfo::default(), &s, &req).image;
+        assert_eq!(off, plain, "{orientation:?}: the resolver/profile off path remains unchanged");
+    }
 }

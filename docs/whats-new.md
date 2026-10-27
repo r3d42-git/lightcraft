@@ -7,6 +7,9 @@
 
 ## 2026-10-27 (R3D candidate)
 
+### Separate candidate: optical corrections crop inside the image
+- Lens distortion and lateral CA now fit the rendered crop inside all corrected colour planes even with Constrain Crop off. Perspective still needs Constrain Crop. This separate variant changes framing and requires visual acceptance.
+
 ### Sharper small exports
 - Export downscaling uses Lanczos-3 while previews retain their smooth filter. Screen and print output sharpening use a Gaussian luma mask with bounded edge overshoot.
 
