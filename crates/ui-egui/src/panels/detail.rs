@@ -393,7 +393,7 @@ fn brief_info(app: &mut LightcraftApp, ctx: &egui::Context, id: PhotoId) {
 pub(crate) fn overlay_supports_window(overlay: lightcraft_pipeline::Overlay) -> bool {
     use lightcraft_pipeline::Overlay as O;
     match overlay {
-        O::None | O::Mask { .. } | O::AllMasks { .. } | O::PointColorRange(_) | O::HdrRange | O::Spots(_) => true,
+        O::None | O::Mask { .. } | O::AllMasks { .. } | O::PointColorRange(_) | O::HdrRange | O::Spots(_) | O::Clipping => true,
     }
 }
 
@@ -595,9 +595,11 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     // request renders: the loupe at display resolution (drafts during drags)
     let interacting = app.session.interaction.is_some();
     let overlay = view_overlay(app, &d);
+    app.renderer.set_main_overlay(overlay);
     // a drag drafts at full size where the GPU draws the view (by the GPU's own rule, `handles`;
     // `ready` first: `available` would wait for a device still being created)
     let gpu = interacting
+        && !(overlay == lightcraft_pipeline::Overlay::Clipping && d.effective().hdr.enabled)
         && lightcraft_engine::gpu::handles(
             lightcraft_pipeline::OutputDepth::U8,
             app.ui.soft_proof && lightcraft_pipeline::proof_profile(app.ui.proof.profile).is_some(),
@@ -839,7 +841,8 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     // zoomed in on a raw as shot (unedited, or only its camera profile picked): its camera JPEG at
     // full size under the window render, so a focus check doesn't wait for the raw (PERF-CULL-5;
     // Capture One's Cull view shows the embedded JPEG at 100 % too). Released when the view is not zoomed any more (180 MB).
-    let camera_full = !windows.is_empty()
+    let camera_full = overlay == lightcraft_pipeline::Overlay::None
+        && !windows.is_empty()
         && hover_key.is_none()
         && !split
         && !show_before
@@ -1007,9 +1010,6 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     }
     if app.ui.before_after == BeforeAfter::SplitTopBottom {
         p.line_segment([pos2(img_rect.left(), line.y), pos2(img_rect.right(), line.y)], Stroke::new(1.5, Color32::WHITE));
-    }
-    if app.ui.show_clipping && !show_before && !fullscreen {
-        clipping_overlay(app, &p, img_rect);
     }
     // View ▸ Loupe Overlay ▸ Layout Image, over the photo (the After view in a before/after)
     super::layout_overlay::draw(app, &p, img_rect);
@@ -1720,7 +1720,7 @@ fn targeted_drag(app: &mut LightcraftApp, resp: &egui::Response, map: &CanvasMap
 }
 
 /// The diagnostic overlay the loupe shows (the selected mask, Point Color's visualized range,
-/// Visualize Spots).
+/// Visualize Spots, HDR range, or clipping). Intentional tool visualizations take priority over clipping.
 pub(crate) fn view_overlay(app: &LightcraftApp, d: &DevelopSettings) -> lightcraft_pipeline::Overlay {
     use lightcraft_pipeline::{MaskView, Overlay};
     if app.ui.fullscreen {
@@ -1757,20 +1757,10 @@ pub(crate) fn view_overlay(app: &LightcraftApp, d: &DevelopSettings) -> lightcra
     if edit && app.ui.hdr_visualize && d.hdr.enabled {
         return Overlay::HdrRange;
     }
-    Overlay::None
-}
-
-fn clipping_overlay(app: &LightcraftApp, p: &egui::Painter, r: Rect) {
-    // Highlight clipped regions using the histogram's extremes isn't spatial; show a subtle frame hint.
-    if let Some(h) = app.renderer.textures.get(&Slot::Main).and_then(|t| t.histogram.as_ref()) {
-        let (lo, hi) = h.clipping();
-        if hi > 0.003 {
-            p.rect_stroke(r, 0.0, Stroke::new(2.0, Color32::from_rgb(255, 60, 60)), StrokeKind::Outside);
-        }
-        if lo > 0.003 {
-            p.rect_stroke(r.expand(3.0), 0.0, Stroke::new(2.0, Color32::from_rgb(60, 120, 255)), StrokeKind::Outside);
-        }
+    if app.ui.show_clipping {
+        return Overlay::Clipping;
     }
+    Overlay::None
 }
 
 fn general_cursor(app: &LightcraftApp, ui: &egui::Ui, resp: &egui::Response, img: Rect, canvas: Rect) {

@@ -118,7 +118,7 @@ pub fn last_fallback() -> Option<String> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Fallback {
     /// The GPU was not tried: it is unavailable, disabled or closing ([`unavailable_reason`]), or
-    /// the request is one only the CPU renders (high bit depth, soft proof, HDR range overlay).
+    /// the request is one only the CPU renders (high bit depth, soft proof, HDR range/clipping overlay).
     NotTried,
     /// The render was tried on the GPU and failed, for this reason (the same text
     /// [`last_fallback`] reports). The CPU renders it instead.
@@ -477,7 +477,9 @@ pub fn try_render(
         let effective = s.effective();
         let s: &DevelopSettings = &effective;
         let device_proof = req.proof.is_some_and(|p| lightcraft_pipeline::proof_profile(p.profile).is_some());
-        if !enabled() || !handles(req.depth, device_proof, req.overlay) {
+        // Clipping in HDR needs a linear float rendition, like Visualize HDR. SDR
+        // clipping uses the shared postprocess on the Metal/Vulkan/CPU 8-bit result.
+        if !enabled() || !handles(req.depth, device_proof, req.overlay) || (req.overlay == lightcraft_pipeline::Overlay::Clipping && s.hdr.enabled) {
             return Err(Fallback::NotTried);
         }
         let s = &*lightcraft_pipeline::settings_for(s, req);
@@ -556,12 +558,23 @@ pub fn try_render(
 mod tests {
     use lightcraft_pipeline::{OutputDepth, Overlay};
 
+    /// HDR clipping must request the CPU float rendition before any device access.
+    #[test]
+    fn hdr_clipping_falls_back_to_the_float_cpu_rendition() {
+        let src = std::sync::Arc::new(lightcraft_raster::Rgb32f::new(2, 2));
+        let mut s = lightcraft_develop::DevelopSettings::default();
+        s.hdr.enabled = true;
+        let req = lightcraft_pipeline::RenderRequest { overlay: Overlay::Clipping, ..lightcraft_pipeline::RenderRequest::fit(2, 2) };
+        assert!(matches!(super::try_render(&src, &Default::default(), &s, &req, None), Err(super::Fallback::NotTried)));
+    }
+
     // Given a request the 8-bit kernel can't draw (high bit depth, a soft proof, Visualize HDR),
     // the GPU doesn't take it; the loupe and diagnostic overlays it can draw stay on the GPU
     #[test]
     fn the_gpu_handles_8_bit_unproofed_renders_without_the_hdr_range() {
         assert!(super::handles(OutputDepth::U8, false, Overlay::None));
         assert!(super::handles(OutputDepth::U8, false, Overlay::Spots(50)));
+        assert!(super::handles(OutputDepth::U8, false, Overlay::Clipping));
         assert!(!super::handles(OutputDepth::U16, false, Overlay::None));
         assert!(!super::handles(OutputDepth::U8, true, Overlay::None));
         assert!(!super::handles(OutputDepth::U8, false, Overlay::HdrRange));

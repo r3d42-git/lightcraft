@@ -672,13 +672,21 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     let mut image = image;
     let mask = overlay_alpha(req.overlay, &plan, &prep);
     let masks = overlay_alphas_all(req.overlay, &plan, &prep);
-    visualize::apply(&mut image, req.overlay, &plan, mask.as_ref(), masks.as_deref());
+    // settings_for disables HDR for the SDR stand-in. Only the original effective edit
+    // decides which endpoint domain clipping uses; otherwise SDR white would remain red.
+    if !(req.overlay == Overlay::Clipping && edit.hdr.enabled) {
+        visualize::apply(&mut image, req.overlay, &plan, mask.as_ref(), masks.as_deref());
+    }
     let mut image = if plan.keep.is_some() { cut(&image) } else { image };
-    if req.overlay == Overlay::HdrRange && edit.hdr.enabled {
+    if matches!(req.overlay, Overlay::HdrRange | Overlay::Clipping) && edit.hdr.enabled {
         // the HDR rendition of the same request says how far above SDR white each pixel goes
         let hreq = RenderRequest { depth: OutputDepth::F32Hdr, overlay: Overlay::None, proof: None, ..*req };
         if let Some(hdr) = render(src_img, info, edit, &hreq).deep {
-            visualize::hdr_range(&mut image, &hdr, req.space.luma());
+            if req.overlay == Overlay::Clipping {
+                visualize::hdr_clipping(&mut image, &hdr, edit.hdr.peak());
+            } else {
+                visualize::hdr_range(&mut image, &hdr, req.space.luma());
+            }
         }
         lap("visualize hdr", &mut t);
     }

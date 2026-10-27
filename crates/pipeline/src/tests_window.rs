@@ -437,6 +437,9 @@ fn diagnostic_overlays_in_a_window_match_the_full_render() {
     for (x, y) in [(0, 0), (W - 400, H - 300)] {
         check_overlay("spots at a corner", &spots, Overlay::Spots(70), PixelWindow { x, y, w: 400, h: 300 }, 255, 0.05);
     }
+    let mut clipped = DevelopSettings::default();
+    clipped.light.exposure = 4.0;
+    check_overlay("clipping", &clipped, Overlay::Clipping, MID, 255, 0.1);
     let mut pc = DevelopSettings::default();
     pc.point_colors.push(lightcraft_develop::PointColor { lum: 0.6, chroma: 0.08, hue: 60.0, hue_shift: 40.0, ..Default::default() });
     check_overlay("point colour range", &pc, Overlay::PointColorRange(0), MID, 1, 0.1);
@@ -445,4 +448,6 @@ fn diagnostic_overlays_in_a_window_match_the_full_render() {
     hdr.hdr.max_ev = 3.0;
     hdr.light.exposure = 1.5;
     check_overlay("hdr range", &hdr, Overlay::HdrRange, MID, 1, 0.1);
+    hdr.light.exposure = 6.0;
+    check_overlay("hdr clipping", &hdr, Overlay::Clipping, MID, 255, 0.1);
 }

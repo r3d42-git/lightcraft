@@ -656,6 +656,59 @@ fn highlights_shadows_base_matches_on_every_process() {
     }
 }
 
+/// Stable constant patches prove channel-endpoint markers agree on actual GPU output.
+/// Natural gradients can differ by one code value at 0/255, changing a threshold decision.
+#[test]
+fn clipping_overlay_matches_on_stable_endpoint_patches() {
+    if !gpu() {
+        return;
+    }
+    let src = Arc::new(Rgb32f::from_fn(96, 32, |x, _| match x / 32 {
+        0 => [0.0; 3],
+        1 => [0.18; 3],
+        _ => [10000.0; 3],
+    }));
+    let info = SourceInfo::default();
+    let s = DevelopSettings::default();
+    let plain_req = RenderRequest::fit(96, 32);
+    let marked_req = RenderRequest { overlay: lightcraft_pipeline::Overlay::Clipping, ..plain_req };
+    let cpu = render(&src, &info, &s, &marked_req);
+    let plain = lightcraft_gpu::try_render(&src, &info, &s, &plain_req, None).expect("actual GPU plain render");
+    let marked = lightcraft_gpu::try_render(&src, &info, &s, &marked_req, None).expect("actual GPU clipping render");
+    assert_eq!(plain.histogram.r, marked.histogram.r);
+    assert_eq!(plain.histogram.g, marked.histogram.g);
+    assert_eq!(plain.histogram.b, marked.histogram.b);
+    let mut red = 0;
+    let mut blue = 0;
+    let mut clear = 0;
+    for ((base, shown), reference) in plain.image.data.iter().zip(&marked.image.data).zip(&cpu.image.data) {
+        let expected = if base[..3].contains(&255) {
+            [255, 0, 0, 255]
+        } else if base[..3].contains(&0) {
+            [0, 0, 255, 255]
+        } else {
+            *base
+        };
+        assert_eq!(*shown, expected);
+        let class = |p: &[u8; 4]| {
+            if *p == [255, 0, 0, 255] {
+                2
+            } else if *p == [0, 0, 255, 255] {
+                1
+            } else {
+                0
+            }
+        };
+        assert_eq!(class(shown), class(reference), "CPU/GPU clipping class on stable patch");
+        match class(shown) {
+            2 => red += 1,
+            1 => blue += 1,
+            _ => clear += 1,
+        }
+    }
+    assert!(red > 500 && blue > 500 && clear > 500, "all three cases must be exercised: {red}/{blue}/{clear}");
+}
+
 #[test]
 fn overlays_match() {
     if !gpu() {

@@ -235,6 +235,8 @@ pub struct Renderer {
     /// Slot → (key, priority) of the request in flight (queued or running).
     pending: HashMap<Slot, (u64, u32)>,
     pub textures: HashMap<Slot, Tex>,
+    /// Diagnostic identity of the main view; a toggle must retire old painted pixels immediately.
+    main_overlay: lightcraft_pipeline::Overlay,
     /// The last [`Slot::HdrHistogram`] result: (photo, job key, histogram).
     pub live_hdr_histogram: Option<(PhotoId, u64, Histogram)>,
     pub last_main_ms: f64,
@@ -358,6 +360,7 @@ impl Renderer {
             seq: 0,
             pending: HashMap::new(),
             textures: HashMap::new(),
+            main_overlay: lightcraft_pipeline::Overlay::None,
             live_hdr_histogram: None,
             last_main_ms: 0.0,
             completed: 0,
@@ -1215,6 +1218,25 @@ impl Renderer {
             .collect()
     }
 
+    /// Retire previous diagnostic renders immediately when the main view changes overlay.
+    /// The whole frame and its After-side region both cancel old requests so late drafts cannot
+    /// repaint a disabled diagnostic; plain stand-ins remain while replacements are rendered.
+    pub fn set_main_overlay(&mut self, overlay: lightcraft_pipeline::Overlay) {
+        if self.main_overlay != overlay {
+            for slot in [Slot::Main, Slot::Region] {
+                // Retire diagnostic pixels and work while retaining reusable base stages.
+                self.drop_queued(slot);
+                self.pending.remove(&slot);
+                self.requests.remove(&slot);
+                self.quick_tried.remove(&slot);
+                self.textures.remove(&slot);
+                // Superseded drag drafts normally remain usable; an older diagnostic does not.
+                self.shown_ids.insert(slot, lightcraft_preview::next_tick());
+            }
+            self.main_overlay = overlay;
+        }
+    }
+
     /// Forget everything about `slot`: its texture, its queued job, and that its stand-in was asked
     /// for (so asking again makes it again).
     pub fn forget(&mut self, slot: Slot) {
@@ -1498,6 +1520,32 @@ mod thumbnail_tests {
             std::mem::take(&mut self.0.borrow_mut().finished)
         }
     }
+    /// A disabled diagnostic cannot return as a superseded whole-frame or region draft.
+    #[test]
+    fn clipping_toggle_retires_texture_and_rejects_late_drafts() {
+        use lightcraft_pipeline::Overlay;
+        for slot in [Slot::Main, Slot::Region] {
+            let (mut app, work, ctx) = fixture();
+            app.renderer.set_main_overlay(Overlay::Clipping);
+            let old = app.session.render_job(PhotoId(1), 32, 32, false, true).unwrap().with_overlay(Overlay::Clipping);
+            app.renderer.request(slot, old, 100);
+            let (_, old) = take_job(&work);
+            app.renderer.set_main_overlay(Overlay::None);
+            assert!(!app.renderer.textures.contains_key(&slot));
+            let new = app.session.render_job(PhotoId(1), 32, 32, false, true).unwrap();
+            app.renderer.request(slot, new, 100);
+            let (_, new) = take_job(&work);
+            finish(&mut app, &work, &ctx, slot, old.run());
+            assert!(!app.renderer.textures.contains_key(&slot), "{slot:?}: old overlay must not be accepted as a draft");
+            finish(&mut app, &work, &ctx, slot, new.run());
+            assert!(app.renderer.textures.contains_key(&slot));
+            let stages = app.renderer.stages.get(&slot).cloned();
+            app.renderer.set_main_overlay(Overlay::Clipping);
+            assert!(!app.renderer.textures.contains_key(&slot), "{slot:?}: old texture must retire immediately");
+            assert_eq!(app.renderer.stages.contains_key(&slot), stages.is_some(), "{slot:?}: base stages remain reusable");
+        }
+    }
+
     fn fixture() -> (crate::LightcraftApp, std::rc::Rc<std::cell::RefCell<Work>>, egui::Context) {
         fixture_with(Session::new(), (*photo()).clone())
     }

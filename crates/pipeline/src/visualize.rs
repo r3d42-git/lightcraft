@@ -39,6 +39,9 @@ pub enum Overlay {
     /// Visualize HDR (photos edited in HDR): the SDR image dimmed to grey, with every pixel the HDR
     /// rendition puts above SDR white painted by how far above it is ([`HDR_BANDS`]).
     HdrRange,
+    /// Rendered channel endpoints: red for any high channel, blue for any low channel.
+    /// Red wins when a pixel has both; HDR uses configured linear headroom instead of SDR white.
+    Clipping,
 }
 
 /// [`Overlay::HdrRange`] colours (sRGB) for 0–1, 1–2, 2–3 and ≥ 3 stops above SDR white.
@@ -125,6 +128,7 @@ impl Overlay {
             Overlay::Mask { id, view, color, opacity } => (3, pack_mask(id, view, color, opacity) as f64),
             Overlay::AllMasks { view, color, opacity } => (5, pack_mask(0, view, color, opacity) as f64),
             Overlay::HdrRange => (4, 0.0),
+            Overlay::Clipping => (6, 0.0),
         }
     }
 
@@ -135,6 +139,7 @@ impl Overlay {
             2 => Overlay::Spots(v.clamp(0.0, 100.0) as u8),
             3 if v.is_finite() && v >= 0.0 => unpack_mask(v as u64),
             4 => Overlay::HdrRange,
+            6 => Overlay::Clipping,
             5 if v.is_finite() && v >= 0.0 => {
                 let rgb = (v as u64 >> 20) & 0xff_ffff;
                 Overlay::AllMasks {
@@ -156,6 +161,7 @@ impl Overlay {
             Overlay::Mask { id, view, color, opacity } => 3 << 60 | pack_mask(id, view, color, opacity),
             Overlay::AllMasks { view, color, opacity } => 5 << 60 | pack_mask(0, view, color, opacity),
             Overlay::HdrRange => 0x4000,
+            Overlay::Clipping => 0x6000,
         }
     }
 
@@ -187,6 +193,12 @@ pub fn apply(img: &mut Rgba8, o: Overlay, plan: &Plan<'_>, mask: Option<&Plane>,
     match o {
         // drawn by the renderer from the HDR rendition ([`hdr_range`])
         Overlay::None | Overlay::HdrRange => {}
+        // HDR endpoints need the separate linear rendition; never inspect its SDR stand-in.
+        Overlay::Clipping => {
+            if !plan.settings.hdr.enabled {
+                clipping(img);
+            }
+        }
         Overlay::PointColorRange(i) => {
             if let Some(p) = plan.settings.point_colors.get(i as usize) {
                 point_color_range(img, &PointK::new(p));
@@ -283,6 +295,37 @@ fn point_color_range(img: &mut Rgba8, k: &PointK) {
     });
 }
 
+/// Mark rendered SDR channel endpoints, preserving every other pixel and its alpha.
+/// This uses the same 0/255 endpoints as the RGB histogram, without a population threshold.
+fn clipping(img: &mut Rgba8) {
+    for p in &mut img.data {
+        let rgb = [p[0], p[1], p[2]];
+        if rgb.contains(&255) {
+            (p[0], p[1], p[2]) = (255, 0, 0);
+        } else if rgb.contains(&0) {
+            (p[0], p[1], p[2]) = (0, 0, 255);
+        }
+    }
+}
+
+/// Mark HDR channel endpoints from the same request's linear rendition, with red taking
+/// precedence over blue. SDR white is below the configured HDR peak and remains unmarked.
+/// One part per million of peak accommodates float rounding at the upper endpoint.
+pub fn hdr_clipping(img: &mut Rgba8, hdr: &crate::DeepImage, peak: f32) {
+    let crate::DeepSamples::F32(v) = &hdr.samples else { return };
+    if (hdr.width, hdr.height) != (img.width, img.height) || !peak.is_finite() || peak <= 0.0 {
+        return;
+    }
+    let top = peak * (1.0 - 1e-6);
+    for (p, c) in img.data.iter_mut().zip(v.chunks_exact(3)) {
+        if c.iter().any(|v| *v >= top) {
+            (p[0], p[1], p[2]) = (255, 0, 0);
+        } else if c.iter().any(|v| *v <= 0.0) {
+            (p[0], p[1], p[2]) = (0, 0, 255);
+        }
+    }
+}
+
 /// Draw [`Overlay::HdrRange`] on `img` (the SDR render) from `hdr` (the HDR render of the same
 /// request, float linear with luminance weights `luma`): grey below SDR white, band colours above.
 pub fn hdr_range(img: &mut Rgba8, hdr: &crate::DeepImage, luma: [f32; 3]) {
@@ -317,6 +360,106 @@ mod tests {
     use crate::{RenderRequest, SourceInfo, render};
     use lightcraft_develop::PointColor;
     use lightcraft_raster::Rgb32f;
+
+    /// Endpoint diagnostics are local, channel-wise and independent of the population count.
+    #[test]
+    fn clipping_marks_channel_endpoints_and_preserves_other_pixels() {
+        let mut image = Rgba8 {
+            width: 5,
+            height: 1,
+            data: vec![[254, 1, 128, 255], [255, 128, 128, 255], [128, 0, 128, 255], [0, 255, 0, 255], [1, 254, 128, 123]],
+        };
+        clipping(&mut image);
+        assert_eq!(image.data, vec![[254, 1, 128, 255], [255, 0, 0, 255], [0, 0, 255, 255], [255, 0, 0, 255], [1, 254, 128, 123]]);
+        let (kind, value) = Overlay::Clipping.to_parts();
+        assert_eq!(Overlay::from_parts(kind, value), Overlay::Clipping);
+        assert_ne!(Overlay::Clipping.key(), Overlay::None.key());
+        assert_ne!(Overlay::Clipping.key(), Overlay::HdrRange.key());
+    }
+
+    /// SDR white is not the HDR endpoint, and malformed dimensions cannot apply another mask.
+    #[test]
+    fn hdr_clipping_uses_headroom_and_red_precedence() {
+        let mut image = Rgba8 { width: 4, height: 1, data: vec![[100, 110, 120, 255]; 4] };
+        let hdr = crate::DeepImage {
+            space: crate::OutputSpace::Srgb,
+            width: 4,
+            height: 1,
+            samples: crate::DeepSamples::F32(vec![1.0, 1.0, 1.0, 2.0, 3.0, 4.0, 0.0, 0.1, 0.2, 0.0, 8.0, 0.0]),
+        };
+        hdr_clipping(&mut image, &hdr, 8.0);
+        assert_eq!(image.data, vec![[100, 110, 120, 255], [100, 110, 120, 255], [0, 0, 255, 255], [255, 0, 0, 255]]);
+        let mut wrong = image.clone();
+        wrong.width = 2;
+        let unchanged = wrong.clone();
+        hdr_clipping(&mut wrong, &hdr, 8.0);
+        assert_eq!(wrong, unchanged);
+    }
+
+    /// A clipped SDR stand-in cannot turn a valid HDR highlight into a clipping marker.
+    #[test]
+    fn hdr_clipping_does_not_inherit_sdr_white_markers() {
+        let src = Rgb32f::from_fn(80, 20, |x, _| [0.1 + x as f32 * 0.05; 3]);
+        let mut s = DevelopSettings::default();
+        s.hdr.enabled = true;
+        s.hdr.max_ev = 3.0;
+        // Expose the SDR rendition to force its endpoints while leaving the HDR edit alone.
+        s.hdr.sdr_brightness = 100.0;
+        let req = RenderRequest::fit(80, 20);
+        let info = SourceInfo::default();
+        let plain = render(&src, &info, &s, &req);
+        let marked = render(&src, &info, &s, &RenderRequest { overlay: Overlay::Clipping, ..req });
+        let hdr = render(&src, &info, &s, &RenderRequest { depth: crate::OutputDepth::F32Hdr, ..req }).deep.unwrap();
+        let crate::DeepSamples::F32(samples) = hdr.samples else { panic!("float HDR expected") };
+        let mut checked = 0;
+        for ((base, shown), linear) in plain.image.data.iter().zip(&marked.image.data).zip(samples.chunks_exact(3)) {
+            if base[..3].contains(&255) && linear.iter().all(|v| *v > 0.0 && *v < s.hdr.peak() * (1.0 - 1e-6)) {
+                assert_eq!(base, shown);
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "fixture must expose false SDR-only clipping");
+    }
+
+    /// Histogram and base render remain unchanged by a diagnostic request, including in HDR.
+    #[test]
+    fn clipping_is_preview_only_and_matches_rendered_endpoints() {
+        let src = Rgb32f::from_fn(40, 20, |x, _| {
+            if x < 10 {
+                [0.0; 3]
+            } else if x > 29 {
+                [20.0; 3]
+            } else {
+                [0.18; 3]
+            }
+        });
+        for hdr in [false, true] {
+            let mut s = DevelopSettings::default();
+            s.hdr.enabled = hdr;
+            let req = RenderRequest::fit(40, 20);
+            let plain = render(&src, &SourceInfo::default(), &s, &req);
+            let marked = render(&src, &SourceInfo::default(), &s, &RenderRequest { overlay: Overlay::Clipping, ..req });
+            assert_eq!(plain.histogram.r, marked.histogram.r);
+            assert_eq!(plain.histogram.g, marked.histogram.g);
+            assert_eq!(plain.histogram.b, marked.histogram.b);
+            assert!(marked.image.data.contains(&[0, 0, 255, 255]));
+            if !hdr {
+                assert!(marked.image.data.contains(&[255, 0, 0, 255]));
+                for (base, shown) in plain.image.data.iter().zip(&marked.image.data) {
+                    let rgb = &base[..3];
+                    let expected = if rgb.contains(&255) {
+                        [255, 0, 0, 255]
+                    } else if rgb.contains(&0) {
+                        [0, 0, 255, 255]
+                    } else {
+                        *base
+                    };
+                    assert_eq!(*shown, expected);
+                }
+            }
+            assert_eq!(render(&src, &SourceInfo::default(), &s, &req).image, plain.image);
+        }
+    }
 
     #[test]
     fn spots_view_marks_specks_at_any_size() {

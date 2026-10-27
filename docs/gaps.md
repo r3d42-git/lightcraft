@@ -61,6 +61,7 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 
 ## Closed recently (kept for calibration)
 
+- 2026-10-27 (R3D): Clipping now marks rendered endpoint locations directly (red high, blue low; red precedence), with no frame/population gate. Crop and region renders use the same diagnostic request; HDR compares linear configured headroom and currently falls back to CPU plus an extra float rendition. Preview pixels only; no export, source, edit or base-cache format change. CPU/Metal may differ at threshold boundaries where their base render differs by one 8-bit code value. Native/HDR-display and full-resolution acceptance remain open; readiness/counts unchanged.
 - 2026-10-25 (R3D): Auto now derives tonal/color controls per image and validates candidate renders against existing clipping on a bounded proxy. Full-resolution, subjective scene and native/HDR-display acceptance remain open; no ranked gap, parity claim or readiness estimate closes.
 
 

@@ -1909,3 +1909,22 @@ fn effect_dropdown_applies_saves_and_shows_the_matching_effect() {
     assert_eq!((a.exposure, a.shadows, a.clarity, a.amount), (0.7, 25.0, 0.0, 50.0));
     assert_eq!(exec(&mut h, "mask.effects", json!({}))["current"], "Lift");
 }
+
+/// An intentional tool diagnostic takes precedence over the enabled clipping toggle.
+#[test]
+fn clipping_defers_to_tool_diagnostics_and_fullscreen_suppresses_it() {
+    use lightcraft_pipeline::Overlay;
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "linear", "start": [0.5, 0.2], "end": [0.5, 0.7]}));
+    let d = develop(&h);
+    exec(&mut h, "view.clipping", json!({}));
+    assert!(matches!(crate::panels::detail::view_overlay(&h.app, &d), Overlay::Mask { .. }));
+    h.app.ui.mask_overlay = false;
+    assert_eq!(crate::panels::detail::view_overlay(&h.app, &d), Overlay::Clipping);
+    assert_eq!(develop(&h), d);
+    h.app.ui.fullscreen = true;
+    assert_eq!(crate::panels::detail::view_overlay(&h.app, &d), Overlay::None);
+    h.app.ui.fullscreen = false;
+    exec(&mut h, "view.clipping", json!({}));
+    assert_eq!(crate::panels::detail::view_overlay(&h.app, &d), Overlay::None);
+}
