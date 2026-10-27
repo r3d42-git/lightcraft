@@ -612,6 +612,12 @@ fn steady_hdr_histogram(ctx: &egui::Context, id: PhotoId, hdr_edit: bool, hist: 
     }
 }
 
+/// The last drag's small HDR histogram is retained by the renderer. Only an active HDR edit of
+/// this photo may use it; an SDR drag must keep its own histogram after HDR is switched off.
+fn live_hdr_histogram(live: Option<&(PhotoId, u64, Histogram)>, id: PhotoId, dragging: bool) -> Option<Histogram> {
+    live.filter(|l| dragging && l.0 == id).map(|l| l.2.clone())
+}
+
 /// The histogram, its clipping buttons and the EXIF strip, drawn above the Edit panel's scrolling sliders
 /// ([`super::right::show`]).
 pub fn histogram(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
@@ -629,7 +635,7 @@ pub fn histogram(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             app.renderer.request(Slot::HdrHistogram, job, 95);
         }
     }
-    let live = app.renderer.live_hdr_histogram.as_ref().filter(|l| interacting && l.0 == id).map(|l| l.2.clone());
+    let live = live_hdr_histogram(app.renderer.live_hdr_histogram.as_ref(), id, interacting && hdr_edit);
     // else the loupe render of this photo, else its thumbnail (grid view before the loupe has
     // rendered it)
     let hist = live.or_else(|| preview_histogram(app, id));
@@ -2294,6 +2300,18 @@ mod tests {
         // HDR turned off: the SDR histogram at once; other photos keep their own
         assert_eq!(steady_hdr_histogram(&ctx, id, false, Some(sdr.clone())), Some(sdr.clone()));
         assert_eq!(steady_hdr_histogram(&ctx, PhotoId(8), true, Some(sdr.clone())), Some(sdr));
+    }
+
+    /// Issue #2819: a retained HDR histogram must not leak into an SDR edit's next drag.
+    #[test]
+    fn a_drag_with_hdr_off_does_not_read_the_last_hdr_drags_histogram() {
+        let id = PhotoId(7);
+        let kept = (id, 3, Histogram::of_hdr(&[[2.0, 2.0, 2.0]], 5.0));
+        assert!(kept.2.hdr.is_some());
+        assert_eq!(live_hdr_histogram(Some(&kept), id, true), Some(kept.2.clone()));
+        assert_eq!(live_hdr_histogram(Some(&kept), id, false), None);
+        assert_eq!(live_hdr_histogram(Some(&kept), PhotoId(8), true), None);
+        assert_eq!(live_hdr_histogram(None, id, true), None);
     }
 
     /// Issue #1751: Windows and Linux read Ctrl where macOS reads Cmd, and a rebound shortcut shows.

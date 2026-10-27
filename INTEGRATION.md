@@ -368,3 +368,13 @@ The dependent #3077 (`aa852a75`) and #3080 (`703f5727`) follow-ups add reusable 
 ## Combined denoise/culling source identity – 2026-10-27
 
 A deterministic completion-order test reproduces a late plain/previous-model decode repopulating the source cache after denoise readiness or a model switch. Decoded twins now retain their product key; Session acceptance requires both the original RAW identity and the current product identity. Plain sources remain reusable after product removal; unbound twins cannot claim to be plain. Render cache77 invalidates earlier derived previews; LOOK13 is unchanged. The separate optical-crop variant reserves78. Full combination CI and real cache-rebuild checks are required before commit.
+
+## Local PR candidates — 2026-10-27
+
+PR #3038, head `ff913833de19cbb017c79c596cc31d3cbe75f2b4`, declares the 18 shipped UI languages for macOS system dialogs. The R3D bundle identity remains. AppKit follows system/app language preferences; a LightCraft-only language switch does not force native dialog language. Native dialog acceptance remains pending.
+
+PR #2981, head `daf46b16f13bd7c2a9713efbdd63eda20a98219c`, gates the retained live HDR histogram on HDR being enabled. The fixed histogram layout, tonal drag controls and active HDR button remain. No rendering/cache/LOOK version changes.
+
+PR #2988, head `5490347d47a52d0cffc534302ae79134ade04091`, adds Lanczos-3 downscaling only to export jobs (CPU and GPU); preview/thumbnail requests retain Mitchell. Export request keys carry a distinct filter identity, and the resolved frame includes the filter in CPU/GPU stage-cache geometry keys. Output sharpening becomes a Gaussian luma unsharp mask with a local 10% overshoot bound and finite float-input handling. Original/sidecar protection and native ACL atomic writes are unchanged. Shared-stage-cache regressions exercise Smooth → Sharp → Smooth on CPU and Metal. Cache73 and LOOK13 remain unchanged at this conservative checkpoint because preview pixels are unchanged; the later #3012 crop variant is separate.
+
+The combined conservative candidate keeps render cache77 and LOOK13. It includes #3038, #2981, #2988, #2982 and the #3055/#3077/#3080 chain with late-source protection. Automatic optical crop #3012 and the #2929 download catalog are not included; the verified optional ONNX import remains available.

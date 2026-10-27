@@ -5,6 +5,14 @@
 - AI Denoise uses a classical BM3D-style filter when no valid ONNX model is selected. Models remain optional alternatives. GPU filtering is checked against the CPU and falls back on failure. This changes the no-model behaviour for previously enabled photos; photographic acceptance is pending.
 
 
+## 2026-10-27 (R3D candidate)
+
+### Sharper small exports
+- Export downscaling uses Lanczos-3 while previews retain their smooth filter. Screen and print output sharpening use a Gaussian luma mask with bounded edge overshoot.
+
+### SDR histogram after HDR editing
+- Switching HDR off keeps the SDR histogram during subsequent slider drags; the retained histogram from the last HDR drag is used only for HDR edits.
+
 ## 2026-10-25
 
 ### German terms and narrow Edit panels

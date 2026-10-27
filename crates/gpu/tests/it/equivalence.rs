@@ -969,3 +969,28 @@ fn soft_proofs_match() {
     };
     assert!(lightcraft_gpu::render(&src, &raw, &DevelopSettings::default(), &req, None).is_none(), "declined: the CPU renders it");
 }
+
+/// Export downscale #2988 uses the same filter on CPU/Metal, including when preview/export
+/// requests alternate through one stage cache.
+#[test]
+fn sharp_export_downscale_matches_cpu_with_shared_stages() {
+    if !gpu() {
+        return;
+    }
+    use lightcraft_pipeline::{Downscale, render_cached};
+    let src = Arc::new(Rgb32f::from_fn(600, 400, |x, _| {
+        let v = 0.18 * (1.0 + 0.8 * (x as f32 * std::f32::consts::TAU / 5.0).sin());
+        [v; 3]
+    }));
+    let info = SourceInfo { raw: true, ..Default::default() };
+    let s = DevelopSettings::default();
+    let cache = StageCache::default();
+    for (i, downscale) in [Downscale::Smooth, Downscale::Sharp, Downscale::Smooth].into_iter().enumerate() {
+        let req = RenderRequest { downscale, ..RenderRequest::fit(360, 360) };
+        let cpu = render_cached(&src, &info, &s, &req, &cache).image;
+        let gpu = lightcraft_gpu::render(&src, &info, &s, &req, Some(&cache)).expect("GPU downscale").image;
+        let (mean, max, _) = diff(&cpu, &gpu);
+        eprintln!("downscale {i} {downscale:?}: mean {mean:.4} LSB, max {max} LSB");
+        assert!(mean < MEAN_LSB && max <= MAX_LSB, "{downscale:?}: mean {mean:.4} LSB, max {max} LSB");
+    }
+}
