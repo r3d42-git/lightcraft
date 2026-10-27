@@ -354,3 +354,7 @@ parents would lose merge-specific integration fixes.
 - Profiles are pinned for this prototype. Switching data under a running or
   previously edited library needs explicit version/migration handling before
   profile updates can become a normal user operation.
+
+## Isolated BM3D denoise candidate – 2026-10-27
+
+Selective #2982 port (57f974c2) on 3098c66a, retaining egui 0.36 and the normal AHD path. The denoised component performs its own Bayer reconstruction. With no valid selected ONNX model, Builtin is used; selected models remain alternatives. Consequently previously enabled photos whose selected model is missing can now render differently. No original is rewritten. Builtin cache fingerprint is builtin@5; render cache 73 and look version 13 are retained. Pending model-setup UI is removed only in this variant. #2929 is prepared in a separate worktree. No installed-app or native photographic acceptance is implied.

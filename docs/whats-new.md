@@ -1,4 +1,9 @@
 # What's new in LightCraft
+## 2026-10-27
+
+### Built-in Bayer denoise (isolated R3D candidate)
+- AI Denoise uses a classical BM3D-style filter when no valid ONNX model is selected. Models remain optional alternatives. GPU filtering is checked against the CPU and falls back on failure. This changes the no-model behaviour for previously enabled photos; photographic acceptance is pending.
+
 
 ## 2026-10-25
 
