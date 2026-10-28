@@ -3,7 +3,7 @@ use super::mono::{fit_tone_only_with, monochrome};
 use super::pairs::{Attempt, TONE_FITS, fit_attempt, fit_partial, search_ordered};
 use super::proxy::{CLIP_TOLERANCE, LensGeometry, MIN_PREVIEW_FRACTION, proxies, structure_agrees};
 use super::tone::{HighlightCheck, highlights};
-use super::*;
+use super::{CameraLook, CameraTone, CameraTransform, HsvTable, Mat3, RawImage, Rgb32f, ToneMap, luminance_2020};
 
 /// Fit the camera JPEG's look, using `correction` to align CR3 sensor/JPEG geometry when eligible;
 /// also report whether the JPEG is black and white ([`monochrome`]).
