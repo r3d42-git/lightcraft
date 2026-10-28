@@ -155,6 +155,11 @@ impl Session {
 
     /// Point AI denoise at `dir` (or at no folder), dropping what was learned about the old one.
     pub fn set_denoise_models_dir(&mut self, dir: Option<PathBuf>) {
+        if let Some(dir) = dir.as_deref()
+            && let Err(e) = crate::denoise::ensure_legacy_settings(dir)
+        {
+            log::error!("denoise: cannot preserve the legacy model identity: {e}");
+        }
         self.denoise.models_dir = dir;
         self.denoise.touch();
     }

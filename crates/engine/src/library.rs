@@ -479,7 +479,13 @@ impl Session {
         // what was learned about the old library's faces is saved, and none of it carries over (photo ids are per library)
         #[cfg(not(target_arch = "wasm32"))]
         self.faces.library_changed();
+        let legacy = crate::denoise::capture_legacy_pin(self.denoise.models_dir.as_deref()).map_err(crate::EngineError::Other)?;
         let (mut journal, mut catalog, report) = Journal::open(catalog)?;
+        let migration = crate::denoise::migrate_legacy(&catalog, &legacy);
+        journal.append(&migration)?;
+        for op in migration {
+            catalog.apply(op)?;
+        }
         // A loaded catalog counts revisions from 0, like every other one. Caches (sidebar counts,
         // keyword tree, the grid's list…) are keyed on the revision, so give each library loaded
         // in this process its own range: otherwise an empty library opened after one that was

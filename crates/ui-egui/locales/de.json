@@ -3466,5 +3466,20 @@
   "The next photos are opened and kept ready to edit, so the first slider move on them is quick. Uses memory: a few hundred MB a photo.": "Die nächsten Fotos werden geöffnet und für die Bearbeitung bereitgehalten. So reagiert der erste Regler schneller. Benötigt einige Hundert MB Arbeitsspeicher je Foto.",
   "Use different settings for this library": "Eigene Einstellungen für diese Bibliothek verwenden",
   "Which photos": "Welche Fotos",
-  "While you go through photos in the loupe, the next ones are made ready before you reach them, and when the computer is otherwise idle the previews of every photo in view are built. The photo on screen always comes first; the work shows in the activity list, where it can be stopped.": "Beim Durchsehen in der Einzelbildansicht werden die nächsten Fotos vorbereitet. In freien Rechenpausen entstehen Vorschauen für alle Fotos der Ansicht. Das angezeigte Foto hat Vorrang. Die Arbeit erscheint in der Aktivitätsliste und kann dort angehalten werden."
+  "While you go through photos in the loupe, the next ones are made ready before you reach them, and when the computer is otherwise idle the previews of every photo in view are built. The photo on screen always comes first; the work shows in the activity list, where it can be stopped.": "Beim Durchsehen in der Einzelbildansicht werden die nächsten Fotos vorbereitet. In freien Rechenpausen entstehen Vorschauen für alle Fotos der Ansicht. Das angezeigte Foto hat Vorrang. Die Arbeit erscheint in der Aktivitätsliste und kann dort angehalten werden.",
+  "The denoise model is installed. Choose it for a photo under Detail, or as the default in Settings.": "Das Entrauschungsmodell ist installiert. Wähle es beim Foto unter Details oder als Standard in den Einstellungen.",
+  "Method": "Verfahren",
+  "This model or its saved version is unavailable. Install it in Settings > AI Denoise.": "Dieses Modell oder seine gespeicherte Version ist nicht verfügbar. Installiere es unter Einstellungen → KI-Entrauschen.",
+  "Manage denoise models…": "Entrauschungsmodelle verwalten…",
+  "Default for new denoising": "Standard für neue Entrauschungen",
+  "This default applies when a photo is first denoised. Existing photos keep their saved method. Choose a different method for one photo under Detail.": "Dieser Standard gilt beim ersten Entrauschen eines Fotos. Bestehende Fotos behalten ihr gespeichertes Verfahren. Ein anderes Verfahren für ein einzelnes Foto wählst du unter Details.",
+  "Use BM3D as default": "BM3D als Standard",
+  "Installed and available models": "Installierte und verfügbare Modelle",
+  "default for new photos": "Standard für neue Fotos",
+  "Set as default": "Als Standard verwenden",
+  "The default model is not installed. Install it or choose another default. Existing photos keep their method.": "Das Standardmodell ist nicht installiert. Installiere es oder wähle einen anderen Standard. Bestehende Fotos behalten ihr Verfahren.",
+  "makes it available for individual photos": "stellt es für einzelne Fotos bereit",
+  "Denoise Model": "Entrauschungsverfahren",
+  "Photo Denoise Model": "Entrauschungsverfahren des Fotos",
+  "Choose Photo Denoise Model": "Entrauschungsverfahren für Foto wählen"
 }

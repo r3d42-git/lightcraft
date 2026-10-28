@@ -99,6 +99,15 @@ impl Process {
     }
 }
 
+/// Exact denoiser identity saved with an edit. Missing installations never select another model.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DenoiseModelPin {
+    pub id: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DevelopSettings {
@@ -142,6 +151,8 @@ pub struct DevelopSettings {
     pub red_eye: Vec<RedEye>,
     pub lens_blur: LensBlur,
     pub enhance: Enhance,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub denoise_model: Option<DenoiseModelPin>,
     /// Camera calibration: shadows tint and primary hue/saturation (applied before tone mapping).
     pub calibration: Calibration,
     /// Section on/off toggles (the "eye" buttons on panel headers): section id → enabled.
@@ -178,6 +189,7 @@ impl Default for DevelopSettings {
             red_eye: Vec::new(),
             lens_blur: LensBlur::default(),
             enhance: Enhance::default(),
+            denoise_model: None,
             calibration: Calibration::default(),
             disabled_sections: Vec::new(),
         }

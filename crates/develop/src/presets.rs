@@ -111,7 +111,7 @@ impl SettingsGroup {
             SettingsGroup::Effects => &["effects"],
             SettingsGroup::Vignette => &["vignette"],
             SettingsGroup::Grain => &["grain"],
-            SettingsGroup::Detail => &["detail", "enhance"],
+            SettingsGroup::Detail => &["detail", "enhance", "denoise_model"],
             SettingsGroup::Optics => &["optics"],
             SettingsGroup::Geometry => &["geometry"],
             SettingsGroup::Crop => &["crop", "orientation"],
@@ -130,6 +130,9 @@ pub fn extract_groups(s: &DevelopSettings, groups: &[SettingsGroup]) -> Value {
     let mut out = Map::new();
     for g in groups {
         for k in g.keys() {
+            if *k == "denoise_model" && full.get(*k).is_none() {
+                out.insert((*k).to_string(), Value::Null);
+            }
             if let Some(v) = full.get(*k) {
                 out.insert((*k).to_string(), v.clone());
             }

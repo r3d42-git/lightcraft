@@ -26,7 +26,9 @@ fn fail(what: &str, e: impl std::fmt::Display) -> EngineError {
 }
 
 fn models_dir(s: &Session, cmd: &str) -> Result<PathBuf> {
-    s.denoise.models_dir.clone().ok_or_else(|| bad(cmd, "this build has nowhere to keep denoise models (the desktop app does)"))
+    let dir = s.denoise.models_dir.clone().ok_or_else(|| bad(cmd, "this build has nowhere to keep denoise models (the desktop app does)"))?;
+    crate::denoise::ensure_legacy_settings(&dir).map_err(EngineError::Other)?;
+    Ok(dir)
 }
 
 /// What a command says about a model.
@@ -60,7 +62,9 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
     let st = dir.as_deref().map(read_settings).unwrap_or_default();
     let installed = dir.as_deref().map(installed_models).unwrap_or_default();
     let on_disk = |id: &str| installed.iter().find(|i| i.manifest.id == id);
-    let chosen = |id: &str| st.model.as_deref() == Some(id);
+    let default = s.denoise_default_id();
+    let selected = (default != lightcraft_denoise::builtin::ID).then_some(default);
+    let chosen = |id: &str| selected.as_deref() == Some(id);
     let mut models: Vec<Value> = Vec::new();
     for k in known::all() {
         let found = on_disk(&k.manifest.id);
@@ -72,7 +76,7 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!({
         "dir": dir.as_ref().map(|d| d.display().to_string()),
         "productsDir": s.denoise_products_dir().map(|d| d.display().to_string()),
-        "model": st.model,
+        "model": selected,
         // whether this build can run denoise models (the `denoise` feature: our pure-Rust CPU/GPU runners)
         "runtime": cfg!(feature = "denoise"),
         "auto": st.auto(),
@@ -232,10 +236,11 @@ fn activate_install(s: &mut Session, result: &Value, model: Arc<dyn crate::denoi
     let dir = models_dir(s, "denoise.models.install")?;
     let id = result["installed"]["id"].as_str().ok_or_else(|| bad("denoise.models.install", "missing installed id"))?;
     let mut st = read_settings(&dir);
-    if activate {
+    st.ever_installed = true;
+    if !st.default_explicit && (activate || id == "rawnind-bayer") {
         st.model = Some(id.to_string());
-        write_settings(&dir, &st).map_err(EngineError::Other)?;
     }
+    write_settings(&dir, &st).map_err(EngineError::Other)?;
     s.denoise.touch();
     s.denoise_refresh_active(true);
     if let Some(a) = &s.denoise.active
@@ -244,8 +249,9 @@ fn activate_install(s: &mut Session, result: &Value, model: Arc<dyn crate::denoi
         *a.model.lock().unwrap_or_else(PoisonError::into_inner) = Some(model);
     }
     let mut v = result.clone();
-    v["installed"]["selected"] = json!(st.model.as_deref() == Some(id));
-    v["model"] = json!(st.model);
+    let default = s.denoise_default_id();
+    v["installed"]["selected"] = json!(default == id);
+    v["model"] = json!((default != lightcraft_denoise::builtin::ID).then_some(default));
     Ok(v)
 }
 
@@ -444,14 +450,10 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(C, "that model is not installed"));
     }
     std::fs::remove_dir_all(&home).map_err(|e| fail("could not remove the model", e))?;
-    let mut st = read_settings(&dir);
-    if st.model.as_deref() == Some(id) {
-        st.model = installed_models(&dir).into_iter().map(|i| i.manifest.id).find(|m| m != id);
-        write_settings(&dir, &st).map_err(EngineError::Other)?;
-    }
     s.denoise.touch();
     s.denoise_refresh_active(true);
-    Ok(json!({"removed": id, "model": st.model}))
+    let default = s.denoise_default_id();
+    Ok(json!({"removed": id, "model": (default != lightcraft_denoise::builtin::ID).then_some(default)}))
 }
 
 fn select(s: &mut Session, p: &Value) -> Result<Value> {
@@ -468,6 +470,7 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mut st = read_settings(&dir);
     st.model = id;
+    st.default_explicit = true;
     write_settings(&dir, &st).map_err(EngineError::Other)?;
     s.denoise.touch();
     s.denoise_refresh_active(true);
@@ -521,7 +524,7 @@ fn status_json(s: &Session, photo: Option<PhotoId>) -> Value {
     let st = &s.denoise.settings;
     let model = s.denoise.active.as_ref().map(|a| json!({"id": a.id, "name": a.manifest.name}));
     let mut v = json!({
-        "enabled": s.denoise.active.is_some(),
+        "enabled": s.denoise_available(),
         "model": model,
         "runtime": cfg!(feature = "denoise"),
         "productsDir": s.denoise_products_dir().map(|d| d.display().to_string()),
@@ -552,6 +555,7 @@ fn toggle(s: &mut Session, p: &Value) -> Result<Value> {
     if !crate::denoise::eligible(photo) {
         return Err(bad(C, "AI Denoise applies to raw photos developed from their sensor data"));
     }
+    let old_pin = photo.develop.denoise_model.clone();
     let mut d = (*s.develop_of(id).ok_or_else(|| bad(C, "no such photo"))?).clone();
     let on = match p.get("enabled") {
         Some(v) => v.as_bool().ok_or_else(|| bad(C, "`enabled` must be true or false"))?,
@@ -562,14 +566,15 @@ fn toggle(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad(C, "the photo has an invalid Denoise amount"));
         }
         s.denoise_refresh_active(true);
-        if s.denoise.active.is_none() {
-            return Err(bad(C, "AI Denoise needs a model: install one in Settings > AI Denoise"));
+        if d.denoise_model.is_none() {
+            d.denoise_model = Some(s.denoise_pin(&s.denoise_default_id()).map_err(EngineError::Other)?);
         }
+        s.denoise_validate_settings(&d).map_err(EngineError::Other)?;
     }
     // The switch is its own setting: the Amount stays where it is (0 included) when it is flipped, so flipping compares
     // with and without. A photo that never had an Amount starts at 50 the first time.
     let amount = if on && d.enhance.denoise_on.is_none() && d.enhance.denoise <= 0.0 { 50.0 } else { d.enhance.denoise };
-    if d.enhance.denoise != amount || d.enhance.denoise_on != Some(on) {
+    if d.enhance.denoise != amount || d.enhance.denoise_on != Some(on) || d.denoise_model != old_pin {
         s.end_interaction()?;
         d.enhance.denoise = amount;
         d.enhance.denoise_on = Some(on);
@@ -587,9 +592,6 @@ fn toggle(s: &mut Session, p: &Value) -> Result<Value> {
 fn queue(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "denoise.queue";
     s.denoise_refresh_active(true);
-    if s.denoise.active.is_none() {
-        return Err(bad(C, "no denoise model is chosen: install one first (`denoise.models.download` or `denoise.models.install`)"));
-    }
     if s.denoise_products_dir().is_none() {
         return Err(bad(C, "denoise keeps its pictures in the library's folder: open a library on disk first"));
     }
@@ -626,7 +628,7 @@ fn pump(s: &mut Session, p: &Value) -> Result<Value> {
     s.denoise_pump(Pace::parse(p.get("pace").and_then(Value::as_str)));
     s.denoise_track();
     Ok(json!({
-        "active": s.denoise.active.is_some(),
+        "active": s.denoise_available(),
         "running": s.denoise_running_json(),
         "queued": s.denoise.queued(),
         "ready": s.media.denoise.len(),
@@ -640,8 +642,67 @@ fn clear(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!({"deleted": files, "bytes": bytes}))
 }
 
+fn photo_info(s: &mut Session, p: &Value) -> Result<Value> {
+    s.denoise_refresh_active(false);
+    let id = super::photo_id(p, "denoise.photo.info")?.or_else(|| s.active()).ok_or_else(|| bad("denoise.photo.info", "select a raw photo"))?;
+    let d = s.develop_of(id).ok_or_else(|| bad("denoise.photo.info", "no such photo"))?;
+    let assigned = d.denoise_model.is_some();
+    let default = s.denoise_default_id();
+    let pin = d.denoise_model.clone().or_else(|| s.denoise_pin(&default).ok());
+    let mut models = vec![lightcraft_denoise::builtin::manifest()];
+    for k in known::all() {
+        if !models.iter().any(|m| m.id == k.manifest.id) {
+            models.push(k.manifest);
+        }
+    }
+    for (id, name, version) in [("lightcraft-bayer", "LightCraft Bayer", "unknown"), ("rawnind-bayer", "RawNIND UtNet2 (Bayer)", "1.0")] {
+        if !models.iter().any(|m| m.id == id) {
+            let mut m = lightcraft_denoise::builtin::manifest();
+            m.id = id.into();
+            m.name = name.into();
+            m.version = version.into();
+            models.push(m);
+        }
+    }
+    for m in s.denoise_manifests() {
+        models.retain(|old| old.id != m.id);
+        models.push(m);
+    }
+    let rows: Vec<Value> =
+        models.iter().map(|m| json!({"id":m.id,"name":m.name,"version":m.version,"available":s.denoise_pin(&m.id).is_ok()})).collect();
+    let model = match pin {
+        Some(pin) => {
+            json!({"id":pin.id,"name":models.iter().find(|m|m.id==pin.id).map(|m|m.name.as_str()).unwrap_or(&pin.id),"version":pin.version,"sha256":pin.sha256,"available":s.denoise_validate_pin(&pin)})
+        }
+        None => json!({"id":default,"name":default,"version":"unknown","available":false}),
+    };
+    Ok(json!({"id":id.0,"model":model,"assigned":assigned,"defaultModel":default,"models":rows}))
+}
+
+fn photo_model(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "denoise.photo.model";
+    s.denoise_refresh_active(true);
+    let id = super::photo_id(p, C)?.or_else(|| s.active()).ok_or_else(|| bad(C, "select a raw photo"))?;
+    let model = str_param(p, "model").ok_or_else(|| bad(C, "missing `model`"))?;
+    let pin = s.denoise_pin(model).map_err(EngineError::Other)?;
+    let photo = s.catalog.photo(id).ok_or_else(|| bad(C, "no such photo"))?;
+    if !crate::denoise::eligible(photo) {
+        return Err(bad(C, "Denoise applies to raw photos"));
+    }
+    let mut d = (*s.develop_of(id).ok_or_else(|| bad(C, "no such photo"))?).clone();
+    if d.denoise_model.as_ref() != Some(&pin) {
+        s.end_interaction()?;
+        d.denoise_model = Some(pin);
+        let op = s.develop_op(id, d, "Denoise Model").ok_or_else(|| bad(C, "no such photo"))?;
+        s.commit("Denoise Model", op)?;
+    }
+    photo_info(s, &json!({"id":id.0}))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(query "denoise.photo.info", "Photo Denoise Model", [], None, "{id?} → per-photo model identity and availability", always, photo_info),
+        cmd!(query "denoise.photo.model", "Choose Photo Denoise Model", [], None, "{id?, model} → pin the installed denoiser for one photo", always, photo_model),
         cmd!(query "denoise.models.list", "Denoise Models", [], None, "{} → {dir, productsDir, model, runtime, auto, cacheGb, threads, runOn, models: [{id, name, version, licence{name, commercial, url, notice}, provenance, source, sizeBytes, sha256, tile, known, downloadHost, installed, selected, accepted}]}", always, list),
         cmd!(query "denoise.models.inspect", "Inspect Denoise Model", [], None, "{path} → model terms from an adjacent manifest; never executes the file", always, inspect),
         cmd!(query "denoise.models.install", "Install Denoise Model", [], None, "{path, acknowledged: true, activate?: true, background?: false} → {installed, model} or {started} — install a denoise model from a file: an .onnx with a denoise-model.json beside it, or an archive LightCraft knows (the darktable `.dtmodel`). `acknowledged` must be true: the user has been shown the model's licence and accepted it. Unless `activate` is false it becomes the model in use", always, install),

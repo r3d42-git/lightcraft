@@ -352,6 +352,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         let applicable = !matches!(app.session.denoise_photo_state(id), lightcraft_engine::denoise::PhotoState::NotApplicable);
         let on = d.enhance.denoise_enabled();
         super::denoise::detail_toggle(app, ui, id, on, applicable);
+        super::denoise::detail_model(app, ui, id, applicable);
         control(app, ui, d, "enhance.denoise", applicable && on);
         super::denoise::detail_status(app, ui, id, if on { d.enhance.denoise } else { 0.0 });
         sub_title(ui, crate::i18n::tr("Noise Reduction"));

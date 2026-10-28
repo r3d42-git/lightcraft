@@ -6,6 +6,34 @@ preserves Amount and mixes none of the cleaned picture. It affects only the requ
 photo, independently of Auto Sync, and is undoable. Manual luminance and colour noise
 reduction remain separate controls.
 
+## Choose a method for each photo
+
+Detail ▸ AI Denoise ▸ **Method** chooses BM3D, LightCraft or RawNIND for the current
+photo. Other installed compatible models appear too. The choice is stored with the
+photo's edits, can be undone and redone, and survives reopening. Choosing a method
+while AI Denoise is off does not turn it on. Amount remains the same when switching.
+
+Settings ▸ AI Denoise manages installed models and the **Default for new denoising**.
+Changing that default does not change photos that already have a method. RawNIND is
+suggested once installed unless a default was explicitly chosen; without installed
+weights the built-in BM3D filter still works immediately. Models remain separate,
+user-installed files: this feature does not bundle weights or add automatic downloads.
+
+The photo records the exact model id, version and accepted file hash (the built-in
+filter records its algorithm version). A missing model or different installed version
+is reported, never silently replaced by the default or BM3D. Install the saved model,
+or explicitly choose another method for that photo. Preview, background work and
+export resolve the same stored choice, including a saved export-settings snapshot.
+
+The pre-upgrade global model identity is frozen before installing models or changing
+the new default, including for older libraries opened later.
+When opening an older library, existing positive-Amount edits and their history and
+saved versions receive the previously selected model identity. Their Amount, on/off
+state, history order and edit timestamps stay unchanged. Photos never denoised remain
+unassigned until first use. Catalog format 10 protects these choices from older apps
+that would discard them; an older format-9 app cannot reopen the upgraded test library.
+Keep the test library separate from the normal installed app.
+
 ## The built-in denoiser
 
 AI Denoise needs no set-up. Unless you choose a model of your own (below), it runs the
@@ -132,8 +160,9 @@ ISO 6400 up.
 
 ## Models and terms (optional)
 
-**No model weights are bundled.** Choosing a model replaces the built-in denoiser; **Stop using**
-(or removing the model) goes back to it. Models live in the per-user `denoise-models` folder
+**No model weights are bundled.** Models are selected per photo; setting a default
+affects new assignments only. Removing a model leaves its photos' saved choices in
+place and reports them unavailable until reinstalled or explicitly changed. Models live in the per-user `denoise-models` folder
 (override with `LIGHTCRAFT_DENOISE_MODELS`). Settings provides **Install from file…**
 for a user-supplied ONNX file with a `denoise-model.json` beside it. The default build
 offers no model downloads. The separate `rawnind-model` Cargo feature enables the

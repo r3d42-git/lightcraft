@@ -232,8 +232,8 @@ fn a_model_is_installed_chosen_and_removed_with_the_terms_accepted() {
     x.s.execute("denoise.models.select", &json!({"id": "stand-in"})).unwrap();
     assert!(x.s.denoise.active.is_some());
     let r = x.s.execute("denoise.models.remove", &json!({"id": "stand-in"})).unwrap();
-    assert_eq!(r["model"], Value::Null);
-    assert_eq!(x.s.denoise.active.as_ref().map(|a| a.id.as_str()), Some("builtin"));
+    assert_eq!(r["model"], "stand-in");
+    assert!(x.s.denoise.active.is_none(), "removed default remains unavailable");
     assert!(!x.dir.join("denoise-models").join("stand-in").exists());
     // ids that are not folder names, and folders that are not models, are never touched
     for bad in ["../library", "", "a/b", "settings.json"] {
@@ -364,17 +364,16 @@ fn what_was_made_is_found_again_by_a_new_session_and_a_new_model_starts_over() {
     assert_eq!(s2.denoise_photo_state(id), PhotoState::Ready);
     assert_eq!(x.runs.load(Ordering::Relaxed), made, "nothing was made again");
 
-    // another model's pictures are different pictures
+    // Installing another default preserves the assigned photo's picture.
     let onnx = model_files(&x.dir, "other");
     s2.execute("denoise.models.install", &json!({"path": onnx.to_string_lossy(), "acknowledged": true})).unwrap();
     s2.denoise_pump(crate::denoise::Pace::Pause);
-    assert!(
-        matches!(s2.denoise_photo_state(id), PhotoState::Queued { .. }),
-        "the first model's picture is not this model's: it is to be made: {:?}",
-        s2.denoise_photo_state(id)
-    );
-    // and choosing the first again finds its picture where it was
-    s2.execute("denoise.models.select", &json!({"id": "stand-in"})).unwrap();
+    assert_eq!(s2.denoise_photo_state(id), PhotoState::Ready);
+    s2.execute("denoise.photo.model", &json!({"id":id.0,"model":"other"})).unwrap();
+    s2.denoise_pump(crate::denoise::Pace::Pause);
+    assert!(matches!(s2.denoise_photo_state(id), PhotoState::Queued { .. }));
+    // Choosing the original per-photo model finds its product again.
+    s2.execute("denoise.photo.model", &json!({"id":id.0,"model": "stand-in"})).unwrap();
     s2.denoise_pump(crate::denoise::Pace::Pause);
     assert_eq!(s2.denoise_photo_state(id), PhotoState::Ready);
     let _ = std::fs::remove_dir_all(&x.dir);
@@ -408,8 +407,11 @@ fn an_export_makes_its_picture_when_the_queue_has_not_and_never_comes_out_withou
     x.s.denoise_pump(crate::denoise::Pace::Pause);
     assert_eq!(x.s.denoise_photo_state(id), PhotoState::Ready);
 
-    // no model: the built-in denoiser makes the picture instead (the stand-in is not asked)
+    // A default change preserves the existing edit and its product.
     x.s.execute("denoise.models.select", &json!({"id": null})).unwrap();
+    assert_eq!(decode(&export_photo(&mut x.s, id, &o, 1).unwrap().bytes), again);
+    // An explicit photo edit switches to BM3D.
+    x.s.execute("denoise.photo.model", &json!({"id":id.0,"model":"builtin"})).unwrap();
     let runs = x.runs.load(Ordering::Relaxed);
     let builtin = decode(&export_photo(&mut x.s, id, &o, 1).unwrap().bytes);
     assert_eq!(x.runs.load(Ordering::Relaxed), runs);
@@ -906,4 +908,362 @@ fn without_a_models_folder_the_cache_still_obeys_the_default_limit() {
         assert_eq!(x.s.denoise_photo_state(photo(&x.s)), PhotoState::Ready, "the photo's own picture stays");
     }
     let _ = std::fs::remove_dir_all(&x.dir);
+}
+
+#[test]
+fn photo_model_choice_is_undoable_and_default_changes_do_not_reinterpret_it() {
+    let mut x = setup("per-photo-choice", true);
+    let id = photo(&x.s);
+    let info = x.s.execute("denoise.photo.info", &json!({"id":id.0})).unwrap();
+    assert_eq!(info["assigned"], false);
+    assert!(info["models"].as_array().unwrap().iter().any(|m| m["id"] == "builtin" && m["available"] == true));
+    let chosen = x.s.execute("denoise.photo.model", &json!({"id":id.0,"model":"stand-in"})).unwrap();
+    assert_eq!(chosen["assigned"], true);
+    assert_eq!(chosen["model"]["sha256"].as_str().unwrap().len(), 64);
+    assert!(!x.s.develop_of(id).unwrap().enhance.denoise_enabled(), "choosing does not enable");
+    x.s.execute("denoise.models.select", &json!({"id":null})).unwrap();
+    assert_eq!(x.s.execute("denoise.photo.info", &json!({"id":id.0})).unwrap()["model"]["id"], "stand-in");
+    x.s.undo_step().unwrap();
+    assert!(x.s.develop_of(id).unwrap().denoise_model.is_none());
+    x.s.redo_step().unwrap();
+    x.s.execute("denoise.toggle", &json!({"id":id.0,"enabled":true})).unwrap();
+    assert_eq!(x.s.develop_of(id).unwrap().denoise_model.as_ref().unwrap().id, "stand-in");
+    let snapshot = (*x.s.develop_of(id).unwrap()).clone();
+    x.s.execute("denoise.photo.model", &json!({"id":id.0,"model":"builtin"})).unwrap();
+    let (old, _) = x.s.denoise_for_export(id, &snapshot).unwrap().unwrap();
+    let current = (*x.s.develop_of(id).unwrap()).clone();
+    let (new, _) = x.s.denoise_for_export(id, &current).unwrap().unwrap();
+    assert_ne!(old.key, new.key, "export resolves supplied snapshot, not current photo");
+    x.s.execute("denoise.models.remove", &json!({"id":"stand-in"})).unwrap();
+    assert!(matches!(x.s.denoise_for_export(id,&snapshot),Err(e) if e.contains("unavailable")));
+    assert!(x.s.denoise_for_export(id, &current).is_ok(), "an available per-photo model survives unavailable global default");
+    x.s.close_library().unwrap();
+    let _ = std::fs::remove_dir_all(x.dir);
+}
+
+#[test]
+fn legacy_pin_migration_preserves_history_versions_timestamps_and_survives_restart() {
+    use lightcraft_catalog::{HistoryStep, Op, Version};
+    let mut x = setup("per-photo-migrate", true);
+    std::fs::write(x.dir.join("denoise-models/settings.json"), br#"{"model":"stand-in"}"#).unwrap();
+    x.s.set_denoise_models_dir(Some(x.dir.join("denoise-models")));
+    let id = photo(&x.s);
+    let mut legacy = (*x.s.develop_of(id).unwrap()).clone();
+    legacy.enhance.denoise = 77.0;
+    legacy.enhance.denoise_on = Some(false);
+    legacy.denoise_model = None;
+    let legacy = Arc::new(legacy);
+    let untouched = Arc::new(lightcraft_develop::DevelopSettings::default());
+    x.s.commit(
+        "legacy fixture",
+        Op::Batch {
+            ops: vec![
+                Op::SetDevelop { id, settings: legacy.clone(), label: "Legacy".into(), edited: Some("2020-01-02T03:04:05Z".into()) },
+                Op::SetHistory {
+                    id,
+                    history: vec![
+                        HistoryStep { label: "First".into(), settings: untouched },
+                        HistoryStep { label: "Saved".into(), settings: legacy.clone() },
+                    ],
+                },
+                Op::SetVersions {
+                    id,
+                    versions: vec![Version { name: "Old snapshot".into(), created: "2020".into(), settings: legacy, auto: false }],
+                },
+            ],
+        },
+    )
+    .unwrap();
+    x.s.close_library().unwrap();
+    drop(x.s);
+    let mut s = Session::new().with_fs();
+    s.set_denoise_models_dir(Some(x.dir.join("denoise-models")));
+    s.open_library(x.dir.join("library"), false).unwrap();
+    let p = s.catalog.photo(id).unwrap();
+    let pin = p.develop.denoise_model.clone().unwrap();
+    assert_eq!(pin.id, "stand-in");
+    assert_eq!(p.edited.as_deref(), Some("2020-01-02T03:04:05Z"));
+    assert_eq!(p.history.len(), 2);
+    assert_eq!(p.history[1].label, "Saved");
+    assert_eq!(p.history[1].settings.denoise_model.as_ref(), Some(&pin));
+    assert!(p.history[0].settings.denoise_model.is_none(), "never enabled histories remain unassigned");
+    assert_eq!(p.versions[0].settings.denoise_model.as_ref(), Some(&pin));
+    s.execute("denoise.models.select", &json!({"id":null})).unwrap();
+    s.close_library().unwrap();
+    s.open_library(x.dir.join("library"), false).unwrap();
+    assert_eq!(
+        s.catalog.photo(id).unwrap().develop.denoise_model.as_ref(),
+        Some(&pin),
+        "portable persisted identity survives changed global default"
+    );
+    s.close_library().unwrap();
+    let _ = std::fs::remove_dir_all(x.dir);
+}
+
+#[test]
+fn rawnind_install_suggests_default_but_respects_explicit_builtin_and_existing_photo() {
+    let mut x = setup("per-photo-rawnind", false);
+    let id = photo(&x.s);
+    x.s.execute("denoise.toggle", &json!({"id":id.0,"enabled":true})).unwrap();
+    let model = model_files(&x.dir, "rawnind-bayer");
+    x.s.execute("denoise.models.install", &json!({"path":model,"acknowledged":true,"activate":false})).unwrap();
+    let info = x.s.execute("denoise.photo.info", &json!({"id":id.0})).unwrap();
+    assert_eq!(info["model"]["id"], "builtin");
+    assert_eq!(info["defaultModel"], "rawnind-bayer");
+    x.s.execute("denoise.models.select", &json!({"id":null})).unwrap();
+    assert_eq!(x.s.execute("denoise.photo.info", &json!({"id":id.0})).unwrap()["defaultModel"], "builtin");
+    x.s.close_library().unwrap();
+    let _ = std::fs::remove_dir_all(x.dir);
+}
+
+#[test]
+fn mixed_queue_uses_each_photos_pin_and_changed_versions_never_fall_back() {
+    let mut x = setup("per-photo-mixed", true);
+    let first = photo(&x.s);
+    x.s.execute("denoise.toggle", &json!({"id":first.0,"enabled":true})).unwrap();
+    let next = x.dir.join("originals/second.dng");
+    std::fs::write(&next, ramp_dng(194, 160, "RGGB")).unwrap();
+    x.s.execute("library.import", &json!({"paths":[next]})).unwrap();
+    let second = x.s.catalog.photos().find(|p| p.id != first).unwrap().id;
+    let model = model_files(&x.dir, "other-model");
+    x.s.execute("denoise.models.install", &json!({"path":model,"acknowledged":true})).unwrap();
+    x.s.execute("denoise.toggle", &json!({"id":second.0,"enabled":true})).unwrap();
+    assert_eq!(x.s.develop_of(first).unwrap().denoise_model.as_ref().unwrap().id, "stand-in");
+    assert_eq!(x.s.develop_of(second).unwrap().denoise_model.as_ref().unwrap().id, "other-model");
+    x.s.execute("denoise.queue", &json!({"ids":[first.0,second.0]})).unwrap();
+    pump_until_ready(&mut x.s, 2);
+    assert_ne!(x.s.media.denoise.spec(first).unwrap().key, x.s.media.denoise.spec(second).unwrap().key);
+    let snapshot = (*x.s.develop_of(first).unwrap()).clone();
+    let path = x.dir.join("denoise-models/stand-in/denoise-model.json");
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    manifest["version"] = json!("2");
+    std::fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    x.s.denoise_refresh_active(true);
+    assert_eq!(x.s.execute("denoise.photo.info", &json!({"id":first.0})).unwrap()["model"]["available"], false);
+    assert!(matches!(x.s.denoise_photo_state(first), PhotoState::Failed { unsupported: false, .. }));
+    assert!(x.s.denoise_for_export(first, &snapshot).is_err());
+    assert_eq!(x.s.denoise_photo_state(second), PhotoState::Ready);
+    x.s.close_library().unwrap();
+    let _ = std::fs::remove_dir_all(x.dir);
+}
+
+#[test]
+fn migration_is_atomic_on_append_failure_and_preserves_memberships_cursor_and_baseline() {
+    use lightcraft_catalog::journal::Journal;
+    use lightcraft_catalog::{Album, AlbumId, Catalog, HistoryStep, MemStore, Op, PhotoId, Stack, StackId, Store};
+    #[derive(Clone)]
+    struct FailAppend {
+        files: MemStore,
+        fail: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl Store for FailAppend {
+        fn read(&mut self, n: &str) -> std::io::Result<Option<Vec<u8>>> {
+            self.files.read(n)
+        }
+        fn write_atomic(&mut self, n: &str, b: &[u8]) -> std::io::Result<()> {
+            self.files.write_atomic(n, b)
+        }
+        fn append(&mut self, n: &str, b: &[u8]) -> std::io::Result<()> {
+            if self.fail.load(Ordering::Relaxed) {
+                self.files.append(n, &b[..b.len() / 2])?;
+                Err(std::io::Error::other("synthetic full disk"))
+            } else {
+                self.files.append(n, b)
+            }
+        }
+        fn truncate(&mut self, n: &str, len: u64) -> std::io::Result<()> {
+            self.files.truncate(n, len)
+        }
+        fn describe(&self) -> String {
+            "denoise migration failure fixture".into()
+        }
+    }
+    let x = setup("migration-atomic", true);
+    let mut p = (**x.s.catalog.photos().next().unwrap()).clone();
+    let first = p.id;
+    Arc::make_mut(&mut p.develop).enhance.denoise = 50.0;
+    p.local_baseline = Some(p.develop.hash64());
+    p.history =
+        vec![HistoryStep { label: "Before".into(), settings: p.develop.clone() }, HistoryStep { label: "After".into(), settings: p.develop.clone() }];
+    p.history_cursor = Some(0);
+    let mut second = p.clone();
+    second.id = PhotoId(first.0 + 1);
+    let mut cat = Catalog::new();
+    cat.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    cat.apply(Op::AddPhoto { photo: Box::new(second) }).unwrap();
+    let mut album = Album::new(AlbumId(1), "Keep membership");
+    album.photos = vec![first];
+    album.cover = Some(first);
+    cat.apply(Op::AddAlbum { album: album.clone() }).unwrap();
+    let stack = Stack { id: StackId(1), photos: vec![first, PhotoId(first.0 + 1)], collapsed: true };
+    cat.apply(Op::AddStack { stack: stack.clone() }).unwrap();
+    let files = MemStore::new();
+    let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let store = FailAppend { files: files.clone(), fail: fail.clone() };
+    let (mut journal, _, _) = Journal::open(Box::new(store.clone())).unwrap();
+    journal.snapshot(&cat).unwrap();
+    let pin = crate::denoise::legacy_pin(Some(&x.dir.join("denoise-models")));
+    let ops = crate::denoise::migrate_legacy(&cat, &pin);
+    fail.store(true, Ordering::Relaxed);
+    assert!(journal.append(&ops).is_err());
+    assert!(cat.photo(first).unwrap().develop.denoise_model.is_none());
+    drop(journal);
+    fail.store(false, Ordering::Relaxed);
+    let (mut journal, mut recovered, _) = Journal::open(Box::new(store)).unwrap();
+    assert!(recovered.photo(first).unwrap().develop.denoise_model.is_none(), "failed migration did not alter persisted settings");
+    journal.append(&ops).unwrap();
+    for op in ops {
+        recovered.apply(op).unwrap();
+    }
+    assert_eq!(recovered.album(AlbumId(1)), Some(&album));
+    assert_eq!(recovered.stack(StackId(1)), Some(&stack));
+    let p = recovered.photo(first).unwrap();
+    assert_eq!(p.history_cursor, Some(0));
+    assert_eq!(p.local_baseline, Some(p.develop.hash64()), "unchanged local baseline remains equal after pin capture");
+    assert!(crate::denoise::migrate_legacy(&recovered, &pin).is_empty(), "migration is idempotent");
+    drop(journal);
+    let (_, reopened, _) = Journal::open(Box::new(files)).unwrap();
+    assert_eq!(reopened.photo(first).unwrap().develop.denoise_model.as_ref(), Some(&pin));
+    drop(x.s);
+    let _ = std::fs::remove_dir_all(x.dir);
+}
+
+#[test]
+fn changing_photo_pin_rejects_a_previous_model_job_in_flight() {
+    use std::sync::{Mutex, mpsc};
+    use std::time::Duration;
+    let mut x = setup("per-photo-inflight", true);
+    let id = photo(&x.s);
+    set_amount(&mut x.s, 80.0);
+    x.s.execute("denoise.settings", &json!({"auto":false})).unwrap();
+    *x.s.denoise.active.as_ref().unwrap().model.lock().unwrap() = None;
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let release_rx = Mutex::new(release_rx);
+    let runs = x.runs.clone();
+    x.s.denoise.loader = Arc::new(move |_, _| {
+        entered_tx.send(()).map_err(|e| e.to_string())?;
+        release_rx.lock().unwrap().recv_timeout(Duration::from_secs(10)).map_err(|e| e.to_string())?;
+        Ok(Arc::new(Dim { runs: runs.clone() }) as Arc<dyn Model>)
+    });
+    x.s.execute("denoise.queue", &json!({"ids":[id.0]})).unwrap();
+    x.s.execute("denoise.pump", &json!({"pace":"full"})).unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let oldkey = x.s.denoise_running_product().unwrap().1;
+    x.s.execute("denoise.photo.model", &json!({"id":id.0,"model":"builtin"})).unwrap();
+    release_tx.send(()).unwrap();
+    for _ in 0..1000 {
+        x.s.denoise_pump(crate::denoise::Pace::Pause);
+        if x.s.denoise_running_json().is_null() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(x.s.denoise_running_json().is_null());
+    assert_ne!(x.s.media.denoise.spec(id).map(|s| s.key.as_str()), Some(oldkey.as_str()));
+    assert_eq!(x.s.denoise_made(), 0, "old model result cannot count as the new photo edit");
+    assert_eq!(x.s.denoise_photo_state(id), PhotoState::Idle);
+    x.s.undo_step().unwrap();
+    assert_eq!(x.s.develop_of(id).unwrap().denoise_model.as_ref().unwrap().id, "stand-in");
+    x.s.close_library().unwrap();
+    let _ = std::fs::remove_dir_all(x.dir);
+}
+
+#[test]
+fn old_explicit_lightcraft_default_and_legacy_edits_survive_rawnind_install() {
+    use lightcraft_catalog::Op;
+    let mut x = setup("per-photo-old-default", false);
+    let id = photo(&x.s);
+    let lightcraft = model_files(&x.dir, "lightcraft-bayer");
+    x.s.execute("denoise.models.install", &json!({"path":lightcraft,"acknowledged":true})).unwrap();
+    // Prior settings had no explicit/default distinction.
+    std::fs::write(x.dir.join("denoise-models/settings.json"), br#"{"model":"lightcraft-bayer"}"#).unwrap();
+    let mut d = (*x.s.develop_of(id).unwrap()).clone();
+    d.enhance.denoise = 65.0;
+    x.s.commit("old edit", Op::SetDevelop { id, settings: Arc::new(d), label: "Legacy".into(), edited: None }).unwrap();
+    let raw = model_files(&x.dir, "rawnind-bayer");
+    x.s.execute("denoise.models.install", &json!({"path":raw,"acknowledged":true})).unwrap();
+    assert_eq!(x.s.execute("denoise.models.list", &json!({})).unwrap()["model"], "lightcraft-bayer");
+    x.s.close_library().unwrap();
+    x.s.open_library(x.dir.join("library"), false).unwrap();
+    assert_eq!(x.s.develop_of(id).unwrap().denoise_model.as_ref().unwrap().id, "lightcraft-bayer");
+    x.s.close_library().unwrap();
+    let _ = std::fs::remove_dir_all(x.dir);
+}
+
+#[test]
+fn changed_installed_bytes_fail_sha_verification_instead_of_using_another_model() {
+    let mut x = setup("per-photo-sha", true);
+    let id = photo(&x.s);
+    set_amount(&mut x.s, 70.0);
+    let snapshot = (*x.s.develop_of(id).unwrap()).clone();
+    let path = x.dir.join("denoise-models/stand-in/model.onnx");
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[0] ^= 1;
+    std::fs::write(path, bytes).unwrap();
+    x.s.denoise_refresh_active(true);
+    let (spec, _) = x.s.denoise_for_export(id, &snapshot).unwrap().unwrap();
+    assert!(matches!((spec.make.unwrap())(),Err(e) if e.contains("SHA-256")));
+    x.s.execute("denoise.models.select", &json!({"id":null})).unwrap();
+    let (spec, _) = x.s.denoise_for_export(id, &snapshot).unwrap().unwrap();
+    assert!(matches!((spec.make.unwrap())(),Err(e) if e.contains("SHA-256")), "an available BM3D default cannot replace this model");
+    x.s.close_library().unwrap();
+    let _ = std::fs::remove_dir_all(x.dir);
+}
+
+#[test]
+fn unopened_legacy_libraries_use_the_original_global_identity_after_default_changes_and_restart() {
+    use lightcraft_catalog::journal::{Journal, SNAPSHOT};
+    use lightcraft_catalog::{Catalog, FsStore, HistoryStep, Op, Version};
+    for old in ["builtin", "lightcraft-bayer"] {
+        let mut x = setup(&format!("frozen-legacy-{old}"), false);
+        let models = x.dir.join("denoise-models");
+        if old != "builtin" {
+            let file = model_files(&x.dir, old);
+            x.s.execute("denoise.models.install", &json!({"path":file,"acknowledged":true})).unwrap();
+            // This is the original pre-feature configuration, before the feature was initialized.
+            std::fs::write(models.join("settings.json"), serde_json::to_vec(&json!({"model":old})).unwrap()).unwrap();
+        }
+        x.s.set_denoise_models_dir(Some(models.clone()));
+        let original = crate::denoise::read_settings(&models).legacy_model.unwrap();
+        assert_eq!(original.id, old);
+        // Another library has never been opened by the new build. Its snapshots/history are still unassigned.
+        let mut p = (**x.s.catalog.photos().next().unwrap()).clone();
+        let id = p.id;
+        Arc::make_mut(&mut p.develop).enhance.denoise = 60.0;
+        assert!(p.develop.denoise_model.is_none());
+        p.history = vec![HistoryStep { label: "Old edit".into(), settings: p.develop.clone() }];
+        p.versions = vec![Version { name: "Old snapshot".into(), created: "2020".into(), settings: p.develop.clone(), auto: false }];
+        let mut old_catalog = Catalog::new();
+        old_catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        let other = x.dir.join("unopened-library");
+        let store = FsStore::open(&other).unwrap();
+        let (mut journal, _, _) = Journal::open(Box::new(store)).unwrap();
+        journal.snapshot(&old_catalog).unwrap();
+        drop(journal);
+        let snapshot = other.join(SNAPSHOT);
+        let mut data: Value = serde_json::from_slice(&std::fs::read(&snapshot).unwrap()).unwrap();
+        data["version"] = json!(9);
+        std::fs::write(snapshot, serde_json::to_vec(&data).unwrap()).unwrap();
+        let raw = model_files(&x.dir, "rawnind-bayer");
+        x.s.execute("denoise.models.install", &json!({"path":raw,"acknowledged":true})).unwrap();
+        x.s.execute("denoise.models.select", &json!({"id":"rawnind-bayer"})).unwrap();
+        assert_eq!(crate::denoise::read_settings(&models).legacy_model.as_ref(), Some(&original));
+        x.s.close_library().unwrap();
+        drop(x.s);
+        // Restart before opening the other legacy library: the mutable default has changed, the frozen identity has not.
+        let mut s = Session::new().with_fs();
+        s.set_denoise_models_dir(Some(models.clone()));
+        s.open_library(&other, false).unwrap();
+        let p = s.catalog.photo(id).unwrap();
+        assert_eq!(p.develop.denoise_model.as_ref(), Some(&original));
+        assert_eq!(p.history[0].settings.denoise_model.as_ref(), Some(&original));
+        assert_eq!(p.versions[0].settings.denoise_model.as_ref(), Some(&original));
+        s.close_library().unwrap();
+        s.execute("denoise.models.select", &json!({"id":null})).unwrap();
+        s.open_library(&other, false).unwrap();
+        assert_eq!(s.catalog.photo(id).unwrap().develop.denoise_model.as_ref(), Some(&original));
+        s.close_library().unwrap();
+        let _ = std::fs::remove_dir_all(x.dir);
+    }
 }

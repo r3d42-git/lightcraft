@@ -35,6 +35,8 @@ pub struct Ui {
     /// Models the user pressed Download for that have not been installed yet.
     dl_watch: Vec<String>,
     list: Option<(u64, f64, Value)>,
+    /// Photo, catalog revision, model-list epoch, read time and resolved per-photo choice.
+    photo_info: Option<(PhotoId, u64, u64, f64, Value)>,
     /// Why the last file picked with Install from file… was refused, shown under the button.
     rejected: Option<String>,
 }
@@ -100,7 +102,7 @@ fn models(app: &mut LightcraftApp, ctx: &egui::Context) -> Value {
 }
 
 /// Follows the downloads the user started: keeps redrawing while one runs (the progress bar), and says so when a
-/// model has been installed and is in use (the engine does all of that by itself).
+/// model has been installed and is available for a photo or as a new default.
 fn watch_downloads(app: &mut LightcraftApp, ctx: &egui::Context) {
     if app.caches.denoise.dl_watch.is_empty() {
         return;
@@ -122,7 +124,7 @@ fn watch_downloads(app: &mut LightcraftApp, ctx: &egui::Context) {
     for id in installed {
         let _ = app.session.execute("denoise.models.downloadCancel", &json!({"id": id}));
         app.caches.denoise.epoch += 1;
-        let text = tr("The denoise model is installed and in use: the AI Denoise Amount slider under Detail now works");
+        let text = tr("The denoise model is installed. Choose it for a photo under Detail, or as the default in Settings.");
         app.ui.status = text.into();
         app.toast(ctx, text);
     }
@@ -137,8 +139,90 @@ pub fn detail_toggle(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, on
         register(ui.ctx(), "denoise:enabled", r.rect);
         if r.changed() {
             let _ = app.run("denoise.toggle", json!({"id": id.0, "enabled": enabled}));
+            app.caches.denoise.photo_info = None;
         }
     });
+}
+
+fn model_name(id: &str, fallback: &str) -> String {
+    match id {
+        "builtin" => "BM3D".into(),
+        "lightcraft-bayer" => "LightCraft".into(),
+        "rawnind-bayer" => "RawNIND".into(),
+        _ => fallback.to_string(),
+    }
+}
+
+fn photo_info(app: &mut LightcraftApp, id: PhotoId, now: f64) -> Value {
+    let (revision, epoch) = (app.session.catalog.revision, app.caches.denoise.epoch);
+    if let Some((photo, rev, e, at, info)) = &app.caches.denoise.photo_info
+        && *photo == id
+        && *rev == revision
+        && *e == epoch
+        && now - at < REFRESH_SECS
+    {
+        return info.clone();
+    }
+    let info = app.session.execute("denoise.photo.info", &json!({"id": id.0})).unwrap_or(Value::Null);
+    app.caches.denoise.photo_info = Some((id, revision, epoch, now, info.clone()));
+    info
+}
+
+/// The stored reconstruction method is a photo edit; the default only supplies a first choice.
+pub fn detail_model(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, applicable: bool) {
+    if !applicable {
+        return;
+    }
+    let info = photo_info(app, id, ui.ctx().input(|i| i.time));
+    let Some(current) = info["model"]["id"].as_str() else { return };
+    let available = info["model"]["available"] == true;
+    let label = model_name(current, info["model"]["name"].as_str().unwrap_or(current));
+    let mut next = None;
+    let t = Tokens::get(ui.ctx());
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 2, bottom: 4 }).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(tr("Method")).color(t.text_label));
+            let selected = if available { label.clone() } else { tr_format!("{name} (unavailable)", name = label) };
+            let r = crate::widgets::combo_box("denoise-photo-model")
+                .width((ui.available_width() - 4.0).clamp(90.0, 200.0))
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    if let Some(rows) = info["models"].as_array() {
+                        for row in rows {
+                            let Some(id) = row["id"].as_str() else { continue };
+                            let name = model_name(id, row["name"].as_str().unwrap_or(id));
+                            let can_use = row["available"] == true;
+                            let text = if can_use { name } else { tr_format!("{name} (not installed)", name = name) };
+                            let response = ui.add_enabled(can_use, egui::Button::selectable(id == current && available, text));
+                            register(ui.ctx(), format!("denoise:method:{id}"), response.rect);
+                            if response.clicked() && (id != current || !available) {
+                                next = Some(id.to_string());
+                            }
+                        }
+                    }
+                });
+            register(ui.ctx(), "denoise:method", r.response.rect);
+        });
+        if !available {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(tr("This model or its saved version is unavailable. Install it in Settings > AI Denoise."))
+                        .size(11.0)
+                        .color(t.caution),
+                )
+                .wrap(),
+            );
+            let response = ui.small_button(tr("Manage denoise models…"));
+            register(ui.ctx(), "denoise:manageModels", response.rect);
+            if response.clicked() {
+                app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "denoise".into() });
+            }
+        }
+    });
+    if let Some(model) = next {
+        let _ = app.run("denoise.photo.model", json!({"id": id.0, "model": model}));
+        app.caches.denoise.photo_info = None;
+    }
 }
 
 /// The bar under the Denoise slider while a photo's picture is made: at most 240 px wide, and
@@ -242,19 +326,36 @@ pub fn settings_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
          Your files are never changed and no extra files are made in your library: the cleaned picture is cached data that is made again when needed.",
     );
     let runtime = list["runtime"].as_bool() == Some(true);
-    if list["model"].is_null() {
-        hint(ui, t, "In use: the built-in denoiser. It needs nothing installed, so turning AI Denoise on just works.");
+    heading(ui, t, "Default for new denoising");
+    hint(
+        ui,
+        t,
+        "This default applies when a photo is first denoised. Existing photos keep their saved method. Choose a different method for one photo under Detail.",
+    );
+    let default_id = list["model"].as_str().unwrap_or("builtin");
+    let default_name = model_name(default_id, default_id);
+    hint(ui, t, &tr_format!("New photos: {name}", name = default_name));
+    if default_id != "builtin" {
+        let response = ui.button(tr("Use BM3D as default"));
+        register(ui.ctx(), "denoise:defaultBuiltin", response.rect);
+        if response.clicked() {
+            let _ = app.run("denoise.models.select", json!({"id": null}));
+            app.caches.denoise.epoch += 1;
+        }
     }
     if !runtime {
         hint(ui, t, "This build cannot run your own denoise models.");
     }
     let all: Vec<Value> = list["models"].as_array().cloned().unwrap_or_default();
+    if default_id != "builtin" && !all.iter().any(|m| m["id"] == default_id && m["installed"] == true) {
+        hint(ui, t, "The default model is not installed. Install it or choose another default. Existing photos keep their method.");
+    }
     let downloads = app
         .session
         .execute("denoise.models.downloads", &json!({}))
         .map(|v| v["downloads"].as_array().cloned().unwrap_or_default())
         .unwrap_or_default();
-    heading(ui, t, "Your own model (optional)");
+    heading(ui, t, "Installed and available models");
     let installing = downloads.iter().any(|d| d["id"] == "local-install" && d["state"].as_str() == Some("installing"));
     let r = crate::button::Button::new("Install from file…")
         .enabled(runtime && app.services.pick_denoise_model.is_some())
@@ -292,9 +393,6 @@ pub fn settings_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     for m in &all {
         let dl = downloads.iter().find(|d| d["id"] == m["id"]);
         model_row(app, ui, t, m, dl, runtime);
-    }
-    if all.iter().all(|m| m["selected"] != true) && all.iter().any(|m| m["installed"] == true) {
-        hint(ui, t, "The built-in denoiser is in use: press Use on a model to use that instead.");
     }
     hint(ui, t, "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.");
     work_section(app, ui, t, &list);
@@ -432,7 +530,7 @@ fn model_row(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, m: &Value, 
                         ui.label(RichText::new(size).color(t.text_dim));
                     }
                     if selected {
-                        ui.label(RichText::new(tr("in use")).color(t.accent));
+                        ui.label(RichText::new(tr("default for new photos")).color(t.accent));
                     } else if installed {
                         ui.label(RichText::new(tr("installed")).color(t.text_dim));
                     }
@@ -487,14 +585,14 @@ fn model_row(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, m: &Value, 
                         app.caches.denoise.epoch += 1;
                     }
                     if selected {
-                        let r = ui.button(tr("Stop using"));
+                        let r = ui.button(tr("Use BM3D as default"));
                         register(ui.ctx(), format!("denoise:off:{id}"), r.rect);
                         if r.clicked() {
                             let _ = app.run("denoise.models.select", json!({"id": null}));
                             app.caches.denoise.epoch += 1;
                         }
                     } else {
-                        let r = ui.button(tr("Use"));
+                        let r = ui.button(tr("Set as default"));
                         register(ui.ctx(), format!("denoise:use:{id}"), r.rect);
                         if r.clicked() {
                             let _ = app.run("denoise.models.select", json!({"id": id}));
@@ -526,7 +624,7 @@ fn model_row(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, m: &Value, 
                             if !host.is_empty() {
                                 let label = if dl_state == Some("failed") { "Try again" } else { "Download" };
                                 let tip = tr_format!(
-                                    "Shows the model's terms, then downloads {} from {host}, installs it and starts using it. Nothing else is sent.",
+                                    "Shows the model's terms, then downloads {} from {host} and installs it. Existing photos keep their method. Nothing else is sent.",
                                     mb(m["sizeBytes"].as_u64()),
                                     host = host
                                 );
@@ -572,7 +670,10 @@ pub fn install(app: &mut LightcraftApp, info: &Value, accepted: bool) -> Result<
         (id.to_string(), app.run("denoise.models.download", json!({"id": id, "acknowledged": true})))
     } else {
         let path = info["path"].as_str().ok_or_else(|| tr("There is no model file to install").to_string())?;
-        ("local-install".into(), app.run("denoise.models.install", json!({"path": path, "acknowledged": true, "background": true})))
+        (
+            "local-install".into(),
+            app.run("denoise.models.install", json!({"path": path, "acknowledged": true, "background": true, "activate": false})),
+        )
     };
     if r.is_ok() {
         app.caches.denoise.dl_watch.push(id);
@@ -677,7 +778,7 @@ pub fn model_dialog(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, info
     let download = info["download"].is_string();
     if download {
         let host = info["host"].as_str().unwrap_or("its own repository");
-        let after = if info["domain"] == "denoise" { "starts using it for AI Denoise" } else { "makes AI Denoise available" };
+        let after = "makes it available for individual photos";
         ui.add(
             egui::Label::new(
                 RichText::new(tr_format!(

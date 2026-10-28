@@ -503,6 +503,67 @@ impl crate::render::RenderOffload for RenderGate {
 
 #[cfg(test)]
 mod tests {
+    /// The method picker sends a photo edit even while denoising is off, and undo restores it.
+    #[test]
+    fn denoise_method_picker_changes_only_the_current_photo() {
+        use lightcraft_catalog::{MediaKind, Op, Photo, PhotoId, Source};
+        let mut h = demo([1400.0, 900.0]);
+        let t = Duration::from_secs(10);
+        let dir = std::env::temp_dir().join(format!("lc-ui-denoise-method-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let model = dir.join("models/lightcraft-bayer");
+        std::fs::create_dir_all(&model).unwrap();
+        // Metadata-only UI fixture: the network is never run by this test.
+        std::fs::write(model.join("model.onnx"), b"UI fixture only").unwrap();
+        std::fs::write(
+            model.join("denoise-model.json"),
+            serde_json::to_vec(&json!({
+                "id":"lightcraft-bayer", "name":"LightCraft", "version":"ui-test", "domain":"bayerToRgb",
+                "tile":64, "overlap":16, "gain":{"kind":"none"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(model.join("installed.json"), serde_json::to_vec(&json!({"sha256":"0".repeat(64)})).unwrap()).unwrap();
+        h.app.session.set_denoise_models_dir(Some(dir.join("models")));
+        let first = h.app.session.catalog.photos().map(|p| p.id.0).max().unwrap_or(0) + 1;
+        let ids = [PhotoId(first), PhotoId(first + 1)];
+        for id in ids {
+            let mut photo = Photo::new(
+                id,
+                Source::File { path: dir.join(format!("{}.dng", id.0)).display().to_string() },
+                "test.dng",
+                "DNG",
+                6000,
+                4000,
+                "2026-10-28T00:00:00",
+            );
+            photo.kind = MediaKind::Raw;
+            h.app.session.commit("setup", Op::AddPhoto { photo: Box::new(photo) }).unwrap();
+        }
+        h.request("engine.execute", json!({"command":"library.select", "params":{"ids":[ids[0].0]}}), t);
+        h.request("ui.set", json!({"view":"detail"}), t);
+        h.app.ui.open_sections = vec!["detail".into()];
+        h.settle(SETTLE);
+        assert_eq!(h.request("ui.clickWidget", json!({"id":"denoise:method"}), t)["ok"], true);
+        h.step();
+        let widgets = h.request("ui.widgets", json!({}), t).to_string();
+        for method in ["builtin", "lightcraft-bayer", "rawnind-bayer"] {
+            assert!(widgets.contains(&format!("denoise:method:{method}")), "{widgets}");
+        }
+        assert_eq!(h.request("ui.clickWidget", json!({"id":"denoise:method:lightcraft-bayer"}), t)["ok"], true);
+        h.step();
+        let settings = h.app.session.develop_of(ids[0]).unwrap();
+        assert_eq!(settings.denoise_model.as_ref().unwrap().id, "lightcraft-bayer");
+        assert!(!settings.enhance.denoise_enabled());
+        assert!(h.app.session.develop_of(ids[1]).unwrap().denoise_model.is_none());
+        h.app.session.execute("edit.undo", &json!({})).unwrap();
+        h.step();
+        assert!(h.app.session.develop_of(ids[0]).unwrap().denoise_model.is_none());
+        drop(h);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// A raw photo is offered the AI Denoise switch with no set-up and one click turns it on with the built-in
     /// denoiser; Settings still offers installing a model, and a photo that is not raw is not offered it.
     #[test]

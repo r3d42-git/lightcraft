@@ -94,6 +94,14 @@ pub enum Op {
         id: PhotoId,
         label: Option<ColorLabel>,
     },
+    /// Atomic legacy denoiser migration, without adding history or changing metadata/memberships.
+    SetDenoiseState {
+        id: PhotoId,
+        settings: Arc<DevelopSettings>,
+        history: Vec<HistoryStep>,
+        versions: Vec<Version>,
+        local_baseline: Option<u64>,
+    },
     SetDevelop {
         id: PhotoId,
         settings: Arc<DevelopSettings>,
@@ -677,9 +685,12 @@ impl Catalog {
             Op::SetCaptured { .. } => self.changes.now = Aspects::CAPTURED,
             Op::SetFile { .. } | Op::Relink { .. } => self.changes.now = Aspects::FILE,
             Op::SetAnalysis { .. } => self.changes.now = Aspects::ANALYSIS,
-            Op::SetDevelop { .. } | Op::SetVersions { .. } | Op::SetHistory { .. } | Op::PushHistory { .. } | Op::SetHistoryCursor { .. } => {
-                self.changes.now = Aspects::DEVELOP
-            }
+            Op::SetDenoiseState { .. }
+            | Op::SetDevelop { .. }
+            | Op::SetVersions { .. }
+            | Op::SetHistory { .. }
+            | Op::PushHistory { .. }
+            | Op::SetHistoryCursor { .. } => self.changes.now = Aspects::DEVELOP,
             // (its ops say for themselves, one by one)
             Op::Batch { .. } => {}
             Op::AddAlbum { .. }
@@ -728,6 +739,16 @@ impl Catalog {
             Op::SetLabel { id, label } => {
                 let p = self.photo_mut(id)?;
                 Op::SetLabel { id, label: std::mem::replace(&mut p.label, label) }
+            }
+            Op::SetDenoiseState { id, settings, history, versions, local_baseline } => {
+                let p = self.photo_mut(id)?;
+                Op::SetDenoiseState {
+                    id,
+                    settings: std::mem::replace(&mut p.develop, settings),
+                    history: std::mem::replace(&mut p.history, history),
+                    versions: std::mem::replace(&mut p.versions, versions),
+                    local_baseline: std::mem::replace(&mut p.local_baseline, local_baseline),
+                }
             }
             Op::SetDevelop { id, settings, label, edited } => {
                 let p = self.photo_mut(id)?;

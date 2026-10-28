@@ -236,10 +236,11 @@ fn op_variants_are_versioned() {
             Op::SetFolderRecord { .. } => 6,
             Op::SetAsShotWb { .. } => 7,
             Op::SetHistoryCursor { .. } => 8,
+            Op::SetDenoiseState { .. } => 10,
         }
     }
     /// v9: `Photo.preview_checked` and `Op::SetContent.preview_checked`.
-    const NEWEST_FIELDS: u32 = 9;
+    const NEWEST_FIELDS: u32 = 10;
     let newest = since(&Op::SetHistoryCursor { id: PhotoId(1), cursor: None });
     assert_eq!(newest.max(NEWEST_FIELDS), VERSION, "the newest op's or fields' version must be the current format version");
 }

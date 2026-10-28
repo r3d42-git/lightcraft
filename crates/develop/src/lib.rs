@@ -134,6 +134,7 @@ impl DevelopSettings {
         a.wb = d.wb;
         a.process = d.process;
         a.auto_tone = None;
+        a.denoise_model = None;
         a == d
     }
 
@@ -192,7 +193,10 @@ impl DevelopSettings {
                 self.curve = d;
             }
             Section::Color => self.wb.mode = WbMode::AsShot,
-            Section::Detail => self.enhance.denoise_on = None,
+            Section::Detail => {
+                self.enhance.denoise_on = None;
+                self.denoise_model = None;
+            }
             _ => {}
         }
     }
@@ -458,5 +462,28 @@ mod auto_tone_state_tests {
         assert_eq!(s.auto_tone, None);
         s.auto_tone = Some([f64::INFINITY; 8]);
         assert!(!s.auto_tone_active());
+    }
+}
+
+#[cfg(test)]
+mod denoise_pin_tests {
+    use super::*;
+    #[test]
+    fn legacy_settings_keep_json_and_hash_until_a_model_is_assigned() {
+        let original = DevelopSettings::default();
+        assert!(original.to_json().get("denoise_model").is_none());
+        let restored = DevelopSettings::from_json(&original.to_json()).unwrap();
+        assert_eq!(original.hash64(), restored.hash64());
+        let mut pinned = restored;
+        pinned.denoise_model = Some(DenoiseModelPin { id: "builtin".into(), version: "1".into(), sha256: None });
+        assert_ne!(original.hash64(), pinned.hash64());
+        assert!(pinned.is_unedited(), "choosing a method alone does not enable denoise");
+        let patch = extract_groups(&pinned, &[SettingsGroup::Detail]);
+        let applied = apply_partial(&original, &patch, 1.0);
+        assert_eq!(applied.denoise_model, pinned.denoise_model);
+        let cleared = apply_partial(&applied, &extract_groups(&original, &[SettingsGroup::Detail]), 1.0);
+        assert!(cleared.denoise_model.is_none(), "copying unassigned Detail clears prior identity");
+        pinned.reset_section(Section::Detail);
+        assert!(pinned.denoise_model.is_none());
     }
 }

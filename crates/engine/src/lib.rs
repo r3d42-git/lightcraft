@@ -661,12 +661,16 @@ impl Session {
         let mut invalidated = Vec::new();
         // photos whose file was replaced: the faces made from the old pixels go too (issue #1524)
         let mut replaced = Vec::new();
+        let mut denoise_changed = Vec::new();
         let mut pending = vec![&op];
         while let Some(op) = pending.pop() {
             match op {
                 Op::SetContent { id, .. } => {
                     invalidated.push(*id);
                     replaced.push(*id);
+                }
+                Op::SetDevelop { id, settings, .. } if self.catalog.photo(*id).is_some_and(|p| p.develop.denoise_model != settings.denoise_model) => {
+                    denoise_changed.push(*id)
                 }
                 Op::SetFile { id, .. } | Op::Relink { id, .. } | Op::RemovePhoto { id } => invalidated.push(*id),
                 Op::AddPhoto { photo } => invalidated.push(photo.id),
@@ -675,6 +679,9 @@ impl Session {
             }
         }
         let inv = self.catalog.apply(op)?;
+        for id in denoise_changed {
+            self.denoise_photo_changed(id);
+        }
         for id in invalidated {
             self.media.forget(id);
         }
@@ -772,7 +779,7 @@ impl Session {
 
     /// Apply without recording undo (interactive previews).
     fn apply_silent(&mut self, op: Op) -> Result<()> {
-        self.catalog.apply(op)?;
+        self.apply_catalog(op)?;
         Ok(())
     }
 
@@ -927,7 +934,10 @@ impl Session {
 
     /// Change a photo's develop settings. During an interaction the change is previewed without an
     /// undo step; otherwise it is committed with a history entry.
-    pub fn set_develop(&mut self, id: PhotoId, settings: DevelopSettings, label: &str) -> Result<()> {
+    pub fn set_develop(&mut self, id: PhotoId, mut settings: DevelopSettings, label: &str) -> Result<()> {
+        if settings.denoise_model.is_none() && settings.enhance.denoise > 0.0 {
+            settings.denoise_model = Some(self.denoise_assignment_pin());
+        }
         let now = (self.clock)();
         // Auto Sync carries the edit as asked; each photo then fits its own crop (review of #1990)
         let requested = settings;
@@ -1022,8 +1032,11 @@ impl Session {
     }
 
     /// The op that sets a photo's develop settings and appends a History entry (for batches).
-    pub fn develop_op(&self, id: PhotoId, settings: DevelopSettings, label: &str) -> Option<Op> {
+    pub fn develop_op(&self, id: PhotoId, mut settings: DevelopSettings, label: &str) -> Option<Op> {
         self.catalog.photo(id)?;
+        if settings.denoise_model.is_none() && settings.enhance.denoise > 0.0 {
+            settings.denoise_model = Some(self.denoise_assignment_pin());
+        }
         let settings = Arc::new(settings);
         let step = lightcraft_catalog::HistoryStep { label: label.into(), settings: settings.clone() };
         Some(Op::Batch {

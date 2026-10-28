@@ -326,6 +326,7 @@ impl Op {
             | Op::SetRating { id, .. }
             | Op::SetFlag { id, .. }
             | Op::SetLabel { id, .. }
+            | Op::SetDenoiseState { id, .. }
             | Op::SetDevelop { id, .. }
             | Op::SetMeta { id, .. }
             | Op::SetDeleted { id, .. }

@@ -26,7 +26,7 @@ use lightcraft_denoise::bayer::Layout;
 use lightcraft_denoise::manifest::DenoiserManifest;
 use lightcraft_denoise::run::{Control, Params, TileRunner, denoise_bayer};
 use lightcraft_denoise::{Error as RunError, product};
-use lightcraft_develop::DevelopSettings;
+use lightcraft_develop::{DenoiseModelPin, DevelopSettings};
 use lightcraft_preview::Hasher128;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -947,6 +947,11 @@ pub(crate) type ModelSlot = Arc<Mutex<Option<Arc<dyn Model>>>>;
 pub(crate) struct Settings {
     /// The installed model in use; `None`: denoise is off.
     pub model: Option<String>,
+    pub default_explicit: bool,
+    pub ever_installed: bool,
+    /// Original pre-feature identity, frozen before any new default/model mutation. Every legacy library uses it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub legacy_model: Option<DenoiseModelPin>,
     /// Photos with a Denoise amount above 0 that are being looked at (active, selected) get their picture made without
     /// being asked (`None`: yes).
     pub auto: Option<bool>,
@@ -986,7 +991,33 @@ pub(crate) fn read_capped(path: &Path, max: usize) -> Option<Vec<u8>> {
 }
 
 pub(crate) fn read_settings(dir: &Path) -> Settings {
-    read_capped(&dir.join("settings.json"), 4096).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    let Some(v) = read_capped(&dir.join("settings.json"), 4096).and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else {
+        return Settings::default();
+    };
+    let mut st: Settings = serde_json::from_value(v.clone()).unwrap_or_default();
+    // An older saved model choice was explicit before this distinction existed.
+    if v.get("defaultExplicit").is_none() && st.model.is_some() {
+        st.default_explicit = true;
+    }
+    st
+}
+
+/// Freeze the original global model once per models configuration before any feature-era choice can replace it.
+/// Callers that mutate models or migrate a library must propagate failure instead of overwriting the evidence.
+pub(crate) fn ensure_legacy_settings(dir: &Path) -> Result<Settings, String> {
+    let mut st = read_settings(dir);
+    if st.legacy_model.is_none() {
+        st.legacy_model = Some(legacy_pin_from_settings(Some(dir), &st));
+        write_settings(dir, &st)?;
+    }
+    Ok(st)
+}
+
+pub(crate) fn capture_legacy_pin(dir: Option<&Path>) -> Result<DenoiseModelPin, String> {
+    match dir {
+        Some(dir) => ensure_legacy_settings(dir)?.legacy_model.ok_or_else(|| "could not preserve the legacy denoise model identity".into()),
+        None => Ok(legacy_pin(None)),
+    }
 }
 
 /// Write a file next to its final name and rename it into place.
@@ -1013,12 +1044,20 @@ pub(crate) struct Installed {
 }
 
 impl Installed {
+    pub fn pin(&self) -> DenoiseModelPin {
+        DenoiseModelPin {
+            id: self.manifest.id.clone(),
+            version: self.manifest.version.clone(),
+            sha256: self.accepted.get("sha256").and_then(Value::as_str).or(self.manifest.sha256.as_deref()).map(str::to_string),
+        }
+    }
+
     /// Names the model file the cache is made with: a hash of the file as installed, so another file with the same id
     /// never finds this one's products.
     pub fn fingerprint(&self) -> String {
         let sha = self.accepted.get("sha256").and_then(Value::as_str).or(self.manifest.sha256.as_deref()).unwrap_or("");
         let len = std::fs::metadata(&self.onnx).map(|m| m.len()).unwrap_or(0);
-        format!("{}@{}:{len}", self.manifest.id, sha)
+        format!("{}@{}@{}:{len}:{:?}", self.manifest.id, self.manifest.version, sha, std::fs::metadata(&self.onnx).and_then(|m| m.modified()).ok())
     }
 }
 
@@ -1061,12 +1100,23 @@ pub(crate) fn forget_gpu_set_ups(dir: &Path) {
 }
 
 /// The model in use.
+#[derive(Clone)]
 pub(crate) struct Active {
     pub id: String,
     pub manifest: DenoiserManifest,
     pub onnx: PathBuf,
     pub fingerprint: String,
     pub model: ModelSlot,
+}
+
+impl Active {
+    fn pin(&self) -> DenoiseModelPin {
+        DenoiseModelPin {
+            id: self.id.clone(),
+            version: self.manifest.version.clone(),
+            sha256: if self.id == lightcraft_denoise::builtin::ID { None } else { self.manifest.sha256.clone() },
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1190,6 +1240,13 @@ fn loaded(spec: &JobSpec) -> Result<Arc<dyn Model>, MakeError> {
     }
     if let Some(m) = spec.model.lock().unwrap_or_else(PoisonError::into_inner).clone() {
         return Ok(m);
+    }
+    if let Some(expected) = &spec.manifest.sha256 {
+        let actual =
+            lightcraft_denoise::hash::sha256_file(&spec.onnx).map_err(|e| MakeError::Failed(format!("could not verify denoise model: {e}")))?;
+        if &actual != expected {
+            return Err(MakeError::Failed("the installed denoise model no longer matches its recorded SHA-256".into()));
+        }
     }
     let m = (spec.loader)(&spec.onnx, &spec.manifest).map_err(|e| MakeError::Failed(format!("the denoise model could not be loaded: {e}")))?;
     *spec.model.lock().unwrap_or_else(PoisonError::into_inner) = Some(m.clone());
@@ -1388,6 +1445,7 @@ pub(crate) struct State {
     pub loader: Loader,
     pub(crate) active: Option<Active>,
     active_seen: Option<web_time::Instant>,
+    registry: HashMap<DenoiseModelPin, Active>,
     /// `settings.json` as last read (with the model choice).
     pub(crate) settings: Settings,
     /// The index must be made again (the library, the model or the cache changed).
@@ -1414,6 +1472,7 @@ impl Default for State {
             loader: default_loader(),
             active: None,
             active_seen: None,
+            registry: HashMap::new(),
             settings: Settings::default(),
             dirty: true,
             reindexed: None,
@@ -1462,13 +1521,15 @@ impl State {
 impl Session {
     /// Where the active model's tiles run (see [`Model::device`]); `{kind: "none"}` while no model is loaded.
     pub(crate) fn denoise_device(&self) -> Value {
-        let loaded = self.denoise.active.as_ref().and_then(|a| a.model.lock().unwrap_or_else(PoisonError::into_inner).clone());
+        let active =
+            self.active().and_then(|id| self.catalog.photo(id)).and_then(|p| self.denoise_resolve(&p.develop).ok()).or(self.denoise.active.as_ref());
+        let loaded = active.and_then(|a| a.model.lock().unwrap_or_else(PoisonError::into_inner).clone());
         match loaded {
             Some(m) => m.device(self.denoise.settings.run_on()),
             // the built-in denoiser is made afresh for each photo; what it knows about the card is kept apart
             #[cfg(feature = "denoise")]
-            None if self.denoise.active.as_ref().is_some_and(|a| a.id == lightcraft_denoise::builtin::ID) => {
-                let onnx = self.denoise.active.as_ref().map(|a| a.onnx.clone()).unwrap_or_default();
+            None if active.is_some_and(|a| a.id == lightcraft_denoise::builtin::ID) => {
+                let onnx = active.map(|a| a.onnx.clone()).unwrap_or_default();
                 builtin_card(&builtin_marker(&onnx)).device(self.denoise.settings.run_on())
             }
             None => json!({"kind": "none"}),
@@ -1488,36 +1549,134 @@ impl Session {
             return;
         }
         self.denoise.active_seen = Some(web_time::Instant::now());
-        self.denoise.settings = self.denoise.models_dir.as_deref().map(read_settings).unwrap_or_default();
-        let chosen = self.denoise.models_dir.as_deref().and_then(|dir| {
-            let id = self.denoise.settings.model.clone()?;
-            installed_models(dir).into_iter().find(|i| i.manifest.id == id)
-        });
-        // without a model of the user's own the built-in denoiser is in use, so AI Denoise needs no set-up; its
-        // (made-up) file is in the models folder, which is where its graphics-card set-up is recorded
-        let (fingerprint, manifest, onnx) = match chosen {
-            Some(i) => (i.fingerprint(), i.manifest, i.onnx),
-            None => {
-                let manifest = lightcraft_denoise::builtin::manifest();
-                let onnx = self.denoise.models_dir.as_deref().map(|d| d.join(lightcraft_denoise::builtin::ID)).unwrap_or_default();
-                (format!("{}@{}", manifest.id, manifest.version), manifest, onnx)
-            }
+        self.denoise.settings = self
+            .denoise
+            .models_dir
+            .as_deref()
+            .map(|dir| match ensure_legacy_settings(dir) {
+                Ok(st) => st,
+                Err(e) => {
+                    log::error!("denoise: cannot preserve the legacy model identity: {e}");
+                    read_settings(dir)
+                }
+            })
+            .unwrap_or_default();
+        let installed = self.denoise.models_dir.as_deref().map(installed_models).unwrap_or_default();
+        let mut registry = HashMap::new();
+        let manifest = lightcraft_denoise::builtin::manifest();
+        let builtin = Active {
+            id: manifest.id.clone(),
+            fingerprint: format!("{}@{}", manifest.id, manifest.version),
+            manifest,
+            onnx: self.denoise.models_dir.as_deref().map(|d| d.join(lightcraft_denoise::builtin::ID)).unwrap_or_default(),
+            model: Arc::new(Mutex::new(None)),
         };
-        if self.denoise.active.as_ref().is_some_and(|a| a.fingerprint == fingerprint) {
-            return;
+        registry.insert(builtin.pin(), builtin);
+        for mut i in installed {
+            let pin = i.pin();
+            let fingerprint = i.fingerprint();
+            i.manifest.sha256 = pin.sha256.clone();
+            let slot = self
+                .denoise
+                .registry
+                .get(&pin)
+                .filter(|a| a.fingerprint == fingerprint)
+                .map(|a| a.model.clone())
+                .unwrap_or_else(|| Arc::new(Mutex::new(None)));
+            registry.insert(pin, Active { id: i.manifest.id.clone(), manifest: i.manifest, onnx: i.onnx, fingerprint, model: slot });
         }
-        // another model: what was made with the old one is not this one's, and what failed may work now
-        self.denoise.active = Some(Active { id: manifest.id.clone(), manifest, onnx, fingerprint, model: Arc::new(Mutex::new(None)) });
-        if let Some(r) = self.denoise.running.take() {
-            r.progress.cancel_now();
-        }
-        self.denoise.queue.clear();
-        self.denoise.failed.clear();
+        self.denoise.registry = registry;
+        // The setting is a default for unassigned photos only. Installation and default changes leave jobs alone.
+        let default = self.denoise_default_id();
+        self.denoise.active = self.denoise.registry.values().find(|a| a.id == default).cloned();
         self.denoise.dirty = true;
     }
 
+    pub(crate) fn denoise_assignment_pin(&self) -> DenoiseModelPin {
+        if self.denoise.active_seen.is_some() {
+            return self.denoise_pin(&self.denoise_default_id()).unwrap_or_else(|_| DenoiseModelPin {
+                id: self.denoise_default_id(),
+                version: "unknown".into(),
+                sha256: None,
+            });
+        }
+        let dir = self.denoise.models_dir.as_deref();
+        let st = dir.map(read_settings).unwrap_or_default();
+        let installed = dir.map(installed_models).unwrap_or_default();
+        let suggestion =
+            (!st.default_explicit).then(|| installed.iter().find(|i| i.manifest.id == "rawnind-bayer").map(|i| i.manifest.id.clone())).flatten();
+        let id = suggestion.or(st.model);
+        match id {
+            Some(id) => installed.iter().find(|i| i.manifest.id == id).map(Installed::pin).unwrap_or(DenoiseModelPin {
+                id,
+                version: "unknown".into(),
+                sha256: None,
+            }),
+            None => {
+                let m = lightcraft_denoise::builtin::manifest();
+                DenoiseModelPin { id: m.id, version: m.version, sha256: None }
+            }
+        }
+    }
+
+    pub(crate) fn denoise_default_id(&self) -> String {
+        let st = &self.denoise.settings;
+        if !st.default_explicit && self.denoise.registry.keys().any(|p| p.id == "rawnind-bayer") {
+            return "rawnind-bayer".into();
+        }
+        if let Some(id) = &st.model {
+            return id.clone();
+        }
+        lightcraft_denoise::builtin::ID.into()
+    }
+
+    pub(crate) fn denoise_manifests(&self) -> Vec<DenoiserManifest> {
+        let mut models: Vec<_> = self.denoise.registry.values().map(|a| a.manifest.clone()).collect();
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        models
+    }
+
+    pub(crate) fn denoise_available(&self) -> bool {
+        !self.denoise.registry.is_empty()
+    }
+
+    pub(crate) fn denoise_pin(&self, id: &str) -> Result<DenoiseModelPin, String> {
+        self.denoise.registry.keys().find(|p| p.id == id).cloned().ok_or_else(|| format!("denoise model `{id}` is not installed"))
+    }
+
+    pub(crate) fn denoise_validate_pin(&self, pin: &DenoiseModelPin) -> bool {
+        self.denoise.registry.contains_key(pin)
+    }
+
+    pub(crate) fn denoise_validate_settings(&self, settings: &DevelopSettings) -> Result<(), String> {
+        self.denoise_resolve(settings).map(|_| ())
+    }
+
+    pub(crate) fn denoise_photo_changed(&mut self, id: PhotoId) {
+        self.denoise_cancel(Some(id), false);
+        self.media.denoise.remove(id);
+        self.media.forget(id);
+        self.denoise.failed.remove(&id);
+        self.denoise.dirty = true;
+        self.denoise.generation += 1;
+    }
+
+    fn denoise_resolve(&self, settings: &DevelopSettings) -> Result<&Active, String> {
+        match &settings.denoise_model {
+            Some(pin) => self.denoise.registry.get(pin).ok_or_else(|| {
+                format!(
+                    "denoise model `{}' version {} ({}) is unavailable; reinstall the exact model or choose another for this photo",
+                    pin.id,
+                    pin.version,
+                    pin.sha256.as_deref().unwrap_or("no recorded hash")
+                )
+            }),
+            None => self.denoise.active.as_ref().ok_or_else(|| format!("default denoise model `{}` is unavailable", self.denoise_default_id())),
+        }
+    }
+
     fn denoise_spec(&self, p: &Photo) -> Option<(DenoiseSpec, String)> {
-        let (dir, active) = (self.denoise_products_dir()?, self.denoise.active.as_ref()?);
+        let (dir, active) = (self.denoise_products_dir()?, self.denoise_resolve(&p.develop).ok()?);
         let key = product_key(&active.fingerprint, p);
         Some((DenoiseSpec { product: product_path(&dir, &key), key: key.clone(), make: None }, key))
     }
@@ -1530,11 +1689,12 @@ impl Session {
         self.denoise.reindexed = Some((self.catalog.revision, web_time::Instant::now()));
         let running = self.denoise.running.as_ref().map(|r| r.photo);
         let mut now: HashMap<PhotoId, DenoiseSpec> = HashMap::new();
-        if let (Some(dir), Some(active)) = (self.denoise_products_dir(), self.denoise.active.as_ref()) {
+        if let Some(dir) = self.denoise_products_dir() {
             let names: HashSet<String> =
                 products_in(&dir).into_iter().filter_map(|(p, _, _)| p.file_stem().and_then(|s| s.to_str()).map(str::to_string)).collect();
             if !names.is_empty() {
                 for p in self.catalog.photos().filter(|p| eligible(p) && running != Some(p.id)) {
+                    let Ok(active) = self.denoise_resolve(&p.develop) else { continue };
                     let key = product_key(&active.fingerprint, p);
                     if names.contains(&key) {
                         now.insert(p.id, DenoiseSpec { product: product_path(&dir, &key), key, make: None });
@@ -1595,7 +1755,10 @@ impl Session {
         if !eligible(p) {
             return PhotoState::NotApplicable;
         }
-        if self.denoise.active.is_none() {
+        if let Err(why) = self.denoise_resolve(&p.develop) {
+            return PhotoState::Failed { why, unsupported: false };
+        }
+        if self.denoise.registry.is_empty() && self.denoise.active_seen.is_none() {
             // the model in use has not been looked at yet (just started)
             return PhotoState::Idle;
         }
@@ -1605,7 +1768,7 @@ impl Session {
                 unsupported: true,
             };
         }
-        if self.media.denoise.spec(id).is_some() {
+        if self.media.denoise.spec(id).is_some_and(|have| self.denoise_spec(p).is_some_and(|(_, key)| have.key == key)) {
             return PhotoState::Ready;
         }
         if let Some(r) = self.denoise.running.as_ref().filter(|r| r.photo == id) {
@@ -1625,7 +1788,7 @@ impl Session {
     /// a photo that failed before is tried again. A photo that is not raw is skipped. Returns how many were queued.
     pub(crate) fn denoise_enqueue(&mut self, ids: &[PhotoId], front: bool, retry: bool) -> usize {
         self.denoise_refresh_active(false);
-        if self.denoise.active.is_none() || self.denoise_products_dir().is_none() {
+        if self.denoise_products_dir().is_none() {
             return 0;
         }
         let mut added = 0;
@@ -1682,10 +1845,31 @@ impl Session {
             .collect()
     }
 
+    /// Keep at most three idle loaded networks. Running jobs/exports own their slots until they finish.
+    fn denoise_release_models(&self, keep: &Active) {
+        let mut loaded = self.denoise.registry.values().filter(|a| a.model.lock().unwrap_or_else(PoisonError::into_inner).is_some()).count();
+        let budget = if keep.model.lock().unwrap_or_else(PoisonError::into_inner).is_some() { 3 } else { 2 };
+        if loaded <= budget {
+            return;
+        }
+        for a in self.denoise.registry.values() {
+            if loaded <= budget {
+                break;
+            }
+            if a.fingerprint != keep.fingerprint
+                && Arc::strong_count(&a.model) <= 2
+                && a.model.lock().unwrap_or_else(PoisonError::into_inner).take().is_some()
+            {
+                loaded -= 1;
+            }
+        }
+    }
+
     fn denoise_job_spec(&self, p: &Photo, parallel: usize) -> Option<JobSpec> {
         let Source::File { path } = &p.source else { return None };
         let (spec, _) = self.denoise_spec(p)?;
-        let active = self.denoise.active.as_ref()?;
+        let active = self.denoise_resolve(&p.develop).ok()?;
+        self.denoise_release_models(active);
         Some(JobSpec {
             path: path.clone(),
             read: self.media.file_bytes.clone(),
@@ -1746,6 +1930,10 @@ impl Session {
         let Some(r) = &self.denoise.running else { return };
         let Some(outcome) = r.outcome.lock().unwrap_or_else(PoisonError::into_inner).take() else { return };
         let Some(r) = self.denoise.running.take() else { return };
+        if self.catalog.photo(r.photo).and_then(|p| self.denoise_spec(p)).is_none_or(|(_, key)| key != r.key) {
+            self.denoise.generation += 1;
+            return;
+        }
         match outcome {
             Outcome::Done => {
                 self.denoise.made += 1;
@@ -1845,7 +2033,7 @@ impl Session {
             self.denoise_reindex();
         }
         self.denoise_poll();
-        if self.denoise.active.is_none() || self.denoise_products_dir().is_none() {
+        if self.denoise_products_dir().is_none() {
             return;
         }
         let (cap, auto) = (self.denoise.settings.threads, self.denoise.settings.auto());
@@ -1883,7 +2071,7 @@ impl Session {
 
     /// Is a picture being made, or waiting for its turn with a model to make it? (Headless runs wait for this.)
     pub fn denoise_busy(&self) -> bool {
-        self.denoise.running.is_some() || (!self.denoise.queue.is_empty() && self.denoise.active.is_some())
+        self.denoise.running.is_some() || !self.denoise.queue.is_empty()
     }
 
     /// Keep AI Denoise's row in the activity stack up to date (each `denoise.pump`): there while a photo is being made or
@@ -1941,12 +2129,14 @@ impl Session {
         if settings.denoise_amount() <= 0.0 {
             return Ok(None);
         }
-        let Some(p) = self.catalog.photo(id).cloned() else { return Ok(None) };
+        let Some(mut p) = self.catalog.photo(id).cloned() else { return Ok(None) };
+        Arc::make_mut(&mut p).develop = Arc::new(settings.clone());
         let Some(loader) = self.media.denoise.loader.clone() else { return Ok(None) };
         if !eligible(&p) {
             return Ok(None);
         }
         self.denoise_refresh_active(false);
+        self.denoise_resolve(settings)?;
         let name = &p.file_name;
         if self.denoise.active.is_none() {
             return Err(format!("{name}: Denoise is on for this photo but no denoise model is chosen; choose one in Settings, or set Denoise to 0"));
@@ -2458,4 +2648,61 @@ mod gpu_tests {
         forget_builtin_card(&dir.join(GPU_SETUP_MARKER));
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// Read the immutable pre-feature identity; callers that migrate must first persist it with `capture_legacy_pin`.
+pub(crate) fn legacy_pin(dir: Option<&Path>) -> DenoiseModelPin {
+    let st = dir.map(read_settings).unwrap_or_default();
+    legacy_pin_from_settings(dir, &st)
+}
+
+fn legacy_pin_from_settings(dir: Option<&Path>, st: &Settings) -> DenoiseModelPin {
+    if let Some(pin) = &st.legacy_model {
+        return pin.clone();
+    }
+    if let Some(id) = &st.model {
+        if let Some(i) = dir.and_then(|dir| installed_models(dir).into_iter().find(|i| &i.manifest.id == id)) {
+            return i.pin();
+        }
+        return DenoiseModelPin { id: id.clone(), version: "unknown".into(), sha256: None };
+    }
+    let m = lightcraft_denoise::builtin::manifest();
+    DenoiseModelPin { id: m.id, version: m.version, sha256: None }
+}
+
+pub(crate) fn migrate_legacy(catalog: &lightcraft_catalog::Catalog, pin: &DenoiseModelPin) -> Vec<lightcraft_catalog::Op> {
+    use lightcraft_catalog::Op;
+    fn assign(d: &mut Arc<DevelopSettings>, pin: &DenoiseModelPin) -> bool {
+        if d.denoise_model.is_none() && d.enhance.denoise > 0.0 {
+            Arc::make_mut(d).denoise_model = Some(pin.clone());
+            true
+        } else {
+            false
+        }
+    }
+    let mut ops = Vec::new();
+    for p in catalog.photos() {
+        let mut migrated = (**p).clone();
+        let baseline = migrated.local_baseline == Some(migrated.develop.hash64());
+        let mut changed = assign(&mut migrated.develop, pin);
+        if baseline && changed {
+            migrated.local_baseline = Some(migrated.develop.hash64());
+        }
+        for h in &mut migrated.history {
+            changed |= assign(&mut h.settings, pin);
+        }
+        for v in &mut migrated.versions {
+            changed |= assign(&mut v.settings, pin);
+        }
+        if changed {
+            ops.push(Op::SetDenoiseState {
+                id: p.id,
+                settings: migrated.develop,
+                history: migrated.history,
+                versions: migrated.versions,
+                local_baseline: migrated.local_baseline,
+            });
+        }
+    }
+    ops
 }
