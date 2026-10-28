@@ -24,8 +24,8 @@ new drag regression modules remain registered. GPU integration tests move under
 The recent-library launch chooser uses `LIGHTCRAFT_R3D_LIBRARY` and the R3D default
 library; it does not inherit the official application's library environment.
 
-`RENDER_CACHE_VERSION = 78` invalidates upstream cache70 and previous R3D caches
-through the combined source/product-protected cache77 for this optical-crop variant.
+`RENDER_CACHE_VERSION = 79` invalidates upstream cache70 and previous R3D caches
+through optical-crop cache78 for newly enabled Sony ILCE-7M3 embedded distortion.
 `LOOK_VERSION = 13` stays above upstream 12: the
 upstream change in camera fitting is a test correction only, so the existing R3D
 geometry-gated fit semantics are unchanged. Local workspace crates in Cargo.lock
@@ -35,6 +35,37 @@ The checkout-specific development defaults are now `.tools/target-update-0.14.0`
 and `test-runtime/update-0.14.0/{config,library,input}`, with control port 18473.
 Validation and native visual acceptance are recorded separately; source integration
 alone is not evidence of a successful build, launch or image-quality check.
+
+## Export performance and Sony A7 III integration (2026-10-28)
+
+Built on the accepted clipping/optical-crop fork `e4cf1b2c7b86238fcf34379cf6b696a07975e4da`.
+The export optimization is a narrow backport of upstream PR3168 at
+`93487af3b367d34c391f9aa720bb33dcbbfc394e`: remove unnecessary image copies,
+convert JPEG colour per band, parallelize GPU transfers and demosaic cropped
+windows directly. The fork's newer Gaussian/luma output sharpening, nonfinite
+float sanitation, AHD BLEND12, adaptive Auto, optical edge crop, clipping display
+and protected atomic export writes remain intact. Separate optimized A/B tests
+produced 32 byte-identical CPU/Metal outputs and a 3–7% time reduction on one
+public 24-MP scene; this is not a universal speed guarantee.
+
+Upstream PR3144 at `453a0f2a3b37240c4304667ac25e7b11515eabc3` enables exactly
+`ILCE-7M3` in the existing A7R IVA embedded distortion conversion, for the owner's
+older A7 III collection. Camera-mode, framing and bounded-table gates remain.
+The existing profile switch controls application; shading and CA are not newly
+applied. This does not extend the Alpha 7C's embedded correction support.
+Cache79 invalidates earlier render products; LOOK13 is unchanged. Fresh imports
+and explicit metadata refreshes can acquire the new distortion data. No bulk
+metadata reload or edit rewrite is performed by this source integration.
+
+The public compressed/uncompressed A7M3, A7RM4A and A9M2 checks are documented in
+`../evidence/fork-export-sony-20261028/REPORT.md`; those local evidence paths are
+outside the Git repository. Author-private RAW/camera-JPEG pairs were unavailable,
+so their geometric calibration residuals were not independently reproduced.
+Combined validation is recorded in
+`../evidence/fork-export-sony-integration-20261028/REPORT.md`.
+Source integration does not install or launch the application or constitute
+native visual acceptance of this new combination. Earlier accepted features
+retain their existing acceptance record.
 
 ## Camera colour provenance candidate
 

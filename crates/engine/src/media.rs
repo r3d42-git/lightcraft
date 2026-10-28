@@ -65,7 +65,8 @@ impl SettingsHashes {
 // 73: v0.14.0 integrated output; newer than upstream 70 and the previous R3D cache 72.
 // 77: invalidate views that a late pre-denoise/previous-model source could have populated.
 // 78: automatic optical-edge crop; above combined source/product protection cache 77.
-pub const RENDER_CACHE_VERSION: u64 = 78;
+// 79: apply validated embedded distortion for newly decoded Sony ILCE-7M3 sources.
+pub const RENDER_CACHE_VERSION: u64 = 79;
 
 /// Thumbnails render at one of these long edges (so window/cell size changes reuse the cache).
 pub const THUMB_SIZES: [usize; 4] = [128, 256, 384, 512];
