@@ -27,19 +27,23 @@ const MARGIN: usize = 6;
 const BLEND: f32 = 12.0;
 
 pub(crate) fn ahd(m: &Mosaic) -> Rgb32f {
-    let (w, h) = (m.w, m.h);
+    ahd_window(m, 0, 0, m.w, m.h)
+}
+
+/// Demosaic a bounded window using the existing per-pixel AHD neighbourhood.
+pub(crate) fn ahd_window(m: &Mosaic, x: usize, y: usize, w: usize, h: usize) -> Rgb32f {
     let mut out = Rgb32f::new(w, h);
     if w == 0 || h == 0 {
         return out;
     }
     // one row of tiles per task, its tiles in parallel too, written straight into the picture
     out.data.par_chunks_mut((w * TILE).max(1)).enumerate().for_each(|(ty, band)| {
-        let (y0, th) = (ty * TILE, band.len() / w.max(1));
+        let (y0, th) = (y + ty * TILE, band.len() / w.max(1));
         let tiles: Vec<(usize, usize, Vec<[f32; 3]>)> = (0..w.div_ceil(TILE))
             .into_par_iter()
             .map(|tx| {
                 let (x0, tw) = (tx * TILE, TILE.min(w - tx * TILE));
-                (x0, tw, tile(m, x0, y0, tw, th))
+                (x0, tw, tile(m, x + x0, y0, tw, th))
             })
             .collect();
         for (x0, tw, px) in tiles {

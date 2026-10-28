@@ -10,6 +10,7 @@ use lightcraft_meta::{DateTime, Gps, Metadata};
 pub use lightcraft_pipeline::{DeepImage, DeepSamples, OutputDepth, OutputSpace};
 use lightcraft_raster::Rgba8;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1297,6 +1298,9 @@ impl ExportOptions {
 
 /// Output sharpening of an 8-bit image: an unsharp mask on its luma ([`unsharp`]).
 pub fn output_sharpen(img: &mut Rgba8, target: SharpenFor, amount: SharpenAmount) {
+    if !sharpens(img.width, img.height, target) {
+        return;
+    }
     let src: Vec<[f32; 3]> = img.data.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect();
     if let Some(out) = unsharp(img.width, img.height, &src, target, amount) {
         for (p, v) in img.data.iter_mut().zip(out) {
@@ -1310,6 +1314,9 @@ pub fn output_sharpen(img: &mut Rgba8, target: SharpenFor, amount: SharpenAmount
 /// [`output_sharpen`] on a high-bit-depth image (float images are sharpened in linear light).
 pub fn output_sharpen_deep(img: &mut DeepImage, target: SharpenFor, amount: SharpenAmount) {
     let (w, h) = (img.width, img.height);
+    if !sharpens(w, h, target) {
+        return;
+    }
     match &mut img.samples {
         DeepSamples::U16(v) => {
             let src: Vec<[f32; 3]> = v.as_chunks::<3>().0.iter().map(|c| [c[0] as f32, c[1] as f32, c[2] as f32]).collect();
@@ -1335,6 +1342,11 @@ pub fn output_sharpen_deep(img: &mut DeepImage, target: SharpenFor, amount: Shar
 /// of their difference: enough for crisp edges, too little for the light and dark rims (halos)
 /// a plain unsharp mask draws along strong edges.
 const SHARPEN_OVERSHOOT: f32 = 0.1;
+
+/// Whether output sharpening changes a nontrivial image.
+fn sharpens(w: usize, h: usize, target: SharpenFor) -> bool {
+    target != SharpenFor::None && w >= 3 && h >= 3
+}
 
 /// The sharpened values of `src` (`w × h`), or `None` when nothing is to be done: an unsharp mask
 /// at the output's own pixel scale (a Gaussian of radius `sigma` output pixels), on luma only (no
@@ -1463,7 +1475,10 @@ fn encode_jpeg_with_limit(o: &ExportOptions, jpeg: impl Fn(u8) -> lightcraft_cod
 }
 
 /// Output sharpening and the watermark on an 8-bit render in `o.effective_space()`.
-fn finish_8bit(img: &Rgba8, o: &ExportOptions) -> Rgba8 {
+fn finish_8bit<'a>(img: &'a Rgba8, o: &ExportOptions) -> Cow<'a, Rgba8> {
+    if o.watermark.is_none() && !sharpens(img.width, img.height, o.sharpen) {
+        return Cow::Borrowed(img);
+    }
     let mut img = img.clone();
     output_sharpen(&mut img, o.sharpen, o.sharpen_amount);
     let space = o.effective_space();
@@ -1471,18 +1486,21 @@ fn finish_8bit(img: &Rgba8, o: &ExportOptions) -> Rgba8 {
         let wm = Watermark { color: srgb8_in(space, wm.color), target: Some(space), ..wm.clone() };
         draw_watermark(&mut img, &wm);
     }
-    img
+    Cow::Owned(img)
 }
 
 /// Output sharpening and the watermark on a high-bit-depth render.
-fn finish_deep(img: &DeepImage, o: &ExportOptions) -> DeepImage {
+fn finish_deep<'a>(img: &'a DeepImage, o: &ExportOptions) -> Cow<'a, DeepImage> {
+    if o.watermark.is_none() && !sharpens(img.width, img.height, o.sharpen) {
+        return Cow::Borrowed(img);
+    }
     let mut img = img.clone();
     output_sharpen_deep(&mut img, o.sharpen, o.sharpen_amount);
     if let Some(wm) = &o.watermark {
         let wm = Watermark { color: srgb8_in(img.space, wm.color), target: Some(img.space), ..wm.clone() };
         draw_watermark_deep(&mut img, &wm);
     }
-    img
+    Cow::Owned(img)
 }
 
 /// Encode an ISO 21496-1 gain map JPEG from the SDR rendition `sdr` (8-bit, in the output space)
