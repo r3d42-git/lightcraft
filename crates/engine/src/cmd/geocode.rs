@@ -63,6 +63,13 @@ impl PlaceNames {
         self.lock().running
     }
 
+    /// Whether a place names download has been started in this session (running, or ended).
+    #[cfg(test)]
+    pub(crate) fn download_started(&self) -> bool {
+        let sh = self.lock();
+        sh.running || sh.last.is_some()
+    }
+
     /// The gazetteer in `dir`, parsed once and re-read only when the cities file's size or time changes.
     fn load(&mut self, dir: &Path) -> std::result::Result<Arc<GeoNames>, lightcraft_geocode::GeocodeError> {
         let file = dir.join(GEONAMES_FILES[0]);
@@ -112,6 +119,8 @@ fn fill(meta: &mut lightcraft_catalog::Meta, place: &lightcraft_geocode::Place, 
     }
 }
 
+/// Populate place metadata for targeted photos with valid GPS coordinates using the local database.
+/// Existing fields are preserved unless `overwrite` is requested.
 fn reverse(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "metadata.reverseGeocode";
     let overwrite = bool_or(p, "overwrite", false);
@@ -134,7 +143,7 @@ fn reverse(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(C, "none of these photos has a GPS position"));
     }
     let dir = dataset_dir(p).ok_or_else(|| bad(C, "no settings folder: give `dataset`"))?;
-    let names = s.place_names.load(&dir).map_err(|e| bad(C, format!("{e}: download the place names first (Photo ▸ Download Place Names)")))?;
+    let names = s.place_names.load(&dir).map_err(|e| bad(C, format!("{e}: download the place names first (Photo → Download Place Names)")))?;
     // a large selection shows in the activity stack and can be stopped
     let task = (todo.len() > 1).then(|| s.activity.start("geocode", "Looking up places", Cancel::Yes));
     let mut ops = Vec::new();
@@ -181,7 +190,10 @@ mod download {
 
     use lightcraft_geocode::{GEONAMES_BASE, GEONAMES_ZIP};
 
-    use super::*;
+    use super::{
+        Cancel, DownloadOutcome, GEONAMES_ATTRIBUTION, GEONAMES_FILES, GeoNames, PoisonError, Result, Session, Value, bad, dataset_dir, json,
+        str_param,
+    };
     use crate::activity::Unit;
 
     const MAX_ZIP: u64 = 64 * 1024 * 1024;
