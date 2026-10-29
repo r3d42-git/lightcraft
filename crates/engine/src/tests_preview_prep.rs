@@ -141,6 +141,98 @@ fn a_build_skips_what_is_there_and_leaves_it_on_disk() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// A missing grid thumbnail must not rerender or shrink an existing, larger view.
+#[test]
+fn a_partial_build_keeps_a_larger_view_without_loading_its_source() {
+    use std::sync::{Arc, atomic::AtomicUsize};
+    let (mut s, root, ids) = library("partial-view", 1);
+    let mut jobs = crate::cmd::previews::jobs_for(&mut s, ids[0], Some(550));
+    let view = jobs.iter_mut().find(|j| j.view_cache.is_some()).unwrap();
+    let (cache, key) = view.view_cache.clone().unwrap();
+    let large = Arc::new(lightcraft_raster::Rgba8::from_fn(600, 400, |_, _| [23, 45, 67, 255]));
+    cache.put_at(view.cache_generation, key, large.clone());
+    let disk = cache.disk().unwrap();
+    let before = disk.get(key).unwrap();
+    let loads = Arc::new(AtomicUsize::new(0));
+    view.source = failing_preview_source(loads.clone());
+    assert!(!crate::cmd::previews::already_built(&jobs), "only the grid is missing");
+    assert!(crate::cmd::previews::run_photo(jobs), "the cached view must bypass its failing loader");
+    assert_eq!(loads.load(Ordering::Relaxed), 0, "no view decode or pipeline render");
+    assert!(Arc::ptr_eq(&cache.get_memory(key).unwrap(), &large), "the larger pixels are retained untouched");
+    let after = disk.get(key).unwrap();
+    assert_eq!((after.width, after.height, after.data), (before.width, before.height, before.data), "disk view untouched");
+    let jobs = crate::cmd::previews::jobs_for(&mut s, ids[0], Some(550));
+    assert!(crate::cmd::previews::already_built(&jobs), "the missing thumbnail was built");
+    drop(s);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+fn failing_preview_source(loads: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> crate::media::SourceRef {
+    crate::media::SourceRef::File {
+        path: "must-not-decode.png".into(),
+        max_edge: 600,
+        loader: Some(std::sync::Arc::new(move |_, _| {
+            loads.fetch_add(1, Ordering::Relaxed);
+            Err("unexpected preview decode".into())
+        })),
+        fallback: None,
+        denoise: None,
+        reduced: None,
+    }
+}
+
+/// The reciprocal partial-cache case still builds its missing view and keeps the grid.
+#[test]
+fn a_partial_build_keeps_the_grid_and_builds_the_missing_view() {
+    use std::sync::{Arc, atomic::AtomicUsize};
+    let mut s = Session::with_demo();
+    let id = s.active().unwrap();
+    let mut jobs = crate::cmd::previews::jobs_for(&mut s, id, Some(300));
+    let grid = jobs.iter_mut().find(|j| j.cache.is_some()).unwrap();
+    let (cache, key) = grid.cache.clone().unwrap();
+    let thumbnail = Arc::new(lightcraft_raster::Rgba8::from_fn(512, 341, |_, _| [23, 45, 67, 255]));
+    cache.put_memory(key, thumbnail.clone());
+    let loads = Arc::new(AtomicUsize::new(0));
+    grid.source = failing_preview_source(loads.clone());
+    assert!(crate::cmd::previews::run_photo(jobs));
+    assert_eq!(loads.load(Ordering::Relaxed), 0);
+    assert!(Arc::ptr_eq(&cache.get_memory(key).unwrap(), &thumbnail));
+    assert!(crate::cmd::previews::already_built(&crate::cmd::previews::jobs_for(&mut s, id, Some(300))));
+}
+
+/// Too-small views need a render; force must still bypass an existing view.
+#[test]
+fn a_small_view_and_forced_previews_really_call_the_loader() {
+    use std::sync::{Arc, atomic::AtomicUsize};
+    let (mut s, root, ids) = library("partial-force", 1);
+    let jobs = crate::cmd::previews::jobs_for(&mut s, ids[0], Some(550));
+    for j in &jobs {
+        let (cache, key) = j.view_cache.as_ref().or(j.cache.as_ref()).unwrap();
+        let edge = if j.view_cache.is_some() { 300 } else { 512 };
+        cache.put_memory(*key, Arc::new(lightcraft_raster::Rgba8::from_fn(edge, edge, |_, _| [23, 45, 67, 255])));
+    }
+    let loads = Arc::new(AtomicUsize::new(0));
+    let mut jobs = jobs;
+    for j in &mut jobs {
+        j.source = failing_preview_source(loads.clone());
+    }
+    assert!(!crate::cmd::previews::run_photo(jobs), "the insufficient view must try rendering");
+    assert_eq!(loads.load(Ordering::Relaxed), 1, "only the missing view needs decoding");
+    loads.store(0, Ordering::Relaxed);
+    s.media.file_loader = Some(Arc::new({
+        let loads = loads.clone();
+        move |_, _| {
+            loads.fetch_add(1, Ordering::Relaxed);
+            Err("forced decode".into())
+        }
+    }));
+    let r = s.execute("library.buildPreviews", &json!({"ids": [ids[0].0], "edge": 300, "wait": true, "force": true})).unwrap();
+    assert_eq!(r["failed"], 1, "{r}");
+    assert_eq!(loads.load(Ordering::Relaxed), 1, "force renders the view despite its cached pixels");
+    drop(s);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// Note 47: standard previews are built at least as big as the loupe on this screen asks for.
 #[test]
 fn standard_previews_are_as_big_as_the_loupe() {

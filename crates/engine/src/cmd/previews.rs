@@ -115,17 +115,20 @@ pub(crate) fn jobs_for(s: &mut Session, id: lightcraft_catalog::PhotoId, edge: O
 /// render at least as large as asked for (`view_cache` of the view job) and its grid thumbnail
 /// (`cache` of the thumbnail job). Only file headers are read.
 pub(crate) fn already_built(jobs: &[RenderJob]) -> bool {
-    !jobs.is_empty()
-        && jobs.iter().all(|j| {
-            if let Some((cache, key)) = &j.view_cache {
-                let want = j.request.max_w.max(j.request.max_h) as f64;
-                cache.dims(*key).is_some_and(|(w, h)| w.max(h) as f64 >= want * 0.99)
-            } else if let Some((cache, key)) = &j.cache {
-                cache.dims(*key).is_some()
-            } else {
-                false
-            }
-        })
+    !jobs.is_empty() && jobs.iter().all(job_already_built)
+}
+
+/// Check each part independently: a missing thumbnail must not discard a larger view (and a
+/// missing view must not rebuild a thumbnail that is already there).
+fn job_already_built(j: &RenderJob) -> bool {
+    if let Some((cache, key)) = &j.view_cache {
+        let want = j.request.max_w.max(j.request.max_h) as f64;
+        cache.dims(*key).is_some_and(|(w, h)| w.max(h) as f64 >= want * 0.99)
+    } else if let Some((cache, key)) = &j.cache {
+        cache.dims(*key).is_some()
+    } else {
+        false
+    }
 }
 
 /// Photos some preview build is rendering right now, by (the cache they go to, photo id): two
@@ -172,13 +175,18 @@ fn task_for(s: &Session, state: &PreviewBuild) -> TaskGuard {
 /// Render one photo's jobs in order. The source the first job decodes serves the ones after it
 /// (the grid thumbnail is made from the view's source instead of decoding the file again).
 /// `None` when `cancel` was asked for before a job started: that photo is not counted as done.
-fn run_photo_cancellable(jobs: Vec<RenderJob>, cancel: Option<&AtomicBool>) -> Option<bool> {
+fn run_photo_cancellable(jobs: Vec<RenderJob>, cancel: Option<&AtomicBool>, force: bool) -> Option<bool> {
     let mut decoded: Option<crate::media::DecodedSource> = None;
     let mut ok = true;
     for mut j in jobs {
         // between a photo's own previews too (a cancelled 1:1 view skips its grid thumbnail)
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
             return None;
+        }
+        // Test before taking view_cache for synchronous writes: taking it first would hide an
+        // existing view from RenderJob::run and replace it with a redundant, possibly smaller render.
+        if !force && job_already_built(&j) {
+            continue;
         }
         if let Some(src) = &decoded
             && !matches!(j.source, crate::media::SourceRef::Loaded(_))
@@ -205,7 +213,7 @@ fn run_photo_cancellable(jobs: Vec<RenderJob>, cancel: Option<&AtomicBool>) -> O
 /// [`run_photo_cancellable`] for callers that render a photo without a cancel flag.
 #[cfg(test)]
 pub(crate) fn run_photo(jobs: Vec<RenderJob>) -> bool {
-    run_photo_cancellable(jobs, None) == Some(true)
+    run_photo_cancellable(jobs, None, false) == Some(true)
 }
 
 /// How many photos render side by side: as many as an export batch for standard previews (each
@@ -359,7 +367,7 @@ fn run_all(jobs: Vec<PhotoJobs>, state: &PreviewBuild, task: Option<&TaskGuard>,
                 }
                 // the background preparation's decodes wait at the memory gate behind the photo on
                 // screen's, as the other background work does
-                let build = || run_photo_cancellable(photo_jobs, Some(&state.cancel));
+                let build = || run_photo_cancellable(photo_jobs, Some(&state.cancel), force);
                 let run = || if state.background { crate::memory::in_background(build) } else { build() };
                 let outcome = crate::guard::catch("building previews", run).unwrap_or(Some(false));
                 let Some(ok) = outcome else { break };
