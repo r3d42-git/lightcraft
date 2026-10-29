@@ -1,7 +1,7 @@
 //! The loupe's look-ahead: stand-ins and thumbnails for the photos it is likely to be stepped to
 //! next (PERF-CULL-2).
 
-use super::*;
+use super::{LightcraftApp, PhotoId};
 
 /// How many photos ahead (in the direction of travel) the loupe makes its stand-in for, and how
 /// many behind (a step back is common when culling).

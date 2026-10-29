@@ -1,9 +1,34 @@
 # R3D optics integration
 
-This fork integrates the unchanged LightCraft `v0.14.0` release,
-`03c88c166c054c009db2a47187d59991f6232b85`, into its tested R3D feature line. The machine-readable base is
+This fork integrates the unchanged LightCraft `v0.15.0` release,
+`e381c1ae6b2006ce627b243fe41697ce0d9608e0`, into its tested R3D feature line. The machine-readable base is
 `r3d/upstream-base.json`. This is a local development implementation, not a released
 replacement for the official application.
+
+## v0.15.0 compatibility integration (2026-10-29)
+
+Prepared separately from the installed 0.14.0 fork at
+`32b201441f0443c62b410bf2bf71035881372268`. This integration retains upstream's
+egui/eframe 0.37 migration, docking changes, bounded decoder work, dependency
+updates, explicit imports and split module layout. Fork behavior is adapted into
+the owning modules; obsolete monolithic implementations are not reinstated.
+
+The export-copy/transfer/demosaic optimizations from PR #3168 are now upstream.
+Their duplicate backport hunks are therefore unnecessary. The fork's independent
+Gaussian/luma output sharpening, export Lanczos selection and float sanitation
+remain separate. The other retained optics, image-quality, safety and UI changes
+are assessed in the local compatibility report, rather than assumed redundant
+from similarly named upstream functions.
+
+The upstream automatic installer targets official LightCraft releases. The fork's
+update command opens the upstream release information in the browser and does not
+install an official executable over the R3D build. Its native identity, configuration
+and library remain isolated. Katalog format 10, render cache 79 and LOOK13 are
+retained unless validation identifies a required new invalidation.
+
+Source preparation is not installation or personal acceptance. Automated and
+native checks, skipped capabilities and remaining manual scenarios are recorded
+outside Git in `../evidence/update-0.15.0-20261029/`.
 
 ## v0.14.0 integration
 

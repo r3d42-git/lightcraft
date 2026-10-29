@@ -65,7 +65,7 @@ pub fn canonical_names_equal(a: &str, b: &str) -> io::Result<bool> {
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod macos {
-    use super::*;
+    use super::{File, io};
     use std::{ffi::c_void, os::fd::AsRawFd, ptr::NonNull};
 
     unsafe extern "C" {

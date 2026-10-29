@@ -30,7 +30,8 @@ pub(crate) fn ahd(m: &Mosaic) -> Rgb32f {
     ahd_window(m, 0, 0, m.w, m.h)
 }
 
-/// Demosaic a bounded window using the existing per-pixel AHD neighbourhood.
+/// The `w × h` pixels at (`x`, `y`) of [`ahd`]'s picture (inside the mosaic), demosaiced alone: every pixel comes
+/// from the mosaic around it, so they are the same as when the whole picture is demosaiced and then cropped.
 pub(crate) fn ahd_window(m: &Mosaic, x: usize, y: usize, w: usize, h: usize) -> Rgb32f {
     let mut out = Rgb32f::new(w, h);
     if w == 0 || h == 0 {
