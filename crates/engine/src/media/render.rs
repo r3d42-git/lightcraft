@@ -326,11 +326,22 @@ impl RenderJob {
                 // Thumbnails (many small jobs side by side) stay on the CPU; views and exports use
                 // the GPU when there is one.
                 let gpu = self.cache.is_none();
-                let (mut rendered, gpu_fallback) = develop_reporting(src, &info, &self.settings, &self.request, self.stages.as_deref(), gpu);
+                // The weight view is neutral sRGB. Render its photo histogram in that same
+                // domain, before converting the diagnostic for a profiled display.
+                let mask_view = self.request.overlay == lightcraft_pipeline::Overlay::SharpenMask;
+                let request = if mask_view { RenderRequest { display: None, ..self.request } } else { self.request };
+                let (mut rendered, gpu_fallback) = develop_reporting(src, &info, &self.settings, &request, self.stages.as_deref(), gpu);
                 // for a display profile: the image goes to the display's values, the histogram
                 // and the cached view preview stay sRGB
                 let mut srgb = None;
                 let display = match (&self.display, self.request.display) {
+                    (Some(d), Some(_)) if mask_view => {
+                        // Keep the photo histogram taken before the diagnostic was drawn.
+                        if let Err(e) = d.profile.from_srgb(&mut rendered.image) {
+                            log::warn!("display profile: {e}");
+                        }
+                        Some(d.id())
+                    }
                     (Some(d), Some(_)) => {
                         let keep = self.view_cache.is_some() && self.request.quality == Quality::Full;
                         let (s, h) = crate::display::finish_render(&mut rendered.image, d, keep);
@@ -348,6 +359,7 @@ impl RenderJob {
                 }
                 if let Some((cache, key)) = &self.view_cache
                     && self.request.quality == Quality::Full
+                    && self.request.overlay == lightcraft_pipeline::Overlay::None
                     && (display.is_none() || srgb.is_some())
                 {
                     cache.put_deferred_at(self.cache_generation, *key, Arc::new(srgb.unwrap_or_else(|| rendered.image.clone())));

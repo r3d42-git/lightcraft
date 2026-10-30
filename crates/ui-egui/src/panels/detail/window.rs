@@ -8,7 +8,7 @@ use super::{Color32, LightcraftApp, PhotoId, Rect, Slot, pos2, vec2};
 pub(crate) fn overlay_supports_window(overlay: lightcraft_pipeline::Overlay) -> bool {
     use lightcraft_pipeline::Overlay as O;
     match overlay {
-        O::None | O::Mask { .. } | O::AllMasks { .. } | O::PointColorRange(_) | O::HdrRange | O::Spots(_) | O::Clipping => true,
+        O::None | O::Mask { .. } | O::AllMasks { .. } | O::PointColorRange(_) | O::HdrRange | O::Spots(_) | O::Clipping | O::SharpenMask => true,
     }
 }
 

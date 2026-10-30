@@ -261,25 +261,27 @@ impl RenderOffload for Manual {
 #[test]
 fn clipping_toggle_retires_texture_and_rejects_late_drafts() {
     use lightcraft_pipeline::Overlay;
-    for slot in [Slot::Main, Slot::Region] {
-        let (mut app, work, ctx) = fixture();
-        app.renderer.set_main_overlay(Overlay::Clipping);
-        let old = app.session.render_job(PhotoId(1), 32, 32, false, true).unwrap().with_overlay(Overlay::Clipping);
-        app.renderer.request(slot, old, 100);
-        let (_, old) = take_job(&work);
-        app.renderer.set_main_overlay(Overlay::None);
-        assert!(!app.renderer.textures.contains_key(&slot));
-        let new = app.session.render_job(PhotoId(1), 32, 32, false, true).unwrap();
-        app.renderer.request(slot, new, 100);
-        let (_, new) = take_job(&work);
-        finish(&mut app, &work, &ctx, slot, old.run());
-        assert!(!app.renderer.textures.contains_key(&slot), "{slot:?}: old overlay must not be accepted as a draft");
-        finish(&mut app, &work, &ctx, slot, new.run());
-        assert!(app.renderer.textures.contains_key(&slot));
-        let stages = app.renderer.stages.get(&slot).cloned();
-        app.renderer.set_main_overlay(Overlay::Clipping);
-        assert!(!app.renderer.textures.contains_key(&slot), "{slot:?}: old texture must retire immediately");
-        assert_eq!(app.renderer.stages.contains_key(&slot), stages.is_some(), "{slot:?}: base stages remain reusable");
+    for overlay in [Overlay::Clipping, Overlay::SharpenMask] {
+        for slot in [Slot::Main, Slot::Region] {
+            let (mut app, work, ctx) = fixture();
+            app.renderer.set_main_overlay(overlay);
+            let old = app.session.render_job(PhotoId(1), 32, 32, false, true).unwrap().with_overlay(overlay);
+            app.renderer.request(slot, old, 100);
+            let (_, old) = take_job(&work);
+            app.renderer.set_main_overlay(Overlay::None);
+            assert!(!app.renderer.textures.contains_key(&slot));
+            let new = app.session.render_job(PhotoId(1), 32, 32, false, true).unwrap();
+            app.renderer.request(slot, new, 100);
+            let (_, new) = take_job(&work);
+            finish(&mut app, &work, &ctx, slot, old.run());
+            assert!(!app.renderer.textures.contains_key(&slot), "{slot:?}: old overlay must not be accepted as a draft");
+            finish(&mut app, &work, &ctx, slot, new.run());
+            assert!(app.renderer.textures.contains_key(&slot));
+            let stages = app.renderer.stages.get(&slot).cloned();
+            app.renderer.set_main_overlay(overlay);
+            assert!(!app.renderer.textures.contains_key(&slot), "{slot:?}: old texture must retire immediately");
+            assert_eq!(app.renderer.stages.contains_key(&slot), stages.is_some(), "{slot:?}: base stages remain reusable");
+        }
     }
 }
 

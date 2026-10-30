@@ -454,10 +454,12 @@ pub fn render(src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSettings, req: &R
 /// Whether the GPU renders requests of this kind at all (a given render can still fall back to
 /// the CPU): the kernel writes 8-bit output, so high-bit-depth exports render on the CPU, and so do
 /// soft proofs against an output-device profile (`device_proof`: its 3D table is CPU-side) and
-/// Visualize HDR, which needs the float HDR render. [`try_render`] follows it, and the loupe sizes
+/// Visualize HDR, which needs the float HDR render, and the sharpening mask, which reads the CPU detail planes. [`try_render`] follows it, and the loupe sizes
 /// its slider-drag drafts by it (issue #330), so the two can't drift apart.
 pub fn handles(depth: lightcraft_pipeline::OutputDepth, device_proof: bool, overlay: lightcraft_pipeline::Overlay) -> bool {
-    depth == lightcraft_pipeline::OutputDepth::U8 && !device_proof && overlay != lightcraft_pipeline::Overlay::HdrRange
+    depth == lightcraft_pipeline::OutputDepth::U8
+        && !device_proof
+        && !matches!(overlay, lightcraft_pipeline::Overlay::HdrRange | lightcraft_pipeline::Overlay::SharpenMask)
 }
 
 /// [`render`], reporting why this render made no GPU image: [`Fallback::NotTried`] when the GPU
@@ -578,5 +580,6 @@ mod tests {
         assert!(!super::handles(OutputDepth::U16, false, Overlay::None));
         assert!(!super::handles(OutputDepth::U8, true, Overlay::None));
         assert!(!super::handles(OutputDepth::U8, false, Overlay::HdrRange));
+        assert!(!super::handles(OutputDepth::U8, false, Overlay::SharpenMask));
     }
 }

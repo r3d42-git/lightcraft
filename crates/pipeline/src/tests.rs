@@ -884,3 +884,58 @@ fn stage_cache_keeps_smooth_and_sharp_downscales_separate() {
     assert_ne!(images[0], images[1], "the fixture must distinguish the filters");
     assert_eq!(images[0], images[2], "returning to the preview preserves its pixels");
 }
+
+/// The diagnostic is the sharpening band weight, independent of Amount and display colour.
+#[test]
+fn sharpen_mask_is_weight_not_grey_photo_and_preserves_histogram() {
+    use crate::Overlay;
+    let src = Rgb32f::from_fn(160, 100, |x, y| {
+        let v = if x < 60 {
+            0.18
+        } else if (x / 3 + y / 3) % 2 == 0 {
+            0.03
+        } else {
+            0.7
+        };
+        [v; 3]
+    });
+    let info = SourceInfo::default();
+    let mut s = DevelopSettings::default();
+    s.detail.sharpen_masking = 70.0;
+    s.detail.sharpen_amount = 80.0;
+    let plain_req = RenderRequest::fit(160, 100);
+    let req = RenderRequest { overlay: Overlay::SharpenMask, ..plain_req };
+    let plain = render(&src, &info, &s, &plain_req);
+    let mask = render(&src, &info, &s, &req);
+    assert_eq!(plain.histogram, mask.histogram);
+    assert!(mask.image.data.iter().all(|p| p[0] == p[1] && p[1] == p[2] && p[3] == 255));
+    assert!(mask.image.data.iter().any(|p| p[0] == 0), "smooth field protected");
+    assert!(mask.image.data.iter().any(|p| p[0] > 250), "strong edges sharpened");
+    s.detail.sharpen_amount = 0.0;
+    assert_eq!(mask.image.data, render(&src, &info, &s, &req).image.data, "Amount zero still shows the same band");
+    s.detail.sharpen_masking = 0.0;
+    assert!(render(&src, &info, &s, &req).image.data.iter().all(|p| *p == [255; 4]));
+    assert_eq!(Overlay::from_parts(7, 0.0), Overlay::SharpenMask);
+    assert_ne!(Overlay::SharpenMask.key(), Overlay::Clipping.key());
+}
+
+/// Window margins must give the diagnostic the same fine-detail neighbourhood as the full view.
+#[test]
+fn sharpen_mask_window_matches_full_frame() {
+    use crate::{Overlay, PixelWindow};
+    let src = scene();
+    let mut s = DevelopSettings::default();
+    s.detail.sharpen_masking = 45.0;
+    s.crop.geometry.angle = 7.0;
+    let req = RenderRequest { overlay: Overlay::SharpenMask, ..RenderRequest::fit(240, 160) };
+    let full = render(&src, &SourceInfo::default(), &s, &req).image;
+    let window = PixelWindow { x: 45, y: 30, w: 90, h: 70 };
+    // The UI supplies context around the visible window (4.5% of the long edge, snapped
+    // to its tile grid). Even 12 pixels here exceed the fine band's three-sigma read radius.
+    let padded = PixelWindow { x: window.x - 12, y: window.y - 12, w: window.w + 24, h: window.h + 24 };
+    let tile = render(&src, &SourceInfo::default(), &s, &RenderRequest { window: Some(padded), ..req }).image.crop(12, 12, window.w, window.h);
+    let cut = full.crop(window.x, window.y, window.w, window.h);
+    assert_eq!((tile.width, tile.height), (cut.width, cut.height));
+    let max_error = tile.data.iter().zip(&cut.data).map(|(a, b)| a[0].abs_diff(b[0])).max().unwrap();
+    assert!(max_error <= 1, "window weight differs by {max_error}");
+}

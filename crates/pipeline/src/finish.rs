@@ -5,7 +5,7 @@ use lightcraft_color::spline::{Lut1, MonotoneCurve};
 use lightcraft_color::transfer::linear_to_srgb;
 use lightcraft_develop::{DevelopSettings, LocalAdjustments, Process, ToneCurve, VignetteStyle};
 use lightcraft_geom::Point;
-use lightcraft_raster::Rgba8;
+use lightcraft_raster::{Plane, Rgba8};
 
 use crate::colorops::ColorOps;
 use crate::geometry::Frame;
@@ -13,6 +13,29 @@ use crate::local::log_lum;
 use crate::output::{DeepImage, DeepSamples, OutputDepth, OutputSpace, OutputTrc};
 use crate::tone::ToneMap;
 use crate::{Prepared, SourceInfo, for_rows};
+
+/// The sharpening weight, shared with the diagnostic mask. `masking` is normalized 0..1.
+#[inline]
+pub(crate) fn sharpen_weight(masking: f32, detail: f32) -> f32 {
+    if masking > 0.0 { smooth(masking * 0.25, masking * 0.25 + 0.15, detail.abs()) } else { 1.0 }
+}
+
+/// Use the render's fine-detail band; when Amount is zero, evaluate that same band explicitly.
+pub(crate) fn sharpen_weight_plane(p: &Prepared, s: &DevelopSettings) -> Plane {
+    let masking = (s.detail.sharpen_masking / 100.0) as f32;
+    if masking <= 0.0 {
+        return Plane::filled(p.log_l.width, p.log_l.height, 1.0);
+    }
+    let fresh;
+    let blur = match &p.texture_blur {
+        Some(b) => &**b,
+        None => {
+            fresh = lightcraft_raster::blur::gaussian(&p.log_l, crate::local::texture_sigma(p.px_per_long));
+            &fresh
+        }
+    };
+    p.log_l.zip_map(blur, |l, b| sharpen_weight(masking, l - b))
+}
 
 #[inline]
 fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
@@ -647,7 +670,7 @@ fn local_tone_delta(p: &Prepared, fp: &FinishParams, index: usize, base: f32, l1
         let tame = 1.0 - 0.6 * smooth(0.4, 1.6, detail.abs());
         delta += texture * 1.1 * detail.clamp(-1.0, 1.0) * tame;
         if sharpen != 0.0 {
-            let mask = if fp.sharpen_mask > 0.0 { smooth(fp.sharpen_mask * 0.25, fp.sharpen_mask * 0.25 + 0.15, detail.abs()) } else { 1.0 };
+            let mask = sharpen_weight(fp.sharpen_mask, detail);
             delta += sharpen * 1.3 * detail.clamp(-0.8, 0.8) * mask;
         }
     }

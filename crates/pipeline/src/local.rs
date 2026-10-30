@@ -557,6 +557,11 @@ pub struct PlaneSigmas {
     pub chroma: Option<f32>,
 }
 
+/// Gaussian fine-detail radius used by texture, sharpening and its mask preview.
+pub(crate) fn texture_sigma(px_per_long: f64) -> f32 {
+    (0.0018 * px_per_long as f32).max(0.6)
+}
+
 pub fn plane_sigmas(s: &DevelopSettings, px_per_long: f64, q: Quality) -> PlaneSigmas {
     let ppl = px_per_long as f32;
     // A hidden mask, or one with no components, does not change the picture. Its sliders must
@@ -581,7 +586,7 @@ pub fn plane_sigmas(s: &DevelopSettings, px_per_long: f64, q: Quality) -> PlaneS
         || local_any(|a| a.sharpness)
         || local_any(|a| a.noise)
         || s.masks.iter().filter(live).any(|m| m.adjust.defringe > 0.0))
-    .then(|| (0.0018 * ppl).max(0.6));
+    .then(|| texture_sigma(px_per_long));
     let dark = (s.effects.dehaze != 0.0 || local_any(|a| a.dehaze)).then(|| (0.02 * ppl).max(1.0));
     let chroma = (local_any(|a| a.moire) || s.masks.iter().filter(live).any(|m| m.adjust.noise > 0.0)).then(|| (CHROMA_SIGMA * ppl).max(1.0));
     let base_detail = if base.is_some() { tone_base_detail(s, px_per_long) } else { 0 };

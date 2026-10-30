@@ -42,6 +42,8 @@ pub enum Overlay {
     /// Rendered channel endpoints: red for any high channel, blue for any low channel.
     /// Red wins when a pixel has both; HDR uses configured linear headroom instead of SDR white.
     Clipping,
+    /// Sharpening weight: white receives sharpening, black is protected. Preview only.
+    SharpenMask,
 }
 
 /// [`Overlay::HdrRange`] colours (sRGB) for 0–1, 1–2, 2–3 and ≥ 3 stops above SDR white.
@@ -129,6 +131,7 @@ impl Overlay {
             Overlay::AllMasks { view, color, opacity } => (5, pack_mask(0, view, color, opacity) as f64),
             Overlay::HdrRange => (4, 0.0),
             Overlay::Clipping => (6, 0.0),
+            Overlay::SharpenMask => (7, 0.0),
         }
     }
 
@@ -140,6 +143,7 @@ impl Overlay {
             3 if v.is_finite() && v >= 0.0 => unpack_mask(v as u64),
             4 => Overlay::HdrRange,
             6 => Overlay::Clipping,
+            7 => Overlay::SharpenMask,
             5 if v.is_finite() && v >= 0.0 => {
                 let rgb = (v as u64 >> 20) & 0xff_ffff;
                 Overlay::AllMasks {
@@ -162,6 +166,7 @@ impl Overlay {
             Overlay::AllMasks { view, color, opacity } => 5 << 60 | pack_mask(0, view, color, opacity),
             Overlay::HdrRange => 0x4000,
             Overlay::Clipping => 0x6000,
+            Overlay::SharpenMask => 0x7000,
         }
     }
 
@@ -205,6 +210,14 @@ pub fn apply(img: &mut Rgba8, o: Overlay, plan: &Plan<'_>, mask: Option<&Plane>,
             }
         }
         Overlay::Spots(t) => spots(img, t, plan.px_per_long),
+        Overlay::SharpenMask => {
+            if let Some(a) = mask.filter(|a| (a.width, a.height) == (img.width, img.height)) {
+                for (pixel, weight) in img.data.iter_mut().zip(&a.data) {
+                    let value = (weight.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    *pixel = [value, value, value, 255];
+                }
+            }
+        }
         Overlay::Mask { view, color, opacity, .. } => {
             if let Some(a) = mask.filter(|a| (a.width, a.height) == (img.width, img.height)) {
                 mask_view(img, a, view, color, opacity);

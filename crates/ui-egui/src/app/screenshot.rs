@@ -267,7 +267,15 @@ impl LightcraftApp {
         // same scroll offsets, open sections, style… as the window
         let memory = main.memory(|m| m.clone());
         view.ctx.memory_mut(|m| *m = memory);
-        view.run(headless::HeadlessView::raw_input(size, ppp, time, vec![]), |ui| self.draw_window(ui));
+        // Memory owns the active drag. Mirror its held input too: an empty pointer would
+        // synthesize a release in the shadow view, ending the real slider interaction.
+        // Carry state without replaying events, so the capture cannot apply a drag twice.
+        let (pointer, modifiers, focused) = main.input(|i| (i.pointer.clone(), i.modifiers, i.raw.focused));
+        view.ctx.input_mut(|i| i.pointer = pointer);
+        let mut raw = headless::HeadlessView::raw_input(size, ppp, time, vec![egui::Event::ModifiersChanged(modifiers)]);
+        raw.focused = focused;
+        raw.viewports.entry(egui::ViewportId::ROOT).or_default().focused = Some(focused);
+        view.run(raw, |ui| self.draw_window(ui));
         let img = capture.then(|| {
             let mut tex = self.renderer.cpu_textures();
             if let (Some((t, ..)), Some(px)) = (&self.merge.preview, &self.merge.preview_pixels) {

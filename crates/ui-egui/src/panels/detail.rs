@@ -186,7 +186,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     app.image_rect = Some(img_rect);
     // request renders: the loupe at display resolution (drafts during drags)
     let interacting = app.session.interaction.is_some();
-    let overlay = view_overlay(app, &d);
+    let overlay = slider_mask_preview(app, ui.ctx()).unwrap_or_else(|| view_overlay(app, &d));
     app.renderer.set_main_overlay(overlay);
     // a drag drafts at full size where the GPU draws the view (by the GPU's own rule, `handles`;
     // `ready` first: `available` would wait for a device still being created)
@@ -975,6 +975,24 @@ fn targeted_drag(app: &mut LightcraftApp, resp: &egui::Response, map: &CanvasMap
         app.gesture = None;
         let _ = app.run("develop.endInteraction", json!({}));
     }
+}
+
+/// A transient slider gesture, gated by live input and the interaction's photo. No persisted state.
+pub(crate) fn slider_mask_preview(app: &LightcraftApp, ctx: &egui::Context) -> Option<lightcraft_pipeline::Overlay> {
+    (sharpen_mask_gesture_live(app, ctx) && ctx.input(|i| i.modifiers.alt)).then_some(lightcraft_pipeline::Overlay::SharpenMask)
+}
+
+/// Losing the gesture owner must prevent a held modifier from reviving an old preview.
+pub(crate) fn sharpen_mask_gesture_live(app: &LightcraftApp, ctx: &egui::Context) -> bool {
+    !app.ui.fullscreen
+        && app.ui.view == crate::state::ViewMode::Detail
+        && app.ui.dialog.is_none()
+        && !crate::panels::notices::blocks_input(app)
+        && app.ui.right == RightPanel::Edit
+        && app.ui.open_sections.iter().any(|s| s == "detail")
+        && app.ui.dragging_control.as_deref() == Some("detail.sharpenMasking")
+        && app.session.interaction.as_ref().is_some_and(|i| Some(i.photo) == app.session.active())
+        && ctx.input(|i| i.focused && i.pointer.primary_down() && i.pointer.latest_pos().is_some() && !i.key_down(egui::Key::Escape))
 }
 
 /// The diagnostic overlay the loupe shows (the selected mask, Point Color's visualized range,

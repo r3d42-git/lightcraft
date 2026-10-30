@@ -587,6 +587,10 @@ impl LightcraftApp {
     /// hidden, from `Context::run_logic`. It may read the refreshed viewport fields only: never
     /// `i.time`, events, keys or dropped files.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        // Focus is refreshed even for hidden logic passes; retire the transient gesture there.
+        if self.ui.dragging_control.as_deref() == Some("detail.sharpenMasking") && ctx.input(|i| !i.raw.focused) {
+            self.ui.dragging_control = None;
+        }
         self.sync_prep_settings();
         i18n::set_language(self.ui.language);
         // The fork's AccessKit root language and bidi runs follow the locale; presentation only.
@@ -642,6 +646,9 @@ impl LightcraftApp {
         self.sync_theme(&ctx);
         self.ui_pass(&ctx);
         self.draw_window(ui);
+        if self.ui.dragging_control.as_deref() == Some("detail.sharpenMasking") && !panels::detail::sharpen_mask_gesture_live(self, &ctx) {
+            self.ui.dragging_control = None;
+        }
         self.finish_ui_pass(&ctx);
     }
 }

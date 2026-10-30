@@ -152,6 +152,30 @@ mod tests {
         }
     }
 
+    /// A temporary sharpening view keeps the photo histogram and cannot enter its view cache.
+    #[test]
+    fn sharpen_mask_keeps_photo_histogram_with_display_profile() {
+        use lightcraft_pipeline::Overlay;
+        let mut session = crate::Session::with_demo();
+        let id = session.visible_cloned()[0];
+        let display = Arc::new(p3());
+        let plain_job = session.loupe_job(id, 160, 120, true).unwrap().with_display(Some(display.clone()));
+        let plain = plain_job.clone().run().rendered.unwrap();
+        let mask_job = plain_job.with_overlay(Overlay::SharpenMask);
+        assert!(mask_job.view_cache.is_none(), "the diagnostic must not replace the ordinary view preview");
+        let source = mask_job.source.load_source().unwrap();
+        let request = lightcraft_pipeline::RenderRequest { display: None, overlay: Overlay::None, ..mask_job.request };
+        let expected = lightcraft_pipeline::render(
+            &source.image_for(mask_job.settings.denoise_amount()),
+            &source.info_or(mask_job.info.clone()),
+            &mask_job.settings,
+            &request,
+        );
+        let mask = mask_job.run().rendered.unwrap();
+        assert_eq!(mask.histogram, expected.histogram, "all channels must retain the sRGB photo histogram");
+        assert_ne!(plain.image.data, mask.image.data);
+    }
+
     #[test]
     fn load_reports_and_rejects() {
         let dir = std::env::temp_dir().join(format!("lightcraft-display-{}", std::process::id()));
