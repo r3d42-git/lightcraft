@@ -37,6 +37,7 @@ fn drag(h: &mut Headless, button: PointerButton, from: Pos2, to: Pos2) -> egui::
 fn a_middle_drag_pans_with_the_healing_brush_and_adds_no_spot() {
     let app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), Services { png: None, ..Default::default() });
     let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
+    h.view.ctx.data_mut(|d| d.insert_temp(egui::Id::unique("ai-remove-brush-mode"), false));
     for (method, params) in [
         ("ui.set", json!({"view": "detail"})),
         ("engine.execute", json!({"command": "panel.remove"})),

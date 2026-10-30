@@ -6,11 +6,13 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod ai_edit;
 pub mod controls;
 pub mod presets;
 pub mod segmask;
 pub mod settings;
 
+pub use ai_edit::{AiEdit, AiEditError};
 pub use controls::{CONTROLS, ControlSpec, Section, Track};
 pub use presets::{Preset, SettingsGroup, apply_partial, extract_groups};
 pub use segmask::SegMask;

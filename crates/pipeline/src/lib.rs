@@ -5,6 +5,8 @@
 //! requested size, and its histogram.
 //!
 //! Stage order (see `docs/pipeline.md`):
+//! 0. persisted AI raster edits — source-space linear Rec.2020 compositing, before any resampling
+//!    or as-shot/WB/tone adjustment; disabled edits do nothing and no model is run
 //! 1. geometry — user orientation, lens corrections (distortion, CA, vignetting), perspective, crop +
 //!    straighten, flips; one resample at output resolution; then defringe
 //! 2. scene-linear — white balance, exposure, dehaze, local tone (highlights/shadows), texture,
@@ -23,6 +25,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod ai_edits;
 pub mod auto;
 pub mod blemish;
 pub mod colorops;
@@ -490,7 +493,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     // (an original reported smaller than the source is the source)
     let native_long = info.native_long.unwrap_or(0).max(src_long).max(1);
     let detail_scale = local::detail_scale(px_per_long, native_long);
-    let geo = hash_of((format!("{frame:?}"), w, h));
+    let geo = hash_of((format!("{frame:?}"), w, h, ai_edits_key(s)));
     let (wb_t, wb_tint) = local::effective_wb(info, s);
     let eyes = redeye::resolve(src, &s.red_eye, s.orientation, &frame, w, h, px_per_long);
     let d = &s.detail;
@@ -511,6 +514,29 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         detail_scale.to_bits(),
     ));
     Plan { settings, frame, w, h, px_per_long, src_long, detail_scale, geo, lin_key, pre_nr_key, eyes, fixed_air, keep, mattes: info.mattes.clone() }
+}
+
+// Hash compressed bytes without formatting an enormous Debug string. No edits preserves a
+// fixed empty key; actual pixel payload and provenance participate through settings JSON.
+fn ai_edits_key(s: &DevelopSettings) -> u64 {
+    hash_of(
+        s.ai_edits
+            .iter()
+            .map(|e| {
+                (
+                    e.id,
+                    e.enabled,
+                    e.rect.map(f64::to_bits),
+                    e.width,
+                    e.height,
+                    &e.pixels,
+                    e.support.as_ref().map(|s| {
+                        (s.radius.to_bits(), s.feather.to_bits(), s.continuous, s.points.iter().map(|p| p.map(f64::to_bits)).collect::<Vec<_>>())
+                    }),
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// Whether the scene-linear stage needs work only the CPU does (defringe, spot removal).
@@ -619,7 +645,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     let cached = shared.and_then(|(a, c)| c.get(a, geo));
     let sampled = match &cached {
         Some(e) => e.sampled.clone(),
-        None => Arc::new(frame.sample(src_img, w, h)),
+        None => Arc::new(ai_edits::sample(src_img, s, frame, w, h)),
     };
     lap("sample", &mut t);
 
@@ -702,7 +728,7 @@ pub fn color_range_sample(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, 
     let effective = s.effective();
     let rendition = settings_for(&effective, req);
     let plan = plan(src, info, &rendition, req);
-    let mut img = plan.frame.sample(src, plan.w, plan.h);
+    let mut img = ai_edits::sample(src, &plan.settings, &plan.frame, plan.w, plan.h);
     lin_cpu(&mut img, info, &plan);
     let o = plan.frame.norm_to_out(plan.w, plan.h).apply(p);
     let (cx, cy) = (o.x.floor() as i64, o.y.floor() as i64);

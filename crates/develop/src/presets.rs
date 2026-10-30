@@ -192,10 +192,13 @@ pub fn apply_partial(s: &DevelopSettings, partial: &Value, amount: f64) -> Devel
     let patch = if (amount - 1.0).abs() < 1e-9 { Cow::Borrowed(partial) } else { Cow::Owned(scale_patch(&s.to_json(), partial, amount)) };
     // Auto application metadata belongs to its source photo. Even an imported preset containing
     // a full settings object may transfer only the edits, never an "Auto applied here" marker.
-    let patch = if patch.get("auto_tone").is_some() {
+    // Raster AI retouches likewise belong exclusively to the source photo; only explicit merged
+    // settings / per-photo acceptance may install them, never presets, paste or Auto Sync.
+    let patch = if patch.get("auto_tone").is_some() || patch.get("ai_edits").is_some() {
         let mut filtered = patch.into_owned();
         if let Some(object) = filtered.as_object_mut() {
             object.remove("auto_tone");
+            object.remove("ai_edits");
         }
         Cow::Owned(filtered)
     } else {

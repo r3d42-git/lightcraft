@@ -74,6 +74,10 @@ impl LightcraftApp {
         self.preview_build_status(ctx);
         self.save_status(ctx);
         self.ai_mask_detail(ctx, now);
+        self.session.ai_remove_poll();
+        if self.session.ai_remove.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         self.place_names_outcome(ctx);
         self.slideshow_tick(ctx, now);
         panels::denoise::pump_background(self, ctx, now);

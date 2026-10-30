@@ -96,6 +96,24 @@ impl crate::Session {
         Some(job)
     }
 
+    /// Render shared transient settings with a hash cached by their owner. Neither settings nor
+    /// encoded AI patches are cloned on each frame, and no persistent view cache is populated.
+    pub(crate) fn preview_job_shared(
+        &mut self,
+        id: PhotoId,
+        max_w: usize,
+        max_h: usize,
+        apply_crop: bool,
+        settings: Arc<DevelopSettings>,
+        hash: u64,
+    ) -> Option<RenderJob> {
+        let mut job = self.render_job(id, max_w, max_h, false, apply_crop)?;
+        let original_hash = self.media.settings_hashes.get(id, &job.settings);
+        job.key ^= original_hash ^ hash ^ 0x4149_4452_4146_5401;
+        job.settings = settings;
+        Some(job)
+    }
+
     /// Cache key of a variant thumbnail ([`Self::variant_job`]).
     pub fn variant_key(p: &Photo, settings: &DevelopSettings, edge: usize) -> Hash128 {
         Hasher128::new()

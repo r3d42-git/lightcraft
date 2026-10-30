@@ -142,6 +142,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
     SPECS.get_or_init(|| {
         let mut v = Vec::new();
         v.extend(edit::specs());
+        v.extend(crate::ai_remove::specs());
         v.extend(library::specs());
         v.extend(develop::specs());
         v.extend(color::specs());

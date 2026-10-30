@@ -253,7 +253,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     }
     // hovering a preset or profile: the photo with that look, shown instead of the loupe render
     // once it is ready (nothing is committed)
-    let hover_key = request_hover(app, &ask, [sw, sh]);
+    let hover_key = request_hover(app, &ask, [sw, sh], [rw, rh]);
     if !interacting {
         prefetch_neighbours(app, id, main_area, ppp, texture_side, !crop_tool);
     }
@@ -802,7 +802,15 @@ fn request_main(app: &mut LightcraftApp, ui: &egui::Ui, a: &LoupeAsk, [rw, rh]: 
 
 /// Hovering a preset or profile: the photo with that look, shown instead of the loupe render once
 /// it is ready (nothing is committed). The key of its render and the label to show.
-fn request_hover(app: &mut LightcraftApp, a: &LoupeAsk, [sw, sh]: [usize; 2]) -> Option<(u64, String)> {
+fn request_hover(app: &mut LightcraftApp, a: &LoupeAsk, [sw, sh]: [usize; 2], [dw, dh]: [usize; 2]) -> Option<(u64, String)> {
+    if !a.interacting
+        && let Some(job) = app.session.ai_remove_preview_job(a.id, dw.max(8), dh.max(8), a.with_crop)
+    {
+        let job = job.with_display_fit(a.fit_px[0], a.fit_px[1]).with_overlay(a.overlay).with_proof(app.ui.soft_proof.then_some(app.ui.proof));
+        let key = job.key;
+        app.renderer.request(Slot::Hover, job, 105);
+        return Some((key, crate::i18n::tr("AI Remove preview · not accepted").to_string()));
+    }
     match app.hover_preview.clone() {
         Some(h) if !a.interacting => app.session.preview_job(a.id, sw.max(8), sh.max(8), a.with_crop, &h.settings).map(|job| {
             // (the same display fit as the After view, drawn texel for texel like it)
@@ -1242,7 +1250,14 @@ fn draw_whole_views(
         // other view's margins with its whole-frame render, magnified and blurred)
         let br = before_img;
         draw(Slot::Before, br, areas[0]);
-        shown = draw(Slot::Main, img_rect, main_area);
+        if let Some((key, label)) = hover_key
+            && let Some(tex) = app.renderer.textures.get(&Slot::Hover).filter(|t| t.photo == id && t.key == *key)
+        {
+            draw_hover(&p.with_clip_rect(main_area), t, tex, label, [img_rect, main_area], badge_top_inset);
+            shown = "hover";
+        } else {
+            shown = draw(Slot::Main, img_rect, main_area);
+        }
         split_labels(p, t, [(br, areas[0]), (img_rect, main_area)]);
     } else if show_before {
         shown = draw(Slot::Before, img_rect, canvas);
@@ -1250,8 +1265,8 @@ fn draw_whole_views(
         // pictures; painted after the window renders below, which would cover it zoomed in
         let g = p.layout_no_wrap(crate::i18n::tr("Before").to_string(), t.font(12.0), Color32::WHITE);
         before_badge = Some((label_badge_rect(img_rect, canvas, g.size(), badge_top_inset), g));
-    } else if let Some((_key, label)) = hover_key
-        && let Some(tex) = app.renderer.textures.get(&Slot::Hover).filter(|t| t.photo == id)
+    } else if let Some((key, label)) = hover_key
+        && let Some(tex) = app.renderer.textures.get(&Slot::Hover).filter(|t| t.photo == id && t.key == *key)
     {
         draw_hover(p, t, tex, label, [img_rect, canvas], badge_top_inset);
         shown = "hover";

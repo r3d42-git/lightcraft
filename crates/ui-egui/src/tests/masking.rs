@@ -505,6 +505,9 @@ fn brush_strokes_carry_auto_mask() {
 #[test]
 fn remove_spots_by_pointer_and_keyboard() {
     let mut h = detail("panel.remove");
+    // This regression exercises the classic retouch controls, not the default AI mask.
+    let r = h.request("ui.clickWidget", json!({"id":"aiRemoveBrushMode"}), T);
+    assert_eq!(r["ok"], true, "{r}");
     assert_eq!(h.app.ui.right, RightPanel::Remove);
     let spots = |h: &Headless| develop(h).spots;
     // paint a spot: it's added with the brush's size/feather/opacity and selected

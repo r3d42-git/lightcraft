@@ -148,6 +148,10 @@ pub struct DevelopSettings {
     pub orientation: Orientation,
     pub masks: Vec<Mask>,
     pub spots: Vec<Spot>,
+    /// Persisted scene-linear raster retouches, in original source coordinates. No model is run
+    /// while rendering. Kept separate from source-selecting healing spots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::ai_edit::deserialize_edits")]
+    pub ai_edits: Vec<crate::AiEdit>,
     pub red_eye: Vec<RedEye>,
     pub lens_blur: LensBlur,
     pub enhance: Enhance,
@@ -186,6 +190,7 @@ impl Default for DevelopSettings {
             orientation: Orientation::Normal,
             masks: Vec::new(),
             spots: Vec::new(),
+            ai_edits: Vec::new(),
             red_eye: Vec::new(),
             lens_blur: LensBlur::default(),
             enhance: Enhance::default(),

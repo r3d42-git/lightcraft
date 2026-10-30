@@ -15,6 +15,7 @@
 extern crate lightcraft_denoise_core as lightcraft_denoise;
 
 pub mod activity;
+pub mod ai_remove;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod apple_photos;
 pub mod availability;
@@ -329,6 +330,7 @@ pub struct Session {
     pub segmenter: segment::Segmenter,
     /// Selected spot (Remove panel), by index into the active photo's spots.
     pub active_spot: Option<usize>,
+    pub ai_remove: ai_remove::AiRemove,
     /// The persistent library this session writes to (`None` = in-memory only).
     pub library: Option<library::Library>,
     /// Identity of current library opening; refreshed only after a successful open.
@@ -507,6 +509,7 @@ impl Session {
             active_mask: None,
             segmenter: segment::Segmenter::default(),
             active_spot: None,
+            ai_remove: Default::default(),
             library: None,
             library_identity: Arc::new(()),
             xmp: sidecar::XmpPrefs::default(),
@@ -629,6 +632,7 @@ impl Session {
                 return Err(e);
             }
         }
+        self.ai_remove_poll();
         r
     }
 
@@ -1012,7 +1016,7 @@ impl Session {
         new_json["hdr"] = serde_json::json!(new.hdr);
         let Some(mut delta) = json_delta(&old_json, &new_json) else { return Vec::new() };
         if let Some(o) = delta.as_object_mut() {
-            for k in ["spots", "red_eye", "version", "process", "auto_tone"] {
+            for k in ["spots", "ai_edits", "red_eye", "version", "process", "auto_tone"] {
                 o.remove(k);
             }
             if o.is_empty() {

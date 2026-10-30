@@ -9,6 +9,10 @@ use super::{Color32, DevelopSettings, Gesture, LightcraftApp, Point, Pos2, Rect,
 /// The Tool Overlay mode (Shift+H) says which spots show; a hidden spot can't be grabbed, so a
 /// click there adds a new one.
 pub(super) fn remove_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Response, map: &CanvasMap, d: &DevelopSettings) {
+    if ui.data(|data| data.get_temp::<bool>(egui::Id::unique("ai-remove-brush-mode"))).unwrap_or(true) {
+        ai_selection_overlay(app, ui, resp, map);
+        return;
+    }
     let long = (map.rect.width().max(map.rect.height())) as f64;
     let active = app.session.active_spot.filter(|i| *i < d.spots.len());
     let (mode, live) = (app.ui.tool_overlay, pins_live(app, resp, map));
@@ -133,6 +137,132 @@ pub(super) fn remove_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &
             json!({"mode": mode, "points": pts, "size": app.ui.remove_size, "feather": app.ui.remove_feather, "opacity": app.ui.remove_opacity}),
         );
     }
+}
+
+/// Paint a private AI mask; classic healing spots and their source handles are untouched.
+fn ai_selection_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Response, map: &CanvasMap) {
+    let radius = app.ui.remove_size * map.rect.width().max(map.rect.height());
+    let p = ui.painter_at(app.canvas_rect.unwrap_or(map.rect));
+    if let Some(q) = resp.hover_pos().filter(|p| map.rect.contains(*p)) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+        p.circle_stroke(q, radius, Stroke::new(1.0, Color32::from_rgb(35, 220, 240)));
+    }
+    if let Some(q) = resp.interact_pointer_pos()
+        && (resp.drag_started() || resp.dragged() || resp.clicked())
+        && map.rect.contains(q)
+    {
+        if !matches!(app.gesture, Some(Gesture::Spot { .. })) {
+            let _ = app.run("aiRemove.cancel", json!({}));
+            let start = ui.input(|i| i.pointer.press_origin()).unwrap_or(q);
+            app.gesture = Some(Gesture::Spot { points: vec![map.norm(start)] });
+        }
+        let point = map.norm(q);
+        if point.x.is_finite()
+            && point.y.is_finite()
+            && (0.0..=1.0).contains(&point.x)
+            && (0.0..=1.0).contains(&point.y)
+            && let Some(Gesture::Spot { points }) = &mut app.gesture
+            && points.len() < 4096
+            && points.last() != Some(&point)
+        {
+            points.push(point);
+        }
+    }
+    let selection = app.session.ai_remove.selection.as_ref();
+    let painted = match &app.gesture {
+        Some(Gesture::Spot { points }) => Some((points.as_slice(), radius)),
+        _ if app.session.ai_remove.draft.is_none() => {
+            selection.map(|s| (s.points.as_slice(), s.size as f32 * map.rect.width().max(map.rect.height())))
+        }
+        _ => None,
+    };
+    if let Some((points, radius)) = painted {
+        draw_ai_selection(ui, &p, map, points, radius);
+    }
+    if (resp.drag_stopped() || resp.clicked())
+        && let Some(Gesture::Spot { points }) = app.gesture.take()
+    {
+        let points: Vec<[f64; 2]> = points
+            .iter()
+            .filter(|p| p.x.is_finite() && p.y.is_finite() && (0.0..=1.0).contains(&p.x) && (0.0..=1.0).contains(&p.y))
+            .map(|p| [p.x, p.y])
+            .collect();
+        if let Err(e) = app.run(
+            "aiRemove.select",
+            json!({"points":points,"size":app.ui.remove_size,"feather":app.ui.remove_feather,"opacity":app.ui.remove_opacity}),
+        ) {
+            app.toast(ui.ctx(), e);
+        }
+    }
+}
+
+/// A union mask in one texture: overlapping capsules never accumulate opacity.
+fn draw_ai_selection(ui: &egui::Ui, painter: &egui::Painter, map: &CanvasMap, points: &[Point], radius: f32) {
+    use std::hash::{Hash, Hasher};
+    let points: Vec<Pos2> = points.iter().map(|p| map.screen(*p)).filter(|p| p.x.is_finite() && p.y.is_finite()).collect();
+    if points.is_empty() || !radius.is_finite() || radius <= 0.0 {
+        return;
+    }
+    let mut bounds = Rect::NOTHING;
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    radius.to_bits().hash(&mut hash);
+    for point in &points {
+        bounds.extend_with(*point);
+        point.x.to_bits().hash(&mut hash);
+        point.y.to_bits().hash(&mut hash);
+    }
+    bounds = bounds.expand(radius + 1.0).intersect(painter.clip_rect());
+    if !bounds.is_positive() {
+        return;
+    }
+    for v in [bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y] {
+        v.to_bits().hash(&mut hash);
+    }
+    let hash = hash.finish();
+    let key = egui::Id::unique("ai-remove-mask-texture");
+    let cached = ui.data(|data| data.get_temp::<(u64, egui::TextureHandle)>(key));
+    let texture = match cached {
+        Some((old, texture)) if old == hash => texture,
+        _ => {
+            // Bound overlay raster work even for a supplied zigzag mask with 4096 long segments.
+            let work: f32 = points
+                .iter()
+                .zip(points.iter().skip(1).chain(points.last()))
+                .map(|(a, b)| ((a.x - b.x).abs() + 2.0 * radius) * ((a.y - b.y).abs() + 2.0 * radius))
+                .sum();
+            let scale = (1024.0 / bounds.width().max(bounds.height())).min(1.0).min((8_000_000.0 / work.max(1.0)).sqrt());
+            let width = (bounds.width() * scale).ceil().max(1.0) as usize;
+            let height = (bounds.height() * scale).ceil().max(1.0) as usize;
+            let mut mask = vec![false; width * height];
+            for (a, b) in points.iter().zip(points.iter().skip(1).chain(points.last())) {
+                let rect = Rect::from_two_pos(*a, *b).expand(radius).intersect(bounds);
+                let x0 = ((rect.left() - bounds.left()) * scale).floor().max(0.0) as usize;
+                let y0 = ((rect.top() - bounds.top()) * scale).floor().max(0.0) as usize;
+                let x1 = (((rect.right() - bounds.left()) * scale).ceil().max(0.0) as usize).min(width);
+                let y1 = (((rect.bottom() - bounds.top()) * scale).ceil().max(0.0) as usize).min(height);
+                let delta = *b - *a;
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let q = bounds.min + vec2((x as f32 + 0.5) / scale, (y as f32 + 0.5) / scale);
+                        let t = if delta.length_sq() > 0.0 { ((q - *a).dot(delta) / delta.length_sq()).clamp(0.0, 1.0) } else { 0.0 };
+                        if q.distance_sq(*a + delta * t) <= radius * radius
+                            && let Some(pixel) = mask.get_mut(y * width + x)
+                        {
+                            *pixel = true;
+                        }
+                    }
+                }
+            }
+            let pixels = mask
+                .into_iter()
+                .map(|inside| if inside { Color32::from_rgba_unmultiplied(20, 210, 235, 100) } else { Color32::TRANSPARENT })
+                .collect();
+            let texture = ui.ctx().load_texture("ai-remove-selection", egui::ColorImage::new([width, height], pixels), egui::TextureOptions::LINEAR);
+            ui.data_mut(|data| data.insert_temp(key, (hash, texture.clone())));
+            texture
+        }
+    };
+    painter.image(texture.id(), bounds, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
 }
 
 /// Keyboard stand-ins for the Remove tool: each spot's target and source (an arrow press moves

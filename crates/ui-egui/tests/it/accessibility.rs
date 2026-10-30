@@ -3,7 +3,10 @@
 //! node with no name, a slider without its value and range, or a canvas tool no key can reach.
 use egui::accesskit::Role;
 use egui::vec2;
-use egui_kittest::{Harness, kittest::NodeT};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 use lightcraft_ui_egui::{
     LightcraftApp, Services,
     state::{RightPanel, ViewMode},
@@ -208,7 +211,10 @@ fn canvas_handles_are_named_with_their_position() {
     for name in ["Crop top-left corner", "Crop right edge", "Crop box"] {
         assert!(found.iter().any(|(l, v)| l == name && v.contains('%')), "{name}: {found:?}");
     }
-    let h = harness(ViewMode::Detail, RightPanel::Remove);
+    let mut h = harness(ViewMode::Detail, RightPanel::Remove);
+    // Spot handles belong to classic retouch; AI removal is the default.
+    h.get_by_label("AI removal").click();
+    h.run_steps(4);
     assert!(h.root().children_recursive().any(|n| n.accesskit_node().label().is_some_and(|l| l.starts_with("New spot"))));
 }
 

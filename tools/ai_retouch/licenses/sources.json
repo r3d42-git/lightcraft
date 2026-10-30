@@ -1,0 +1,57 @@
+[
+  {
+    "file": "LetsThink--RORem-README.md",
+    "url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/README.md",
+    "sha256": "4bcf87ecfbbb8e07a01b21415a970c8b53a5283bf6872b657040d3f45c9241f7"
+  },
+  {
+    "file": "Carve--LaMa-ONNX-README.md",
+    "url": "https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/README.md",
+    "sha256": "41df1aface23c5cd8a91d2e3436edbb2d1cf49baea00dbb28008dc3950f4fbf6"
+  },
+  {
+    "file": "stabilityai--stable-diffusion-xl-base-1.0-README.md",
+    "url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/462165984030d82259a11f4367a4eed129e94a7b/README.md",
+    "sha256": "40d263065b8a3e9a41996c257e11463fd97ae956ebf4e3f8b9625e0d78183893"
+  },
+  {
+    "file": "stabilityai--stable-diffusion-xl-base-1.0-LICENSE.md",
+    "url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/462165984030d82259a11f4367a4eed129e94a7b/LICENSE.md",
+    "sha256": "19b6998b569b53ac1fc2158a8a3202c8699a9a4605b47075715d9c96be7fb6d0"
+  },
+  {
+    "file": "advimman-lama-LICENSE",
+    "url": "https://raw.githubusercontent.com/advimman/lama/786f5936b27fb3dacd2b1ad799e4de968ea697e7/LICENSE",
+    "sha256": "4ceeeac5a802e86c413c22b16cce8e9a22027b0250c97e6f8ac97c14cf0542c0"
+  },
+  {
+    "file": "ObjectClear-source-LICENSE",
+    "url": "https://github.com/zjx0101/ObjectClear/blob/c052d91ecd8772744a5ab97527441c813ab83009/LICENSE",
+    "sha256": "73c84d2c2ebcdde03cb7fc853aaec0d4b3b280ee8b47f98a3d6c1931430d5aae"
+  },
+  {
+    "file": "leeruibin--RORem-README.md",
+    "url": "https://raw.githubusercontent.com/leeruibin/RORem/891ab8a17bbcfb16a773c078cb256aae8cb30468/README.md",
+    "sha256": "7be96e9b4d0cdc1fd3db6db2db4dc66685182006779c71eb5b4e3e08cd1a886a"
+  },
+  {
+    "file": "diffusers--stable-diffusion-xl-1.0-inpainting-0.1-README.md",
+    "url": "https://huggingface.co/diffusers/stable-diffusion-xl-1.0-inpainting-0.1/resolve/115134f363124c53c7d878647567d04daf26e41e/README.md",
+    "sha256": "80f91748ac64a5f0a72d7b133fc6a2ff5291a35464ea341960b8c23ea59affa4"
+  },
+  {
+    "file": "advimman--lama-README.md",
+    "url": "https://raw.githubusercontent.com/advimman/lama/786f5936b27fb3dacd2b1ad799e4de968ea697e7/README.md",
+    "sha256": "97ec131e26ab120490c57425abca96fd68b886d20689e88ba3df10956acec705"
+  },
+  {
+    "file": "mlfoundations--open_clip-LICENSE",
+    "url": "https://raw.githubusercontent.com/mlfoundations/open_clip/4308ec82892b2d7d27aa4eb309973b5bd2c81a73/LICENSE",
+    "sha256": "4a5b4f13ea4792a8211a69f32d2b460b6d520e57cd23c6301e707c76a6e97a55"
+  },
+  {
+    "file": "openai-CLIP-LICENSE",
+    "url": "https://github.com/openai/CLIP/blob/main/LICENSE",
+    "sha256": "987e63b32f6c89ff5160e429458a872ff048e6860b590a3912e938f9da8f14db"
+  }
+]

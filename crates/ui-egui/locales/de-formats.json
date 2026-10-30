@@ -309,5 +309,6 @@
   "{name} (unavailable)": "{name} (nicht verfügbar)",
   "{name} (not installed)": "{name} (nicht installiert)",
   "New photos: {name}": "Neue Fotos: {name}",
-  "Shows the model's terms, then downloads {} from {host} and installs it. Existing photos keep their method. Nothing else is sent.": "Zeigt die Modellbedingungen, lädt anschließend {} von {host} herunter und installiert das Modell. Bestehende Fotos behalten ihr Verfahren. Es wird nichts anderes übertragen."
+  "Shows the model's terms, then downloads {} from {host} and installs it. Existing photos keep their method. Nothing else is sent.": "Zeigt die Modellbedingungen, lädt anschließend {} von {host} herunter und installiert das Modell. Bestehende Fotos behalten ihr Verfahren. Es wird nichts anderes übertragen.",
+  "AI patch {}": "KI-Retusche {}"
 }

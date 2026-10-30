@@ -657,7 +657,11 @@ pub(crate) fn prepare(
 /// The airlight of the whole output frame, estimated on a small render of it (`proxy_w` px wide):
 /// a windowed render must dehaze with the frame's airlight, not that of the pixels it holds.
 pub(crate) fn frame_airlight(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, frame: &Frame, proxy_w: usize, proxy_h: usize) -> f32 {
-    let mut img = Rgb32f::clone(&frame_proxy(src, frame, proxy_w, proxy_h));
+    let mut img = if crate::ai_edits::active(s) {
+        crate::ai_edits::sample(src, s, frame, proxy_w, proxy_h)
+    } else {
+        Rgb32f::clone(&frame_proxy(src, frame, proxy_w, proxy_h))
+    };
     white_balance(&mut img, info, s);
     let sigma = (0.02 * frame.px_per_long(proxy_w)).max(1.0) as f32;
     airlight(&gaussian(&img.map(dark_of), sigma))

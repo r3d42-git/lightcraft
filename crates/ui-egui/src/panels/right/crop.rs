@@ -275,41 +275,62 @@ pub(super) fn crop(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
 pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     let d = app.session.develop_of(id).unwrap_or_default();
     header(ui, "Remove");
+    let key = egui::Id::unique("ai-remove-brush-mode");
+    let mut ai_mode = ui.data(|data| data.get_temp::<bool>(key)).unwrap_or(true);
     padded(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            for (label, tool) in [("Remove", "remove"), ("Content-Aware", "fill"), ("Heal", "heal"), ("Clone", "clone")] {
-                if text_button(ui, &format!("removeMode-{tool}"), label, app.ui.tool == tool).clicked() {
-                    app.ui.tool = tool.into();
-                }
+        let response = ui.checkbox(&mut ai_mode, crate::i18n::tr("AI removal"));
+        crate::widgets::register(ui, "aiRemoveBrushMode", response.rect);
+        if response.changed() {
+            ui.data_mut(|data| data.insert_temp(key, ai_mode));
+            app.gesture = None;
+            if ai_mode {
+                app.ui.visualize_spots = false;
             }
-        });
-        ui.add_space(8.0);
-        ui.label(crate::i18n::tr_format!("{} spot(s) on this photo", d.spots.len()));
-        ui.add_space(4.0);
-        if text_button(ui, "findDust", crate::i18n::tr("Find Dust Spots"), false)
-            .on_hover_text(crate::i18n::tr("Heal the small, soft dark spots sensor dust leaves on smooth areas"))
-            .clicked()
-        {
-            match app.run("spot.findDust", json!({})) {
-                Ok(r) => {
-                    let n = r["added"].as_u64().unwrap_or(0);
-                    app.toast(
-                        ui.ctx(),
-                        if n == 0 {
-                            crate::i18n::tr("No dust spots found").to_string()
-                        } else {
-                            crate::i18n::tr_format!("Healed {n} dust spot{}", if n == 1 { "" } else { "s" }, n = n)
-                        },
-                    );
-                }
-                Err(e) => app.toast(ui.ctx(), e),
-            }
+            let _ = app.run("aiRemove.clearSelection", json!({}));
         }
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new(crate::i18n::tr("Paint over a distraction on the photo to remove it.")).color(Tokens::get(ui.ctx()).text_dim));
+        if ai_mode {
+            ui.label(crate::i18n::tr("Paint over an object, remove it, then review and accept the preview."));
+        }
     });
+    if !ai_mode {
+        padded(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (label, tool) in [("Remove", "remove"), ("Content-Aware", "fill"), ("Heal", "heal"), ("Clone", "clone")] {
+                    if text_button(ui, &format!("removeMode-{tool}"), label, app.ui.tool == tool).clicked() {
+                        app.ui.tool = tool.into();
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            ui.label(crate::i18n::tr_format!("{} spot(s) on this photo", d.spots.len()));
+            ui.add_space(4.0);
+            if text_button(ui, "findDust", crate::i18n::tr("Find Dust Spots"), false)
+                .on_hover_text(crate::i18n::tr("Heal the small, soft dark spots sensor dust leaves on smooth areas"))
+                .clicked()
+            {
+                match app.run("spot.findDust", json!({})) {
+                    Ok(r) => {
+                        let n = r["added"].as_u64().unwrap_or(0);
+                        app.toast(
+                            ui.ctx(),
+                            if n == 0 {
+                                crate::i18n::tr("No dust spots found").to_string()
+                            } else {
+                                crate::i18n::tr_format!("Healed {n} dust spot{}", if n == 1 { "" } else { "s" }, n = n)
+                            },
+                        );
+                    }
+                    Err(e) => app.toast(ui.ctx(), e),
+                }
+            }
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(crate::i18n::tr("Paint over a distraction on the photo to remove it.")).color(Tokens::get(ui.ctx()).text_dim),
+            );
+        });
+    }
     // brush settings; with a spot selected they edit that spot too
-    let sel = app.session.active_spot.and_then(|i| d.spots.get(i).map(|sp| (i, sp.clone())));
+    let sel = if ai_mode { None } else { app.session.active_spot.and_then(|i| d.spots.get(i).map(|sp| (i, sp.clone()))) };
     if let Some((i, sp)) = &sel {
         (app.ui.remove_size, app.ui.remove_feather, app.ui.remove_opacity) = (sp.size as f32, sp.feather as f32, sp.opacity as f32);
         divider(ui);
@@ -338,6 +359,9 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         (plain("ui.removeOpacity", "Opacity", 0.0, 100.0, 100.0), "opacity", app.ui.remove_opacity as f64),
     ];
     for (spec, key, v) in sliders {
+        if ai_mode && key != "size" {
+            continue;
+        }
         let out = slider(ui, &spec, v, true, None);
         let scale = if key == "size" { 1000.0 } else { 1.0 };
         if let Some(v) = out.value {
@@ -346,6 +370,17 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                 "feather" => app.ui.remove_feather = v as f32,
                 _ => app.ui.remove_opacity = v as f32,
             }
+        }
+        if ai_mode
+            && out.value.is_some()
+            && let Some(mut selection) = app.session.ai_remove.selection.clone()
+        {
+            selection.size = f64::from(app.ui.remove_size);
+            selection.feather = f64::from(app.ui.remove_feather);
+            selection.opacity = f64::from(app.ui.remove_opacity);
+            let points: Vec<[f64; 2]> = selection.points.iter().map(|p| [p.x, p.y]).collect();
+            let _ =
+                app.run("aiRemove.select", json!({"points":points,"size":selection.size,"feather":selection.feather,"opacity":selection.opacity}));
         }
         if sel.is_some() {
             crate::panels::edit::apply_slider_out(app, &spec, out, |app, v| app.run("spot.update", json!({key: v / scale})));
@@ -363,37 +398,123 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             });
         });
     }
-    // Visualize Spots (A): a black/white high-pass view that makes dust and specks stand out
+    divider(ui);
     padded(ui, |ui| {
-        let mut v = app.ui.visualize_spots;
-        if ui.checkbox(&mut v, crate::i18n::tr("Visualize Spots (A)")).changed() {
-            app.ui.visualize_spots = v;
+        ui.label(crate::i18n::tr("AI Remove · Local prototype"));
+        let busy = app.session.ai_remove.busy();
+        let backend_key = egui::Id::unique("ai-remove-backend");
+        let mut backend = ui.data(|data| data.get_temp::<String>(backend_key)).unwrap_or_else(|| "objectclear".into());
+        ui.add_enabled_ui(!busy, |ui| {
+            let response = crate::widgets::combo_box("ai-remove-model")
+                .selected_text(match backend.as_str() {
+                    "objectclear" => "ObjectClear",
+                    "rorem" => "RORem",
+                    _ => "LaMa",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut backend, "objectclear".into(), "ObjectClear")
+                        .on_hover_text(crate::i18n::tr("Removes objects and reconstructs the background. May invent details."));
+                    ui.selectable_value(&mut backend, "lama".into(), "LaMa")
+                        .on_hover_text(crate::i18n::tr("Reconstructs backgrounds and structures. Fast alternative for object removal."));
+                    ui.selectable_value(&mut backend, "rorem".into(), "RORem")
+                        .on_hover_text(crate::i18n::tr("Diffusion model for alternative results. Slower; may invent new details."));
+                });
+            crate::widgets::name_combo(&response.response, crate::i18n::tr("AI model"));
+            crate::widgets::register(ui, "aiRemoveModel", response.response.rect);
+        });
+        ui.data_mut(|data| data.insert_temp(backend_key, backend.clone()));
+        ui.small(crate::i18n::tr(match backend.as_str() {
+            "objectclear" => "Object removal and background reconstruction · recommended",
+            "rorem" => "Alternative diffusion reconstruction · slower",
+            _ => "Background and structure reconstruction · fast",
+        }));
+        if ui
+            .add_enabled(
+                (app.session.ai_remove.selection.is_some() || sel.is_some()) && !busy,
+                egui::Button::new(crate::i18n::tr("Remove selected area")),
+            )
+            .clicked()
+            && let Err(e) = app.run("aiRemove.start", json!({"backend":backend}))
+        {
+            app.toast(ui.ctx(), e);
         }
-    });
-    let spec = lightcraft_develop::ControlSpec {
-        id: "ui.spotsThreshold",
-        label: "Threshold",
-        section: lightcraft_develop::Section::Detail,
-        min: 0.0,
-        max: 100.0,
-        default: 50.0,
-        step: 1.0,
-        decimals: 0,
-        track: lightcraft_develop::Track::Plain,
-    };
-    let out = slider(ui, &spec, app.ui.spots_threshold as f64, app.ui.visualize_spots, None);
-    if let Some(v) = out.value {
-        app.ui.spots_threshold = v as f32;
-    }
-    padded(ui, |ui| {
-        tool_overlay_options(app, ui);
-        ui.add_space(4.0);
-        if !d.spots.is_empty() && text_button(ui, "removeClear", crate::i18n::tr("Delete all spots"), false).clicked() {
-            for i in (0..d.spots.len()).rev() {
-                let _ = app.run("spot.delete", json!({"index": i}));
+        if app.session.ai_remove.selection.is_some() && ui.button(crate::i18n::tr("Clear AI selection")).clicked() {
+            let _ = app.run("aiRemove.clearSelection", json!({}));
+        }
+        let message = app.session.ai_remove.message.clone();
+        if !message.is_empty() {
+            ui.label(crate::i18n::tr(&message));
+        }
+        if busy {
+            ui.spinner();
+            if ui.button(crate::i18n::tr("Cancel AI Remove")).clicked() {
+                let _ = app.run("aiRemove.cancel", json!({}));
             }
         }
+        if app.session.ai_remove.draft.is_some() {
+            ui.label(crate::i18n::tr("Preview shown on the photo. Accept to keep the result."));
+            let mut original = app.session.ai_remove.preview_original;
+            let response = ui.checkbox(&mut original, crate::i18n::tr("Show photo without AI draft"));
+            crate::widgets::register(ui, "aiRemovePreviewOriginal", response.rect);
+            if response.changed() {
+                let _ = app.run("aiRemove.previewOriginal", json!({"enabled":original}));
+            }
+            ui.horizontal(|ui| {
+                if ui.button(crate::i18n::tr("Accept AI Remove")).clicked()
+                    && let Err(e) = app.run("aiRemove.accept", json!({}))
+                {
+                    app.toast(ui.ctx(), e);
+                }
+                if ui.button(crate::i18n::tr("Discard")).clicked() {
+                    let _ = app.run("aiRemove.cancel", json!({}));
+                }
+            });
+        }
+        for edit in &d.ai_edits {
+            ui.horizontal(|ui| {
+                let mut enabled = edit.enabled;
+                if ui.checkbox(&mut enabled, crate::i18n::tr_format!("AI patch {}", edit.id)).changed() {
+                    let _ = app.run("aiRemove.update", json!({"id":edit.id,"enabled":enabled}));
+                }
+                if ui.small_button(crate::i18n::tr("Delete")).clicked() {
+                    let _ = app.run("aiRemove.update", json!({"id":edit.id,"delete":true}));
+                }
+            });
+        }
     });
+    if !ai_mode {
+        // Visualize Spots (A): a black/white high-pass view that makes dust and specks stand out
+        padded(ui, |ui| {
+            let mut v = app.ui.visualize_spots;
+            if ui.checkbox(&mut v, crate::i18n::tr("Visualize Spots (A)")).changed() {
+                app.ui.visualize_spots = v;
+            }
+        });
+        let spec = lightcraft_develop::ControlSpec {
+            id: "ui.spotsThreshold",
+            label: "Threshold",
+            section: lightcraft_develop::Section::Detail,
+            min: 0.0,
+            max: 100.0,
+            default: 50.0,
+            step: 1.0,
+            decimals: 0,
+            track: lightcraft_develop::Track::Plain,
+        };
+        let out = slider(ui, &spec, app.ui.spots_threshold as f64, app.ui.visualize_spots, None);
+        if let Some(v) = out.value {
+            app.ui.spots_threshold = v as f32;
+        }
+        padded(ui, |ui| {
+            tool_overlay_options(app, ui);
+            ui.add_space(4.0);
+            if !d.spots.is_empty() && text_button(ui, "removeClear", crate::i18n::tr("Delete all spots"), false).clicked() {
+                for i in (0..d.spots.len()).rev() {
+                    let _ = app.run("spot.delete", json!({"index": i}));
+                }
+            }
+        });
+    }
 }
 
 /// Tool Overlay: when the spot and mask pins show on the photo (Auto / Always / Selected / Never;

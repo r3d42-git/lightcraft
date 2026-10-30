@@ -94,6 +94,8 @@ fn tab_reaches_the_crop_handles() {
 #[test]
 fn spots_are_added_and_moved_by_keyboard() {
     let mut h = detail("panel.remove");
+    h.view.ctx.data_mut(|d| d.insert_temp(egui::Id::unique("ai-remove-brush-mode"), false));
+    h.step();
     assert!(develop(&h).spots.is_empty());
     focus(&mut h, "spot:new");
     key(&mut h, "right", true);

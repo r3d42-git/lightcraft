@@ -1047,3 +1047,43 @@ fn sharp_export_downscale_matches_cpu_with_shared_stages() {
         assert!(mean < MEAN_LSB && max <= MAX_LSB, "{downscale:?}: mean {mean:.4} LSB, max {max} LSB");
     }
 }
+
+#[test]
+fn persisted_ai_raster_uses_cpu_sampling_and_invalidates_gpu_cache() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(0, 96, 64);
+    let info = SourceInfo::default();
+    let req = RenderRequest::fit(72, 72);
+    let cache = StageCache::default();
+    let mut s = DevelopSettings { orientation: Orientation::Rotate90, ..Default::default() };
+    s.crop.geometry.rect = Rect::new(0.1, 0.1, 0.9, 0.9);
+    s.optics.distortion = 10.0;
+    let baseline = lightcraft_gpu::render(&src, &info, &s, &req, Some(&cache)).unwrap();
+    let edit = lightcraft_develop::AiEdit::from_pixels(
+        lightcraft_develop::AiEdit {
+            id: 1,
+            enabled: true,
+            rect: [0.2, 0.2, 0.8, 0.8],
+            support: None,
+            width: 2,
+            height: 2,
+            pixels: String::new(),
+            model: "test".into(),
+            model_version: "1".into(),
+            seed: 123,
+        },
+        &[[0.9, 0.1, 0.2, 1.0]; 4],
+    )
+    .unwrap();
+    s.ai_edits.push(edit);
+    let actual = lightcraft_gpu::render(&src, &info, &s, &req, Some(&cache)).unwrap();
+    let expected = render(&src, &info, &s, &req);
+    let (mean, max, _) = diff(&actual.image, &expected.image);
+    assert!(mean < MEAN_LSB && max <= MAX_LSB);
+    assert_ne!(baseline.image.data, actual.image.data, "GPU must actually apply the raster");
+    s.ai_edits[0].enabled = false;
+    let disabled = lightcraft_gpu::render(&src, &info, &s, &req, Some(&cache)).unwrap();
+    assert_eq!(baseline.image.data, disabled.image.data);
+}

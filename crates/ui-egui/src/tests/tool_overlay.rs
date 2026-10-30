@@ -32,6 +32,7 @@ fn exec(h: &mut Headless, command: &str, params: serde_json::Value) -> serde_jso
 /// The Remove tool with three spots (the last one selected).
 fn three_spots() -> Headless {
     let mut h = detail("panel.remove");
+    h.view.ctx.data_mut(|d| d.insert_temp(egui::Id::unique("ai-remove-brush-mode"), false));
     assert_eq!(h.app.ui.right, RightPanel::Remove);
     for (x, y) in [(0.25, 0.3), (0.5, 0.6), (0.75, 0.3)] {
         exec(&mut h, "spot.add", json!({"mode": "heal", "points": [[x, y]], "size": 0.03}));
@@ -248,6 +249,7 @@ fn tool_overlay_is_saved_and_old_settings_open_in_auto() {
     assert_eq!(back.tool_overlay, ToolOverlay::Auto);
     // through the control channel too
     let mut h = detail("panel.remove");
+    h.view.ctx.data_mut(|d| d.insert_temp(egui::Id::unique("ai-remove-brush-mode"), false));
     let r = h.request("ui.set", json!({"toolOverlay": "never"}), T);
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(h.app.ui.tool_overlay, ToolOverlay::Never);

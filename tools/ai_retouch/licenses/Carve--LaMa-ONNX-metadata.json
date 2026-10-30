@@ -1,0 +1,35 @@
+{
+  "repo": "Carve/LaMa-ONNX",
+  "revision": "c3c0c9e468934d62e79c329e35d82dd09ff8c444",
+  "license": "apache-2.0",
+  "base_model": null,
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "image.jpg"
+    },
+    {
+      "rfilename": "lama.onnx"
+    },
+    {
+      "rfilename": "lama_fp32.onnx"
+    },
+    {
+      "rfilename": "mask.png"
+    },
+    {
+      "rfilename": "output_onnx.png"
+    },
+    {
+      "rfilename": "output_onnx_fp32.png"
+    },
+    {
+      "rfilename": "output_orig.png"
+    }
+  ]
+}

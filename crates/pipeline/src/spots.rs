@@ -113,7 +113,7 @@ pub fn pick_source(
     if w == 0 || h == 0 {
         return None;
     }
-    let img = frame.sample(src, w, h);
+    let img = crate::ai_edits::sample(src, s, &frame, w, h);
     let (to_out, to_norm) = (frame.norm_to_out(w, h), frame.out_to_norm(w, h));
     let t = to_out.apply(*spot.points.first()?);
     let r = radius_px(spot.size, frame.px_per_long(w)) as f32;

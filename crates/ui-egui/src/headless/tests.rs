@@ -5139,3 +5139,122 @@ fn the_loupe_prepares_the_photos_ahead_the_settings_ask_for() {
     h.settle(SETTLE);
     assert_eq!(h.app.renderer.prefetch_slots_asked(), 0, "off: nothing prepared ahead");
 }
+
+/// An unaccepted AI patch uses the main developed photo and leaves the catalogue untouched.
+#[test]
+fn ai_remove_draft_previews_on_photo_and_preserves_before_view() {
+    use crate::render::Slot;
+    use crate::state::BeforeAfter;
+    use lightcraft_develop::AiEdit;
+    let mut h = demo([1200.0, 800.0]);
+    let t = Duration::from_secs(10);
+    h.request("ui.set", json!({"view":"detail", "right":"remove"}), t);
+    h.settle(SETTLE);
+    let id = h.app.session.active().unwrap();
+    let before = h.app.session.develop_of(id).unwrap();
+    let history = h.app.session.catalog.photo(id).unwrap().history.len();
+    let undo = h.app.session.undo.len();
+    // Synthetic draft only: no model, catalogue write, hardware or external image needed.
+    h.app.session.ai_remove.draft = Some(
+        AiEdit::from_pixels(
+            AiEdit {
+                id: 0,
+                enabled: true,
+                rect: [0.1, 0.1, 0.9, 0.9],
+                support: None,
+                width: 1,
+                height: 1,
+                pixels: String::new(),
+                model: "test".into(),
+                model_version: "1".into(),
+                seed: 42,
+            },
+            &[[0.2, 0.6, 0.1, 1.0]],
+        )
+        .unwrap(),
+    );
+    h.step_until(SETTLE, |h| h.app.loupe_shown.map(|l| l.1) == Some("hover"));
+    assert_eq!(h.app.loupe_shown.map(|l| l.1), Some("hover"));
+    save_ai_ui_evidence(&mut h, "draft-preview.png");
+    let settings = h.app.session.ai_remove_preview_settings().unwrap();
+    let hover = h.app.renderer.textures.get(&Slot::Hover).unwrap();
+    assert_eq!(hover.photo, id);
+    assert!(hover.size[0].max(hover.size[1]) > 220, "full-photo preview replaces the old small patch");
+    assert!(std::sync::Arc::ptr_eq(&h.app.session.develop_of(id).unwrap(), &before));
+    assert_eq!(h.app.session.catalog.photo(id).unwrap().history.len(), history);
+    assert_eq!(h.app.session.undo.len(), undo);
+    h.app.ui.before_after = BeforeAfter::Original;
+    h.step();
+    assert_ne!(h.app.loupe_shown.map(|l| l.1), Some("hover"), "Before never displays the draft");
+    h.app.ui.before_after = BeforeAfter::SideBySide;
+    h.step_until(SETTLE, |h| h.app.loupe_shown.map(|l| l.1) == Some("hover"));
+    assert_eq!(h.app.loupe_shown.map(|l| l.1), Some("hover"), "After pane displays the draft");
+    h.app.ui.before_after = BeforeAfter::Off;
+    h.request("ui.clickWidget", json!({"id":"aiRemovePreviewOriginal"}), t);
+    assert!(h.app.session.ai_remove.preview_original);
+    assert_ne!(h.app.loupe_shown.map(|l| l.1), Some("hover"));
+    h.request("ui.clickWidget", json!({"id":"aiRemovePreviewOriginal"}), t);
+    h.step_until(SETTLE, |h| h.app.loupe_shown.map(|l| l.1) == Some("hover"));
+    assert_eq!(h.app.loupe_shown.map(|l| l.1), Some("hover"));
+    assert!(std::sync::Arc::ptr_eq(&settings, &h.app.session.ai_remove_preview_settings().unwrap()));
+    h.app.session.execute("aiRemove.cancel", &json!({})).unwrap();
+    h.step();
+    assert_ne!(h.app.loupe_shown.map(|l| l.1), Some("hover"));
+    assert!(h.app.session.ai_remove.draft.is_none());
+    assert!(std::sync::Arc::ptr_eq(&h.app.session.develop_of(id).unwrap(), &before));
+    assert_eq!(h.app.session.undo.len(), undo);
+}
+
+/// Opt-in QA images for the isolated procedural session; no production catalogue is involved.
+fn save_ai_ui_evidence(h: &mut Headless, name: &str) {
+    if let Some(root) = std::env::var_os("LIGHTCRAFT_AI_UI_EVIDENCE") {
+        let image = h.snapshot(SETTLE);
+        let rgba = lightcraft_raster::Rgba8::from_pixels(image.size[0], image.size[1], image.pixels.iter().map(|p| p.to_array())).unwrap();
+        let bytes = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&rgba), &lightcraft_codecs::EncodeMeta::default()).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(std::path::PathBuf::from(root).join(name), bytes).unwrap();
+    }
+}
+
+#[test]
+fn ai_remove_brush_paints_private_mask_without_healing_or_history() {
+    use egui::{Event, Modifiers, PointerButton, vec2};
+    let mut h = demo([1200.0, 800.0]);
+    let t = Duration::from_secs(10);
+    h.request("ui.set", json!({"view":"detail","right":"remove"}), t);
+    h.app.session.execute("spot.add", &json!({"points":[[0.2,0.2]],"size":0.03})).unwrap();
+    h.settle(SETTLE);
+    let id = h.app.session.active().unwrap();
+    let before = h.app.session.develop_of(id).unwrap();
+    let undo = h.app.session.undo.len();
+    let history = h.app.session.catalog.photo(id).unwrap().history.len();
+    assert!(!h.app.widgets.iter().any(|(name, _)| name.starts_with("spotPin:") || name.starts_with("spotSource:")), "AI mode hides classic handles");
+    let start = h.app.image_rect.unwrap().center() - vec2(30.0, 80.0);
+    h.app.synthetic.push(Event::PointerMoved(start));
+    h.app.synthetic.push(Event::PointerButton { pos: start, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.step();
+    for i in 1..=12 {
+        let q = start + vec2(5.0 * i as f32, 12.0 * i as f32);
+        h.app.synthetic.push(Event::PointerMoved(q));
+        h.step();
+    }
+    let end = start + vec2(60.0, 144.0);
+    h.app.synthetic.push(Event::PointerButton { pos: end, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.step();
+    h.step();
+    let selection = h.app.session.ai_remove.selection.clone().expect("private AI selection");
+    assert!(selection.points.len() > 1);
+    assert!(std::sync::Arc::ptr_eq(&before, &h.app.session.develop_of(id).unwrap()));
+    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.catalog.photo(id).unwrap().history.len(), history);
+    save_ai_ui_evidence(&mut h, "ai-brush-selection.png");
+    assert!(h.view.ctx.data(|d| d.get_temp::<(u64, egui::TextureHandle)>(egui::Id::unique("ai-remove-mask-texture"))).is_some());
+    h.app.session.execute("aiRemove.cancel", &json!({})).unwrap();
+    assert_eq!(h.app.session.ai_remove.selection, Some(selection));
+    h.request("ui.clickWidget", json!({"id":"aiRemoveBrushMode"}), t);
+    assert!(h.app.session.ai_remove.selection.is_none());
+    h.app.ui.tool_overlay = crate::state::ToolOverlay::Always;
+    h.step();
+    assert!(h.app.widgets.iter().any(|(name, _)| name.starts_with("spotPin:")), "classic handles remain available with AI off");
+    assert_eq!(h.app.session.undo.len(), undo);
+}
