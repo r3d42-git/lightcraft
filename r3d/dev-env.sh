@@ -6,7 +6,7 @@ R3D_PROJECT="$(dirname "$R3D_SOURCE")"
 R3D_INSTANCE="${R3D_INSTANCE:-$(basename "$R3D_SOURCE")}"
 export CARGO_HOME="${CARGO_HOME:-$R3D_PROJECT/.tools/cargo}"
 export RUSTUP_HOME="${RUSTUP_HOME:-$R3D_PROJECT/.tools/rustup}"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$R3D_PROJECT/.tools/target-$R3D_INSTANCE}"
+source "$R3D_SOURCE/r3d/scratch-env.sh" || return 1
 export PATH="$CARGO_HOME/bin:$PATH"
 export LIGHTCRAFT_R3D_CONFIG_DIR="${LIGHTCRAFT_R3D_CONFIG_DIR-$R3D_PROJECT/test-runtime/$R3D_INSTANCE/config}"
 export LIGHTCRAFT_R3D_LIBRARY="${LIGHTCRAFT_R3D_LIBRARY-$R3D_PROJECT/test-runtime/$R3D_INSTANCE/library}"

@@ -3518,5 +3518,17 @@
   "Paint over an object, remove it, then review and accept the preview.": "Objekt übermalen, entfernen und anschließend die Vorschau prüfen und übernehmen.",
   "Remove selected area": "Auswahl entfernen",
   "Clear AI selection": "KI-Auswahl löschen",
-  "AI selection ready. Run AI Remove to create a preview.": "KI-Auswahl bereit. Entfernen erzeugt eine Vorschau."
+  "AI selection ready. Run AI Remove to create a preview.": "KI-Auswahl bereit. Entfernen erzeugt eine Vorschau.",
+  "No installed AI model": "Kein KI-Modell installiert",
+  "AI model folder unavailable": "KI-Modellordner nicht verfügbar",
+  "Remove model": "Modell entfernen",
+  "Verify": "Überprüfen",
+  "Import model package…": "Modellpaket importieren…",
+  "Runtimes are installed or repaired with the LightCraft installer.": "Laufzeitumgebungen werden mit dem LightCraft-Installationsprogramm installiert oder repariert.",
+  "Choose existing AI store…": "Vorhandene KI-Ablage wählen…",
+  "Remove this model from disk? Existing photo edits remain available.": "Dieses Modell vom Datenträger entfernen? Vorhandene Fotobearbeitungen bleiben verfügbar.",
+  "Confirm removal": "Entfernen bestätigen",
+  "Manage models…": "Modelle verwalten…",
+  "AI models": "KI-Modelle",
+  "Installed · structural checks passed": "Installiert · Strukturprüfung bestanden"
 }

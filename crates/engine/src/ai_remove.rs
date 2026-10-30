@@ -130,24 +130,18 @@ impl Session {
         self.ai_remove.message = "Cancelled.".into();
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn ai_remove_start(&mut self, backend: &'static str) -> Result<Value> {
+    fn ai_remove_start(&mut self, backend: Option<&'static str>, model_id: Option<String>) -> Result<Value> {
         self.ai_remove_poll();
         if self.ai_remove.busy() {
             return Err(error("AI Remove is already running."));
         }
-        let runtime = std::env::var_os("LIGHTCRAFT_AI_RETOUCH_RUNTIME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| std::env::current_exe().ok()?.parent()?.parent().map(|p| p.join("Resources/ai-retouch")))
-            .ok_or_else(|| error("AI Remove is not set up on this computer."))?;
-        let model_ready = match backend {
-            "lama" => runtime.join("lama/lama_fp32.onnx").is_file() && runtime.join("lama/manifest.json").is_file(),
-            "rorem" => runtime.join("model").is_dir(),
-            "objectclear" => runtime.join("objectclear/model_index.json").is_file(),
-            _ => false,
-        };
-        if !runtime.join("bin/python3").is_file() || !runtime.join("worker.py").is_file() || !model_ready {
-            return Err(error("AI Remove model and runtime are not set up on this computer."));
+        if self.ai_models.busy() {
+            return Err(error("Wait for model management to finish."));
         }
+        let ai_root = crate::ai_models::root()?;
+        let selected = crate::ai_models::selected(&ai_root, model_id.as_deref(), backend)?;
+        let backend = selected.backend.clone();
+        let selected_id = selected.id.clone();
         let id = self.active().ok_or_else(|| error("Select a photo."))?;
         let d = self.develop_of(id).unwrap_or_default();
         let (spot, index) = if let Some(selection) = self.ai_remove.selection.clone() {
@@ -171,9 +165,12 @@ impl Session {
         std::thread::Builder::new()
             .name("ai-remove".into())
             .spawn(move || {
-                let result =
-                    crate::guard::catch("AI Remove", || run_worker(&runtime, backend, source, info, settings, spot, index.is_none(), seed, &stopped))
-                        .unwrap_or_else(Err);
+                let result = crate::guard::catch("AI Remove", || {
+                    let _store_lock = crate::ai_models::store_lock(&ai_root).map_err(|e| e.to_string())?;
+                    let selected = crate::ai_models::resolve(&ai_root, Some(&selected_id), Some(&backend), false).map_err(|e| e.to_string())?;
+                    run_worker(&selected.runtime, &backend, Some(&selected), source, info, settings, spot, index.is_none(), seed, &stopped)
+                })
+                .unwrap_or_else(Err);
                 let _ = tx.send(result);
             })
             .map_err(error)?;
@@ -210,10 +207,11 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             s.ai_remove.selection_tag = None;
             Ok(json!({}))
         }),
-        cmd!(query "aiRemove.start", "AI Remove", [], None, "{backend?:objectclear|lama|rorem} — starts a local background draft from the painted selection", has_active, |s, p| {
-            let backend = backend_param(p)?;
-            #[cfg(not(target_arch = "wasm32"))] { s.ai_remove_start(backend) }
-            #[cfg(target_arch = "wasm32")] { let _ = (s, backend); Err(error("Local AI Remove is unavailable in the browser.")) }
+        cmd!(query "aiRemove.start", "AI Remove", [], None, "{modelId?:installed revision ID,backend?:objectclear|lama|rorem} — starts a local background draft from the painted selection", has_active, |s, p| {
+            let backend = if p.get("backend").is_some() { Some(backend_param(p)?) } else { None };
+            let model_id = p.get("modelId").and_then(Value::as_str).map(str::to_owned);
+            #[cfg(not(target_arch = "wasm32"))] { s.ai_remove_start(backend, model_id) }
+            #[cfg(target_arch = "wasm32")] { let _ = (s, backend, model_id); Err(error("Local AI Remove is unavailable in the browser.")) }
         }),
         cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some(),"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message})) }),
         cmd!(query "aiRemove.previewOriginal", "Show Photo Without AI Draft", [], None, "{enabled:bool} — compare the pending result without accepting it", has_active, |s, p| {
@@ -360,6 +358,7 @@ fn context_rect(bounds: [f64; 4], width: usize, height: usize) -> Option<[f64; 4
 fn run_worker(
     runtime: &std::path::Path,
     backend: &str,
+    package: Option<&crate::ai_models::Resolved>,
     source: crate::media::SourceRef,
     info: lightcraft_pipeline::SourceInfo,
     d: DevelopSettings,
@@ -457,7 +456,7 @@ fn run_worker(
         }
         fs::write(dir.join("input.rgb"), input).map_err(|e| e.to_string())?;
         fs::write(dir.join("mask.u8"), &mask).map_err(|e| e.to_string())?;
-        let request = json!({"version":1,"input":dir.join("input.rgb"),"mask":dir.join("mask.u8"),"output":dir.join("output.rgba"),"width":w,"height":h,"rect":rect,"backend":backend,"model_dir":runtime.join(backend_directory(backend).ok_or_else(|| "Invalid AI Remove backend.".to_string())?),"seed":seed,"steps":20});
+        let request = json!({"version":1,"input":dir.join("input.rgb"),"mask":dir.join("mask.u8"),"output":dir.join("output.rgba"),"width":w,"height":h,"rect":rect,"backend":backend,"model_dir":package.map(|p| p.model.clone()).unwrap_or_else(|| runtime.join(backend_directory(backend).unwrap_or(""))),"model_package":package.map(|p|json!({"path":p.model,"manifest":p.manifest})),"seed":seed,"steps":20});
         fs::write(dir.join("request.json"), serde_json::to_vec(&request).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         if cancel.load(Ordering::Relaxed) {
             return Err("Cancelled.".into());
@@ -465,7 +464,7 @@ fn run_worker(
         let mut child = std::process::Command::new(runtime.join("bin/python3"))
             .arg("-I")
             .arg("-B")
-            .arg(runtime.join("worker.py"))
+            .arg(package.map(|p| p.worker.clone()).unwrap_or_else(|| runtime.join("worker.py")))
             .arg(dir.join("request.json"))
             .arg(dir.join("response.json"))
             .stdin(std::process::Stdio::null())
@@ -623,6 +622,7 @@ mod tests {
         std::fs::write(
             &launcher,
             r#"#!/bin/sh
+cp "$4" "$(dirname "$0")/../captured-request.json"
 cp "$(dirname "$0")/../pixels.rgba" "$(dirname "$5")/output.rgba"
 printf '%s' '{"version":1,"width":128,"height":96,"model":"test","model_version":"geometry-1"}' > "$5"
 "#,
@@ -649,8 +649,30 @@ printf '%s' '{"version":1,"width":128,"height":96,"model":"test","model_version"
             Some(info.clone()),
         )));
         let spot = Spot { points: vec![lightcraft_geom::Point::new(0.8, 0.25)], size: 0.04, ..Default::default() };
-        let edit =
-            run_worker(runtime.path(), "lama", source, info, settings.clone(), spot, true, 0, &std::sync::atomic::AtomicBool::new(false)).unwrap();
+        let package = crate::ai_models::Resolved {
+            id: "lama-test-revision".into(),
+            runtime: runtime.path().into(),
+            model: runtime.path().join("separate-model"),
+            worker: runtime.path().join("trusted-worker.py"),
+            backend: "lama".into(),
+            manifest: json!({"id":"lama-test-revision"}),
+        };
+        let edit = run_worker(
+            runtime.path(),
+            "lama",
+            Some(&package),
+            source,
+            info,
+            settings.clone(),
+            spot,
+            true,
+            0,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        let request: Value = serde_json::from_slice(&std::fs::read(runtime.path().join("captured-request.json")).unwrap()).unwrap();
+        assert_eq!(request["model_dir"], json!(package.model));
+        assert_eq!(request["model_package"]["manifest"]["id"], "lama-test-revision");
         assert!(edit.support.as_ref().unwrap().geometry.is_some());
         assert_eq!(edit.model, "test");
         let mut patched = settings.clone();

@@ -13,6 +13,38 @@ spec.loader.exec_module(worker)
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_external_model_revision_uses_same_adapter_and_reports_actual_revision(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = np.full((8, 8, 3), .1, dtype='<f4')
+            mask = np.full((8, 8), 255, dtype=np.uint8)
+            source.tofile(root / 'input.rgb')
+            mask.tofile(root / 'mask.u8')
+            descriptor = dict(version=1, kind='model', id='rorem-new', backend='rorem',
+                              name=worker.MODEL, model_version='new-revision', adapter_version=1,
+                              runtime_compatibility=['runtime-v1'])
+            request = dict(width=8, height=8, backend='rorem', input=str(root / 'input.rgb'),
+                           mask=str(root / 'mask.u8'), output=str(root / 'output.rgba'),
+                           model_dir=str(root), model_package=dict(path=str(root), manifest=descriptor))
+            self.assertEqual(worker.package_metadata(request), descriptor)
+            with patch.object(worker, 'rorem', return_value=np.full((8, 8, 3), 90, dtype=np.uint8)):
+                response = worker.run(request)
+            self.assertEqual(response['model_version'], 'new-revision')
+            descriptor['adapter_version'] = 2
+            with self.assertRaisesRegex(ValueError, 'Incompatible'):
+                worker.package_metadata(request)
+
+    def test_external_models_cannot_add_arbitrary_python(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'evil.py').write_text('raise RuntimeError()')
+            descriptor = dict(version=1, kind='model', id='rorem-new', backend='rorem',
+                              name=worker.MODEL, model_version='new', adapter_version=1,
+                              runtime_compatibility=['runtime-v1'])
+            with self.assertRaisesRegex(ValueError, 'Untrusted executable'):
+                worker.package_metadata(dict(backend='rorem', model_dir=str(root),
+                                             model_package=dict(path=str(root), manifest=descriptor)))
+
     def test_rejects_oversize_before_loading_pixels(self):
         with tempfile.TemporaryDirectory() as temp:
             request = Path(temp) / "request.json"

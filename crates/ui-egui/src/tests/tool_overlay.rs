@@ -203,6 +203,31 @@ fn view_menu_and_remove_panel_choose_the_tool_overlay() {
     assert_eq!(h.app.ui.tool_overlay, ToolOverlay::Selected);
 }
 
+/// A missing AI folder may be reported between press frames. Its full diagnostic belongs
+/// in model management and must never push the tool overlay controls out of the sidebar.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn ai_store_diagnostics_leave_remove_controls_in_place() {
+    let mut h = three_spots();
+    h.app.session.ai_models = Default::default();
+    h.app.session.ai_models.snapshot = json!({"models":[],"defaults":{"selected_model_id":null}});
+    h.app.session.ai_models.message = "Working…".into();
+    h.step();
+    let rect = |h: &Headless| h.app.widgets.iter().rev().find(|(id, _)| id == "dropdown:toolOverlay").map(|(_, r)| *r);
+    let before = rect(&h).expect("tool overlay is visible before the missing-folder diagnostic");
+    h.app.session.ai_models.message = format!(
+        "AI model folder is unavailable: /Volumes/{}/AI. Choose a mounted folder in Manage models.",
+        "A very long disconnected volume path/".repeat(8)
+    );
+    h.step();
+    assert_eq!(rect(&h), Some(before), "asynchronous AI diagnostics must not move or hide classic Remove controls");
+    let r = h.request("ui.clickWidget", json!({"id":"dropdown:toolOverlay"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    let r = h.request("ui.clickWidget", json!({"id":"toolOverlay:selected"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(h.app.ui.tool_overlay, ToolOverlay::Selected);
+}
+
 /// Mask pins follow the same mode; Show Pins (`view.maskPins`) off still hides them all.
 #[test]
 fn mask_pins_follow_the_tool_overlay_and_show_pins() {

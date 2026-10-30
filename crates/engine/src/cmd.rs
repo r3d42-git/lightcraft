@@ -143,6 +143,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         let mut v = Vec::new();
         v.extend(edit::specs());
         v.extend(crate::ai_remove::specs());
+        #[cfg(not(target_arch = "wasm32"))]
+        v.extend(crate::ai_models::specs());
         v.extend(library::specs());
         v.extend(develop::specs());
         v.extend(color::specs());

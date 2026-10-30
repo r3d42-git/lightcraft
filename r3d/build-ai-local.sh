@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Optimized private arm64 bundle with embedded AI models. Does not install or publish.
+# Optimized private arm64 bundle using the external AI store. Does not install or publish.
 set -euo pipefail
 source "$(dirname "$0")/dev-env.sh"
 R3D_AI_INSTALLED="${R3D_AI_INSTALLED:-/Applications/LightCraft R3D.app}"
-R3D_AI_RUNTIME="${R3D_AI_RUNTIME:-$R3D_PROJECT/test-runtime/ai-retouch-dev}"
 R3D_AI_ARTIFACTS="${R3D_AI_ARTIFACTS:-$R3D_PROJECT/artifacts/ai-retouch-install-20261030}"
-R3D_AI_STAGING="$R3D_AI_ARTIFACTS/packaging-input"
-R3D_AI_APP="$R3D_AI_ARTIFACTS/LightCraft R3D.app"
-export LIGHTCRAFT_VERSION="${LIGHTCRAFT_VERSION:-0.15.0-r3d-ai-retouch}"
+R3D_AI_STAGING="${R3D_AI_STAGING:-$R3D_SCRATCH_ROOT/lightcraft/packaging-$R3D_INSTANCE}"
+R3D_AI_APP="${R3D_AI_APP:-$R3D_SCRATCH_ROOT/lightcraft/apps-$R3D_INSTANCE/LightCraft R3D.app}"
+R3D_AI_DIST="${R3D_AI_DIST:-$R3D_SCRATCH_ROOT/lightcraft/dist-$R3D_INSTANCE}"
+r3d_validate_scratch_paths "$R3D_AI_STAGING" "$R3D_AI_APP" "$R3D_AI_DIST"
+export LIGHTCRAFT_VERSION="${LIGHTCRAFT_VERSION:-0.15.0-r3d-ai-external}"
 export LIGHTCRAFT_BUILD_SHA="$(git -C "$R3D_SOURCE" rev-parse HEAD)"
 export LIGHTCRAFT_BUILD_DATE="$(date -u +%Y-%m-%d)"
 export MACOSX_DEPLOYMENT_TARGET=11.0
@@ -18,16 +19,16 @@ fi
 test -x "$CARGO_TARGET_DIR/release/lightcraft"
 test ! -e "$R3D_AI_STAGING"
 test ! -e "$R3D_AI_APP"
-mkdir -p "$R3D_AI_STAGING/debug"
+mkdir -p "$R3D_AI_STAGING/debug" "$R3D_AI_ARTIFACTS"
 for binary in lightcraft lightcraft-cli; do
   cp "$CARGO_TARGET_DIR/release/$binary" "$R3D_AI_ARTIFACTS/$binary"
   ln -s "$R3D_AI_ARTIFACTS/$binary" "$R3D_AI_STAGING/debug/$binary"
 done
 # Native packaging is reused for the optimized binaries; its dev-app switch stops
 # before distribution containers/notarization. Restore the actual installed identity below.
-CARGO_TARGET_DIR="$R3D_AI_STAGING" DIST="$R3D_AI_ARTIFACTS/dist" MACOS_SIGN_IDENTITY=- \
+CARGO_TARGET_DIR="$R3D_AI_STAGING" DIST="$R3D_AI_DIST" MACOS_SIGN_IDENTITY=- \
   bash packaging/macos/package.sh --arch aarch64 --skip-build --dev-app
-python3 tools/ai_retouch/package_runtime.py embed --runtime "$R3D_AI_RUNTIME" \
+python3 tools/ai_retouch/package_runtime.py embed \
   --worker "$R3D_SOURCE/tools/ai_retouch/worker.py" --app "$R3D_AI_STAGING/macos-package/LightCraft R3D.app"
 python3 - "$R3D_AI_INSTALLED/Contents/Info.plist" "$R3D_AI_STAGING/macos-package/LightCraft R3D.app/Contents/Info.plist" <<'PY'
 import os,plistlib,sys
@@ -44,5 +45,5 @@ codesign --force --sign - --timestamp=none --options runtime \
 codesign --verify --strict --deep "$R3D_AI_STAGING/macos-package/LightCraft R3D.app"
 python3 tools/ai_retouch/package_runtime.py copy-app \
   --source "$R3D_AI_STAGING/macos-package/LightCraft R3D.app" --destination "$R3D_AI_APP"
-python3 tools/ai_retouch/package_runtime.py validate --runtime "$R3D_AI_APP/Contents/Resources/ai-retouch"
+test -f "$R3D_AI_APP/Contents/Resources/ai-retouch-worker.py"
 printf '%s\n' "$R3D_AI_APP"

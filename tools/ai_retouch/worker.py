@@ -37,7 +37,7 @@ def local_path(value, root):
 
 
 def read_request(request_path):
-    if request_path.stat().st_size > 16384:
+    if request_path.stat().st_size > 1024 * 1024:
         raise ValueError("Request is too large")
     request = json.loads(request_path.read_text())
     w, h = request.get("width"), request.get("height")
@@ -64,7 +64,38 @@ def read_request(request_path):
         if path.stat().st_size != length:
             raise ValueError("Invalid " + key + " byte length")
     local_path(request["output"], root)
+    package_metadata(request)
     return request
+
+
+def package_metadata(request):
+    """Validate the adapter contract; legacy requests retain their pinned revisions."""
+    package = request.get('model_package')
+    if package is None:
+        return None
+    model_dir = Path(request['model_dir']).resolve()
+    data = package.get('manifest', {})
+    if (Path(package.get('path', '')).resolve() != model_dir
+            or data.get('version') != 1 or data.get('kind') != 'model'
+            or data.get('backend') != request.get('backend', 'rorem')
+            or data.get('adapter_version') != 1
+            or not isinstance(data.get('model_version'), str) or not data['model_version']
+            or not data.get('id') or not data.get('runtime_compatibility')):
+        raise ValueError('Incompatible model package adapter')
+    backend = data['backend']
+    supported = {'lama': LAMA_MODEL, 'rorem': MODEL, 'objectclear': OBJECTCLEAR_MODEL}
+    if backend not in supported:
+        raise ValueError('Unsupported model package family')
+    if data.get('name') != supported[backend]:
+        raise ValueError('Unsupported model package family')
+    # Never execute arbitrary Python/native modules from a model revision.
+    for path in model_dir.rglob('*'):
+        if path.suffix in ('.py', '.pyc', '.so', '.dylib'):
+            relative = path.relative_to(model_dir).as_posix()
+            allowed = backend == 'objectclear' and relative.startswith('code/') and relative[5:] in OBJECTCLEAR_SOURCES
+            if not allowed:
+                raise ValueError('Untrusted executable model file')
+    return data
 
 
 def matrices(np):
@@ -154,8 +185,9 @@ def rorem(encoded, mask, request, model_dir, np):
     from diffusers import AutoPipelineForInpainting
     if not torch.backends.mps.is_available():
         raise RuntimeError("Apple Metal is unavailable for AI retouch")
-    manifest = json.loads((model_dir / "lightcraft-model.json").read_text())
-    if manifest != {"model": MODEL, "revision": REVISION}:
+    package = package_metadata(request)
+    manifest = None if package else json.loads((model_dir / "lightcraft-model.json").read_text())
+    if package is None and manifest != {"model": MODEL, "revision": REVISION}:
         raise ValueError("The installed retouch model does not match this worker")
     h, w = mask.shape
     # Padding, rather than stretching, preserves scene geometry.
@@ -178,14 +210,14 @@ def rorem(encoded, mask, request, model_dir, np):
     return np.asarray(result.convert("RGB"))[:h, :w]
 
 
-def lama(encoded, mask, model_dir, np):
+def lama(encoded, mask, model_dir, np, package=None):
     import hashlib
     import onnxruntime as ort
     from PIL import Image
-    manifest = json.loads((model_dir / "manifest.json").read_text())
+    manifest = None if package else json.loads((model_dir / "manifest.json").read_text())
     expected = {"model": LAMA_MODEL, "revision": LAMA_REVISION, "sha256": LAMA_SHA256}
     model_path = model_dir / "lama_fp32.onnx"
-    if manifest != expected or hashlib.sha256(model_path.read_bytes()).hexdigest() != LAMA_SHA256:
+    if package is None and (manifest != expected or hashlib.sha256(model_path.read_bytes()).hexdigest() != LAMA_SHA256):
         raise ValueError("The installed LaMa model does not match this worker")
     h, w = mask.shape
     scale = min(1.0, 512 / max(w, h))
@@ -209,14 +241,21 @@ def lama(encoded, mask, model_dir, np):
                      for c in range(3)], axis=-1).clip(0, 255)
 
 
-def verify_objectclear(model_dir):
+def verify_objectclear(model_dir, package=None):
     import hashlib
-    manifest = json.loads((model_dir / "lightcraft-model.json").read_text())
+    manifest = None if package else json.loads((model_dir / "lightcraft-model.json").read_text())
     expected = {"model": OBJECTCLEAR_MODEL, "revision": OBJECTCLEAR_REVISION,
                 "source_revision": OBJECTCLEAR_SOURCE_REVISION, "variant": "fp16"}
-    if manifest != expected:
+    if package is None and manifest != expected:
         raise ValueError("The installed ObjectClear model does not match this worker")
     code = model_dir / "code"
+    if package is not None and package.get('code_pins') != OBJECTCLEAR_SOURCES:
+        raise ValueError('The installed ObjectClear code does not match this worker')
+    actual_sources = {p.relative_to(code).as_posix() for p in code.rglob('*')
+                      if p.is_file() and p.suffix in ('.py', '.pyc', '.so', '.dylib')}
+    expected_sources = {p for p in OBJECTCLEAR_SOURCES if p.endswith('.py')}
+    if actual_sources != expected_sources:
+        raise ValueError('The installed ObjectClear code does not match this worker')
     for relative, digest in OBJECTCLEAR_SOURCES.items():
         if hashlib.sha256((code / relative).read_bytes()).hexdigest() != digest:
             raise ValueError("The installed ObjectClear code does not match this worker")
@@ -226,7 +265,7 @@ def verify_objectclear(model_dir):
 def objectclear(encoded, mask, request, model_dir, np):
     # Verify the small pinned custom module before importing it. The parent never
     # supplies arbitrary module names and this worker never fetches remote code.
-    code = verify_objectclear(model_dir)
+    code = verify_objectclear(model_dir, package_metadata(request))
     sys.path.insert(0, str(code))
     import torch
     from PIL import Image
@@ -273,9 +312,10 @@ def run(request):
         raise ValueError("The selection is empty")
     model_dir = Path(request["model_dir"]).resolve()
     backend = request.get("backend", "rorem")
+    package = package_metadata(request)
     encoded, scale = prepare(source, np)
     if backend == "lama":
-        generated = lama(encoded, mask, model_dir, np)
+        generated = lama(encoded, mask, model_dir, np, package)
         rgb = restore(generated, scale, np)
         model, revision, seed = LAMA_MODEL, LAMA_REVISION, 0
     elif backend == "rorem":
@@ -288,6 +328,8 @@ def run(request):
         model, revision, seed = OBJECTCLEAR_MODEL, OBJECTCLEAR_REVISION, request.get("seed", 42)
     else:
         raise ValueError("Unsupported retouch model")
+    if package is not None:
+        revision = package['model_version']
     # Preserve exact source pixels wherever selection is zero, independently of model behavior.
     rgb[mask == 0] = source[mask == 0]
     rgba = np.concatenate((rgb, (mask.astype(np.float32) / 255)[..., None]), axis=2)

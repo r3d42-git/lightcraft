@@ -15,6 +15,8 @@
 extern crate lightcraft_denoise_core as lightcraft_denoise;
 
 pub mod activity;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ai_models;
 pub mod ai_remove;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod apple_photos;
@@ -331,6 +333,8 @@ pub struct Session {
     /// Selected spot (Remove panel), by index into the active photo's spots.
     pub active_spot: Option<usize>,
     pub ai_remove: ai_remove::AiRemove,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub ai_models: ai_models::Store,
     /// The persistent library this session writes to (`None` = in-memory only).
     pub library: Option<library::Library>,
     /// Identity of current library opening; refreshed only after a successful open.
@@ -510,6 +514,8 @@ impl Session {
             segmenter: segment::Segmenter::default(),
             active_spot: None,
             ai_remove: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            ai_models: Default::default(),
             library: None,
             library_identity: Arc::new(()),
             xmp: sidecar::XmpPrefs::default(),

@@ -407,94 +407,107 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             });
         });
     }
-    divider(ui);
-    padded(ui, |ui| {
-        let t = Tokens::get(ui.ctx());
-        ui.spacing_mut().item_spacing.y = 6.0;
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new(crate::i18n::tr("AI model")).font(t.semibold(13.0)).color(t.text_label));
-        let busy = app.session.ai_remove.busy();
-        let backend_key = egui::Id::unique("ai-remove-backend");
-        let mut backend = ui.data(|data| data.get_temp::<String>(backend_key)).unwrap_or_else(|| "objectclear".into());
-        ui.add_enabled_ui(!busy, |ui| {
-            let response = crate::widgets::combo_box("ai-remove-model")
-                .width(ui.available_width())
-                .selected_text(match backend.as_str() {
-                    "objectclear" => "ObjectClear",
-                    "rorem" => "RORem",
-                    _ => "LaMa",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut backend, "objectclear".into(), "ObjectClear")
-                        .on_hover_text(crate::i18n::tr("Removes objects and reconstructs the background. May invent details."));
-                    ui.selectable_value(&mut backend, "lama".into(), "LaMa")
-                        .on_hover_text(crate::i18n::tr("Reconstructs backgrounds and structures. Fast alternative for object removal."));
-                    ui.selectable_value(&mut backend, "rorem".into(), "RORem")
-                        .on_hover_text(crate::i18n::tr("Diffusion model for alternative results. Slower; may invent new details."));
+    // Model selection and AI job controls belong to the AI brush, not classic spot tools.
+    if ai_mode {
+        divider(ui);
+        padded(ui, |ui| {
+            let t = Tokens::get(ui.ctx());
+            ui.spacing_mut().item_spacing.y = 6.0;
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(crate::i18n::tr("AI model")).font(t.semibold(13.0)).color(t.text_label));
+            let busy = app.session.ai_remove.busy();
+            #[cfg(target_arch = "wasm32")]
+            let model_id = String::new();
+            #[cfg(not(target_arch = "wasm32"))]
+            let model_id = {
+                let status = app.session.execute("aiModels.status", &json!({})).unwrap_or_default();
+                let store = &status["store"];
+                let models = store["models"].as_array().cloned().unwrap_or_default();
+                let selected = store["defaults"]["selected_model_id"].as_str().unwrap_or_default();
+                let model_id = selected.to_owned();
+                let label = models
+                    .iter()
+                    .find(|m| m["id"] == selected)
+                    .map(ai_model_label)
+                    .unwrap_or_else(|| crate::i18n::tr("No installed AI model").to_owned());
+                let response = crate::widgets::combo_box("ai-remove-model").width(ui.available_width()).selected_text(label).show_ui(ui, |ui| {
+                    for model in &models {
+                        if let Some(id) = model["id"].as_str() {
+                            let label = ai_model_label(model);
+                            if ui
+                                .add_enabled(!busy && status["running"] != true, egui::Button::selectable(id == selected, label))
+                                .on_hover_text(ai_model_details(model))
+                                .clicked()
+                            {
+                                let _ = app.run("aiModels.setDefault", json!({"id":id}));
+                            }
+                        }
+                    }
                 });
-            crate::widgets::name_combo(&response.response, crate::i18n::tr("AI model"));
-            crate::widgets::register(ui, "aiRemoveModel", response.response.rect);
-        });
-        ui.data_mut(|data| data.insert_temp(backend_key, backend.clone()));
-        ui.label(
-            egui::RichText::new(crate::i18n::tr(match backend.as_str() {
-                "objectclear" => "Object removal · recommended",
-                "rorem" => "Alternative reconstruction · slower",
-                _ => "Background reconstruction · fast",
-            }))
-            .size(11.0)
-            .color(t.text_dim),
-        );
-        ui.add_space(8.0);
-        if ui
-            .add_enabled_ui((app.session.ai_remove.selection.is_some() || sel.is_some()) && !busy, |ui| {
-                ui.add_sized([ui.available_width(), 34.0], egui::Button::new(crate::i18n::tr("Remove selected area")))
-            })
-            .inner
-            .clicked()
-            && let Err(e) = app.run("aiRemove.start", json!({"backend":backend}))
-        {
-            app.toast(ui.ctx(), e);
-        }
-        if app.session.ai_remove.selection.is_some()
-            && ui.add_sized([ui.available_width(), 28.0], egui::Button::new(crate::i18n::tr("Clear AI selection"))).clicked()
-        {
-            let _ = app.run("aiRemove.clearSelection", json!({}));
-        }
-        let message = app.session.ai_remove.message.clone();
-        if !message.is_empty() {
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(crate::i18n::tr(&message)).size(12.0).color(t.text_dim));
-        }
-        if busy {
-            ui.spinner();
-            if ui.add_sized([ui.available_width(), 28.0], egui::Button::new(crate::i18n::tr("Cancel AI Remove"))).clicked() {
-                let _ = app.run("aiRemove.cancel", json!({}));
-            }
-        }
-        if app.session.ai_remove.draft.is_some() {
-            ui.add_space(10.0);
-            divider(ui);
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(crate::i18n::tr("Preview shown on the photo. Accept to keep the result.")).size(12.0).color(t.text_dim));
-            let mut original = app.session.ai_remove.preview_original;
-            let response = ui.checkbox(&mut original, crate::i18n::tr("Show photo without AI draft"));
-            crate::widgets::register(ui, "aiRemovePreviewOriginal", response.rect);
-            if response.changed() {
-                let _ = app.run("aiRemove.previewOriginal", json!({"enabled":original}));
-            }
-            ui.add_space(4.0);
-            if ui.add_sized([ui.available_width(), 34.0], egui::Button::new(crate::i18n::tr("Accept AI Remove"))).clicked()
-                && let Err(e) = app.run("aiRemove.accept", json!({}))
+                if let Some(model) = models.iter().find(|m| m["id"] == selected) {
+                    response.response.clone().on_hover_text(ai_model_details(model));
+                }
+                crate::widgets::name_combo(&response.response, crate::i18n::tr("AI model"));
+                crate::widgets::register(ui, "aiRemoveModel", response.response.rect);
+                // Store diagnostics can include long paths and arrive between pointer frames.
+                // Keep them in the management window so controls below this row stay in place.
+                ai_model_management(app, ui, &status);
+                if status["running"] == true {
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+                }
+                model_id
+            };
+            ui.add_space(8.0);
+            if ui
+                .add_enabled_ui((app.session.ai_remove.selection.is_some() || sel.is_some()) && !busy && !model_id.is_empty(), |ui| {
+                    ui.add_sized([ui.available_width(), 34.0], egui::Button::new(crate::i18n::tr("Remove selected area")))
+                })
+                .inner
+                .clicked()
+                && let Err(e) = app.run("aiRemove.start", json!({"modelId":model_id}))
             {
                 app.toast(ui.ctx(), e);
             }
-            if ui.add_sized([ui.available_width(), 28.0], egui::Button::new(crate::i18n::tr("Discard"))).clicked() {
-                let _ = app.run("aiRemove.cancel", json!({}));
+            if app.session.ai_remove.selection.is_some()
+                && ui.add_sized([ui.available_width(), 28.0], egui::Button::new(crate::i18n::tr("Clear AI selection"))).clicked()
+            {
+                let _ = app.run("aiRemove.clearSelection", json!({}));
             }
-        }
-        ui.add_space(6.0);
-    });
+            let message = app.session.ai_remove.message.clone();
+            if !message.is_empty() {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(crate::i18n::tr(&message)).size(12.0).color(t.text_dim));
+            }
+            if busy {
+                ui.spinner();
+                if ui.add_sized([ui.available_width(), 28.0], egui::Button::new(crate::i18n::tr("Cancel AI Remove"))).clicked() {
+                    let _ = app.run("aiRemove.cancel", json!({}));
+                }
+            }
+            if app.session.ai_remove.draft.is_some() {
+                ui.add_space(10.0);
+                divider(ui);
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(crate::i18n::tr("Preview shown on the photo. Accept to keep the result.")).size(12.0).color(t.text_dim));
+                let mut original = app.session.ai_remove.preview_original;
+                let response = ui.checkbox(&mut original, crate::i18n::tr("Show photo without AI draft"));
+                crate::widgets::register(ui, "aiRemovePreviewOriginal", response.rect);
+                if response.changed() {
+                    let _ = app.run("aiRemove.previewOriginal", json!({"enabled":original}));
+                }
+                ui.add_space(4.0);
+                if ui.add_sized([ui.available_width(), 34.0], egui::Button::new(crate::i18n::tr("Accept AI Remove"))).clicked()
+                    && let Err(e) = app.run("aiRemove.accept", json!({}))
+                {
+                    app.toast(ui.ctx(), e);
+                }
+                if ui.add_sized([ui.available_width(), 28.0], egui::Button::new(crate::i18n::tr("Discard"))).clicked() {
+                    let _ = app.run("aiRemove.cancel", json!({}));
+                }
+            }
+            ui.add_space(6.0);
+        });
+    }
     if !d.ai_edits.is_empty() {
         divider(ui);
         padded(ui, |ui| {
@@ -639,4 +652,105 @@ pub(super) fn red_eye(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             }
         });
     });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ai_model_management(app: &mut crate::LightcraftApp, ui: &mut egui::Ui, status: &serde_json::Value) {
+    let open_key = egui::Id::unique("ai-models-window-open");
+    let mut open = ui.data(|d| d.get_temp::<bool>(open_key)).unwrap_or(false);
+    let response = ui.button(crate::i18n::tr("Manage models…"));
+    crate::widgets::register(ui, "aiModelsManage", response.rect);
+    if response.clicked() {
+        open = true;
+    }
+    egui::Window::new(crate::i18n::tr("AI models"))
+        .id(egui::Id::unique("ai-models-window"))
+        .open(&mut open)
+        .default_width(520.0)
+        .resizable(true)
+        .show(ui.ctx(), |ui| {
+            egui::ScrollArea::vertical().max_height(650.0).show(ui, |ui| {
+                let store = &status["store"];
+                let running = status["running"] == true || app.session.ai_remove.busy();
+                ui.label(crate::i18n::tr("Runtimes are installed or repaired with the LightCraft installer."));
+                ui.label(store["root"].as_str().unwrap_or(crate::i18n::tr("AI model folder unavailable")));
+                ui.add_enabled_ui(!running, |ui| {
+                    for (label, widget, command) in [
+                        ("Choose existing AI store…", "aiModelsChooseRoot", "aiModels.setRoot"),
+                        ("Import model package…", "aiModelsImport", "aiModels.import"),
+                    ] {
+                        let response = ui.add_enabled(app.services.pick_folder.is_some(), egui::Button::new(crate::i18n::tr(label)));
+                        crate::widgets::register(ui, widget, response.rect);
+                        if response.clicked()
+                            && let Some(path) = app.services.pick_folder.as_mut().and_then(|f| f())
+                            && let Err(e) = app.run(command, json!({"path":path}))
+                        {
+                            app.toast(ui.ctx(), e);
+                        }
+                    }
+                    if ui.button(crate::i18n::tr("Refresh")).clicked() {
+                        let _ = app.run("aiModels.refresh", json!({}));
+                    }
+                    for model in store["models"].as_array().into_iter().flatten() {
+                        let id = model["id"].as_str().unwrap_or_default();
+                        ui.separator();
+                        ui.add(
+                            egui::Label::new(format!(
+                                "{} · {:.1} GiB",
+                                ai_model_label(model),
+                                model["bytes"].as_u64().unwrap_or(0) as f64 / 1073741824.0
+                            ))
+                            .wrap(),
+                        )
+                        .on_hover_text(ai_model_details(model));
+                        ui.label(crate::i18n::tr(model["status"].as_str().unwrap_or_default()));
+                        ui.horizontal(|ui| {
+                            if ui.button(crate::i18n::tr("Verify")).clicked() {
+                                let _ = app.run("aiModels.verify", json!({"id":id}));
+                            }
+                            if ui.button(crate::i18n::tr("Remove model")).clicked() {
+                                ui.data_mut(|d| d.insert_temp(egui::Id::unique(("ai-model-remove", id)), true));
+                            }
+                        });
+                        let confirm_id = egui::Id::unique(("ai-model-remove", id));
+                        if ui.data(|d| d.get_temp::<bool>(confirm_id)).unwrap_or(false) {
+                            ui.add(egui::Label::new(crate::i18n::tr("Remove this model from disk? Existing photo edits remain available.")).wrap());
+                            ui.horizontal(|ui| {
+                                if ui.button(crate::i18n::tr("Confirm removal")).clicked() {
+                                    let _ = app.run("aiModels.remove", json!({"id":id}));
+                                    ui.data_mut(|d| d.remove::<bool>(confirm_id));
+                                }
+                                if ui.button(crate::i18n::tr("Cancel")).clicked() {
+                                    ui.data_mut(|d| d.remove::<bool>(confirm_id));
+                                }
+                            });
+                        }
+                    }
+                });
+                if let Some(message) = status["message"].as_str().filter(|s| !s.is_empty()) {
+                    ui.label(message);
+                }
+            });
+        });
+    ui.data_mut(|d| d.insert_temp(open_key, open));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ai_model_label(model: &serde_json::Value) -> String {
+    let name = match model["backend"].as_str() {
+        Some("objectclear") => "ObjectClear",
+        Some("lama") => "LaMa",
+        Some("rorem") => "RORem",
+        _ => "AI",
+    };
+    format!("{} · {}", name, model["model_version"].as_str().unwrap_or_default().chars().take(8).collect::<String>())
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn ai_model_details(model: &serde_json::Value) -> String {
+    format!(
+        "{}\n{}\n{}",
+        model["name"].as_str().unwrap_or_default(),
+        model["model_version"].as_str().unwrap_or_default(),
+        model["id"].as_str().unwrap_or_default()
+    )
 }

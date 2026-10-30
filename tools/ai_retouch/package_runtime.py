@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Embed the already provisioned private AI runtime. Never downloads models.
+"""Package only the trusted AI worker. Never downloads or embeds model assets.
 
 Only embed/copy-app mutate destinations; both refuse to touch a running app.
 Runtime signatures are ad-hoc for this local test, not distribution signatures.
@@ -120,7 +120,7 @@ def sign_runtime(root):
     return len(binaries)
 
 
-def validate(root, without_models=False):
+def validate(root, without_models=False, worker_path=None):
     root = root.resolve(strict=True)
     audit_links(root)
     if (root / 'pyvenv.cfg').exists():
@@ -152,7 +152,7 @@ print(json.dumps(dict(prefix=sys.prefix,base_prefix=sys.base_prefix,generated_te
             if path.stat().st_size != item['size'] or digest(path) != item['sha256']:
                 raise ValueError(f'Packaged file integrity mismatch: {path}')
     # Load only worker definitions: no model loading, GPU work or external tools.
-    worker = runpy.run_path(str(root/'worker.py'), run_name='packaging_validation')
+    worker = runpy.run_path(str(worker_path or root/'worker.py'), run_name='packaging_validation')
     if not without_models:
         expected = {'model': worker['MODEL'], 'revision': worker['REVISION']}
         if json.loads((root/'model/lightcraft-model.json').read_text()) != expected:
@@ -168,55 +168,17 @@ print(json.dumps(dict(prefix=sys.prefix,base_prefix=sys.base_prefix,generated_te
 
 
 def embed(args):
-    runtime = args.runtime.resolve(strict=True)
+    """Normal builds copy only the trusted worker; external assets are untouched."""
     worker = args.worker.resolve(strict=True)
     app = args.app.resolve()
     assert_closed(app)
-    if not (runtime/'lib/python3.11/os.py').is_file():
-        raise ValueError('Expected standalone CPython 3.11 runtime')
-    destination = app/'Contents/Resources/ai-retouch'
+    destination = app / 'Contents/Resources/ai-retouch-worker.py'
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists():
-        raise ValueError('Embed only into a freshly assembled app; old runtime exists')
-    with tempfile.TemporaryDirectory(prefix='.ai-retouch-', dir=destination.parent) as temporary:
-        stage = Path(temporary)/'runtime'
-        stage.mkdir()
-        (stage/'bin').mkdir()
-        copies = [clone_copy(runtime/'bin/python3.11', stage/'bin/python3.11'),
-                  clone_copy(runtime/'lib', stage/'lib')]
-        for name in ('python', 'python3'):
-            (stage/'bin'/name).symlink_to('python3.11')
-        if not args.without_models:
-            for name in ('model', 'lama', 'objectclear'):
-                copies.append(clone_copy(runtime/name, stage/name))
-        # All source wheel license texts remain inside their dist-info dirs;
-        # additional model/source licenses are included beside the worker.
-        licenses = Path(__file__).parent/'licenses'
-        if licenses.is_dir():
-            copies.append(clone_copy(licenses, stage/'licenses'))
-        for path in sorted(paths(stage), key=lambda p: len(p.parts), reverse=True):
-            if path.is_dir() and path.name in EXCLUDE:
-                shutil.rmtree(path)
-        shutil.copy2(worker, stage/'worker.py')
-        audit_links(stage)
-        signed = sign_runtime(stage)
-        info = validate(stage, args.without_models)
-        entries = []
-        for path in paths(stage):
-            if path.is_file() and not path.is_symlink():
-                entries.append(dict(path=str(path.relative_to(stage)), size=path.stat().st_size,
-                                    sha256=digest(path)))
-        manifest = dict(format=1, model_folders=[] if args.without_models else ['model','lama','objectclear'],
-                        copy_methods=sorted(set(copies)), macho_files_signed=signed,
-                        worker_sha256=digest(stage/'worker.py'), files=entries,
-                        logical_bytes=sum(x['size'] for x in entries))
-        (stage/'package-manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
-        stage.rename(destination)
-    # Prefix changes with relocation; validate again at final bundle path.
-    info = validate(destination, args.without_models)
-    print(json.dumps(dict(runtime=str(destination), validation=info,
-                         logical_bytes=manifest['logical_bytes'],
-                         macho_files_signed=signed, copy_methods=manifest['copy_methods']), indent=2))
+    if (destination.parent / 'ai-retouch').exists():
+        raise ValueError('Build a fresh app: legacy embedded runtime is present')
+    shutil.copy2(worker, destination)
+    print(json.dumps(dict(worker=str(destination), bytes=destination.stat().st_size,
+                         sha256=digest(destination), external_assets_touched=False)))
 
 
 def copy_app(args):
@@ -247,7 +209,7 @@ def copy_app(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command',required=True)
-    p=sub.add_parser('embed');p.add_argument('--runtime',type=Path,required=True)
+    p=sub.add_parser('embed');p.add_argument('--runtime',type=Path,help='Deprecated; external assets are never read')
     p.add_argument('--worker',type=Path,required=True);p.add_argument('--app',type=Path,required=True)
     p.add_argument('--without-models',action='store_true',help='Temporary runtime relocation verification only')
     p.set_defaults(action=embed)
