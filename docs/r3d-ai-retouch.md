@@ -49,7 +49,7 @@ Modelländerungen außerhalb der Auswahl werden verworfen.
 
 Gespeichert werden komprimierte lineare RGBA-Patches, Quellkoordinaten,
 Modellrevision und Seed. Die Komposition erfolgt vor Geometrie, Weißabgleich
-und Tonwerten. Der Katalog verwendet Format 11. Retuschen werden nicht über
+und Tonwerten. Der Katalog verwendet Format 12. Retuschen werden nicht über
 Presets oder Auto-Sync auf andere Fotos übertragen. Alte Kreis-Auswahlen behalten
 bei Deserialisierung ihre Semantik; neue Auswahlen verbinden die Punkte lückenlos.
 Der Pipeline-Cache unterscheidet beide Maskenformen.
@@ -120,8 +120,12 @@ keine Bildschirmaufnahmen des macOS-Compositors.
 
 ## Verbleibende Grenzen
 
-- Erzeugung bei aktiver nichtaffiner Optik-/Perspektivkorrektur wird derzeit
-  abgelehnt. Vorhandene Patches folgen späteren Geometrieänderungen.
+- Optik und Perspektive bleiben beim Erzeugen aktiv. Der Auswahlstrich speichert
+  die aufgelöste grüne Objektiv-/Perspektivgeometrie; seine exakte Begrenzung und
+  nach innen gerichtete weiche Kante werden im Quellbild ausgewertet. Generierte
+  und ursprüngliche Pixel erhalten anschließend gemeinsam Optik, CA und Tonwerte.
+  Der Patch bleibt auch nach späteren Geometrieänderungen am selben Quellmotiv.
+  Nicht invertierbare oder beschädigte Geometrie autorisiert keine Pixeländerung.
 - Ein zusammenhängender Auswahlstrich; automatische Objekt-/Schattenauswahl,
   additive Striche, Hintergrundtausch und generatives Ersetzen sind noch offen.
 - SDR-Modellkonvertierung begrenzt negative und außerhalb sRGB liegende Werte.
@@ -146,6 +150,6 @@ Aussagen zur noch ausstehenden Installationsfreigabe sind damit historisch.
 Laufzeit und Modellen. Es übernimmt Kennung, produktive Datenpfade und
 Sprachdeklarationen der installierten R3D-App; installiert/veröffentlicht selbst
 nichts. Vor Austausch ist ein gemeinsam verifizierter Rückrollsatz aus App,
-Bibliothek und vollständiger Konfiguration erforderlich. Katalogformat 11 ist
+Bibliothek und vollständiger Konfiguration erforderlich. Katalogformat 12 ist
 für alte Apps nicht lesbar; bei Rückkehr zum alten Stand den zusammengehörigen
 Katalog zurückspielen und zwischenzeitliche neue Bearbeitungen vorher sichern.

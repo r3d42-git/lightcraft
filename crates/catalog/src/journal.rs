@@ -54,6 +54,7 @@
 //! | 9 | preview-only recheck | `Photo.preview_checked`, `Op::SetContent.preview_checked` |
 //! | 10 | per-photo denoising | `DevelopSettings.denoise_model`, `Op::SetDenoiseState` |
 //! | 11 | local AI retouch | `DevelopSettings.ai_edits` |
+//! | 12 | geometry-aware AI retouch | frozen transformed brush support |
 //!
 //! Rules:
 //! - **Bump [`VERSION`]** (and add a row above) in the change that adds an [`Op`] variant or a
@@ -78,8 +79,8 @@ pub const LOG: &str = "catalog.log";
 const FORMAT: &str = "lightcraft-catalog";
 /// The catalog format this build writes (and the newest it reads). See the module docs →
 /// *Format versions*; bump it whenever an [`Op`] variant or a serialized field is added.
-// v11 persists AI retouch pixels. Earlier apps must not reopen and discard these fields.
-pub const VERSION: u32 = 11;
+// v12 persists frozen AI brush geometry. Earlier apps must not reopen and misplace its support.
+pub const VERSION: u32 = 12;
 
 /// When [`Journal::wants_snapshot`] says it's time to compact the log.
 #[derive(Clone, Copy, Debug)]

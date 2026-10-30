@@ -531,7 +531,13 @@ fn ai_edits_key(s: &DevelopSettings) -> u64 {
                     e.height,
                     &e.pixels,
                     e.support.as_ref().map(|s| {
-                        (s.radius.to_bits(), s.feather.to_bits(), s.continuous, s.points.iter().map(|p| p.map(f64::to_bits)).collect::<Vec<_>>())
+                        (
+                            s.radius.to_bits(),
+                            s.feather.to_bits(),
+                            s.continuous,
+                            s.points.iter().map(|p| p.map(f64::to_bits)).collect::<Vec<_>>(),
+                            format!("{:?}", s.geometry),
+                        )
                     }),
                 )
             })

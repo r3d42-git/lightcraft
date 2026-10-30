@@ -393,9 +393,6 @@ fn run_worker(
         let edited = lightcraft_pipeline::ai_edits::source_with_edits(&decoded.image, &d);
         let full = edited.as_ref();
         let frame = lightcraft_pipeline::frame_for(full, decoded.info.as_ref().unwrap_or(&info), &d, false);
-        if frame.warp.is_some() {
-            return Err("This prototype needs lens geometry and perspective disabled before AI Remove.".into());
-        }
         let radius = spot.size * full.width.max(full.height) as f64;
         if !radius.is_finite() || radius <= 0.0 || spot.points.is_empty() || spot.points.len() > 4096 {
             return Err("Invalid brush mask.".into());
@@ -405,12 +402,25 @@ fn run_worker(
             if !p.x.is_finite() || !p.y.is_finite() {
                 return Err("Invalid brush point.".into());
             }
-            let (x, y) = d.orientation.inverse().map(p.x * frame.ow, p.y * frame.oh, frame.ow, frame.oh);
+            let (x, y) = (p.x * frame.ow, p.y * frame.oh);
             bounds[0] = bounds[0].min(x - radius);
             bounds[1] = bounds[1].min(y - radius);
             bounds[2] = bounds[2].max(x + radius);
             bounds[3] = bounds[3].max(y + radius);
         }
+        // Bound the entire transformed brush rectangle through the nonlinear warp. Mapping
+        // only centres (or a few boundary points) could clip curved capsule support.
+        let oriented = frame.warp.as_ref().map_or(Some(bounds), |warp| warp.source_bounds(bounds)).unwrap_or([0.0, 0.0, frame.ow, frame.oh]);
+        bounds = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        for (x, y) in [(oriented[0], oriented[1]), (oriented[0], oriented[3]), (oriented[2], oriented[1]), (oriented[2], oriented[3])] {
+            let (x, y) = d.orientation.inverse().map(x, y, frame.ow, frame.oh);
+            bounds[0] = bounds[0].min(x);
+            bounds[1] = bounds[1].min(y);
+            bounds[2] = bounds[2].max(x);
+            bounds[3] = bounds[3].max(y);
+        }
+        let support = lightcraft_pipeline::ai_edits::brush_support(&frame, &spot, continuous);
+        let brush = lightcraft_pipeline::ai_edits::BrushSupport::new(&support, full.width, full.height);
         let [x0, y0, x1, y1] = context_rect(bounds, full.width, full.height).ok_or_else(|| "The mask is outside the photo.".to_string())?;
         let scale = (1024.0 / (x1 - x0).max(y1 - y0)).min(1.0);
         let (w, h) = (((x1 - x0) * scale).ceil() as usize, ((y1 - y0) * scale).ceil() as usize);
@@ -429,19 +439,16 @@ fn run_worker(
             }
         }
         let mut mask = vec![0u8; w.saturating_mul(h)];
-        let points: Vec<_> = spot.points.iter().map(|p| [p.x * frame.ow, p.y * frame.oh]).collect();
-        // Evaluate the capsule union in transformed space; orientation preserves the radius.
+        // Evaluate exact frozen transformed support at each source-space inference sample.
         for (i, m) in mask.iter_mut().enumerate() {
             if i % 1024 == 0 && cancel.load(Ordering::Relaxed) {
                 return Err("Cancelled.".into());
             }
-            let (x, y) = d.orientation.map(
-                x0 + ((i % w) as f64 + 0.5) * (x1 - x0) / w as f64,
-                y0 + ((i / w) as f64 + 0.5) * (y1 - y0) / h as f64,
-                full.width as f64,
-                full.height as f64,
-            );
-            if lightcraft_develop::ai_edit::brush_distance(&points, [x, y], continuous) <= radius {
+            let point = [
+                (x0 + ((i % w) as f64 + 0.5) * (x1 - x0) / w as f64) / full.width as f64,
+                (y0 + ((i / w) as f64 + 0.5) * (y1 - y0) / h as f64) / full.height as f64,
+            ];
+            if brush.alpha(point, full.width, full.height) > 0.0 {
                 *m = 255;
             }
         }
@@ -519,19 +526,7 @@ fn run_worker(
                 id: 0,
                 enabled: true,
                 rect,
-                support: Some(lightcraft_develop::ai_edit::AiBrushSupport {
-                    continuous,
-                    points: spot
-                        .points
-                        .iter()
-                        .map(|p| {
-                            let (x, y) = d.orientation.inverse().map(p.x * frame.ow, p.y * frame.oh, frame.ow, frame.oh);
-                            [x / full.width as f64, y / full.height as f64]
-                        })
-                        .collect(),
-                    radius: spot.size,
-                    feather: 0.15,
-                }),
+                support: Some(support),
                 width: w as u32,
                 height: h as u32,
                 pixels: String::new(),
@@ -601,6 +596,70 @@ mod tests {
         s.ai_remove.tag = s.ai_remove_tag();
         s.ai_remove.draft = Some(edit);
         s.ai_remove.spot = Some(0);
+    }
+    #[test]
+    #[cfg(unix)]
+    fn active_lens_corrections_reach_worker_without_disabling_settings() {
+        use std::os::unix::fs::PermissionsExt;
+        struct Runtime(std::path::PathBuf);
+        impl Runtime {
+            fn path(&self) -> &std::path::Path {
+                &self.0
+            }
+        }
+        impl Drop for Runtime {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let runtime = Runtime(std::env::temp_dir().join(format!("lc-ai-geometry-test-{}", std::process::id())));
+        std::fs::create_dir(runtime.path()).unwrap();
+        std::fs::create_dir(runtime.path().join("bin")).unwrap();
+        let launcher = runtime.path().join("bin/python3");
+        // A deterministic protocol worker proves optics reaches inference without a model.
+        // Deliberately overbroad worker alpha must be replaced by the authorized mask.
+        let pixels: Vec<u8> = (0..128 * 96).flat_map(|_| [0.8f32, 0.7, 0.6, 1.0].into_iter().flat_map(f32::to_le_bytes)).collect();
+        std::fs::write(runtime.path().join("pixels.rgba"), pixels).unwrap();
+        std::fs::write(
+            &launcher,
+            r#"#!/bin/sh
+cp "$(dirname "$0")/../pixels.rgba" "$(dirname "$5")/output.rgba"
+printf '%s' '{"version":1,"width":128,"height":96,"model":"test","model_version":"geometry-1"}' > "$5"
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut settings = DevelopSettings::default();
+        settings.optics.lens_profile = true;
+        settings.optics.remove_ca = true;
+        settings.optics.ca_red = 30.0;
+        settings.optics.vignetting = 40.0;
+        let lens = lightcraft_develop::EmbeddedLens {
+            warp: Some(lightcraft_develop::EmbeddedWarp {
+                planes: [[1.0, 0.18, 0.0, 0.0, 0.0, 0.0]; 3],
+                center: lightcraft_geom::Point::new(0.5, 0.5),
+                radius: 0.5,
+            }),
+            ..Default::default()
+        };
+        let info = lightcraft_pipeline::SourceInfo { lens: Some(lens), ..Default::default() };
+        let original = settings.clone();
+        let source = crate::media::SourceRef::Loaded(Box::new(crate::media::DecodedSource::new(
+            std::sync::Arc::new(lightcraft_raster::Rgb32f::from_fn(128, 96, |_, _| [0.1, 0.2, 0.3])),
+            Some(info.clone()),
+        )));
+        let spot = Spot { points: vec![lightcraft_geom::Point::new(0.8, 0.25)], size: 0.04, ..Default::default() };
+        let edit =
+            run_worker(runtime.path(), "lama", source, info, settings.clone(), spot, true, 0, &std::sync::atomic::AtomicBool::new(false)).unwrap();
+        assert!(edit.support.as_ref().unwrap().geometry.is_some());
+        assert_eq!(edit.model, "test");
+        let mut patched = settings.clone();
+        patched.ai_edits.push(edit);
+        let src = lightcraft_raster::Rgb32f::from_fn(128, 96, |_, _| [0.1, 0.2, 0.3]);
+        let result = lightcraft_pipeline::ai_edits::source_with_edits(&src, &patched);
+        assert!(result.data.iter().any(|p| p[0] > 0.5));
+        assert_eq!(result.get(0, 0), src.get(0, 0));
+        assert_eq!(settings, original);
     }
     #[test]
     fn invalid_backend_preserves_current_draft_and_edits() {

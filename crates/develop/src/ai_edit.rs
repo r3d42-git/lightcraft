@@ -20,9 +20,13 @@ impl std::fmt::Display for AiEditError {
 }
 impl std::error::Error for AiEditError {}
 
-/// Exact brush support in the EXIF-oriented source, independent of inference resolution.
+/// Exact brush support, independent of inference resolution. With geometry, points live
+/// in the frozen transformed frame; without it they retain legacy source-space semantics.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AiBrushSupport {
+    /// Resolved geometry at selection time. Missing preserves legacy source-space support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<AiSupportGeometry>,
     /// New brush paths connect points; missing/false preserves saved circle-only masks.
     #[serde(default, skip_serializing_if = "is_false")]
     pub continuous: bool,
@@ -32,6 +36,40 @@ pub struct AiBrushSupport {
     /// Fraction of the radius blended inward; zero preserves a hard boundary.
     #[serde(default)]
     pub feather: f64,
+}
+
+/// Frozen transformed-brush coordinate system. Only the green-channel positional warp is
+/// stored: gain and lateral CA affect rendering, never the authorization mask.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AiSupportGeometry {
+    pub orientation: lightcraft_geom::Orientation,
+    pub source_size: [u32; 2],
+    pub perspective: lightcraft_geom::Homography,
+    pub distortion: f64,
+    pub lens: Option<crate::EmbeddedLens>,
+    pub lens_distortion: f64,
+}
+
+impl AiSupportGeometry {
+    pub fn valid(&self) -> bool {
+        self.source_size.iter().all(|n| *n > 0 && *n <= 100_000)
+            && self.perspective.0.iter().all(|v| v.is_finite())
+            && self.perspective.inverse().is_some()
+            && self.distortion.is_finite()
+            && self.distortion.abs() <= 1.0
+            && self.lens_distortion.is_finite()
+            && (0.0..=2.0).contains(&self.lens_distortion)
+            && self.lens.is_none_or(|l| {
+                let valid =
+                    |center: lightcraft_geom::Point, radius: f64| center.x.is_finite() && center.y.is_finite() && radius.is_finite() && radius > 0.0;
+                l.warp.is_none_or(|w| valid(w.center, w.radius) && w.planes.iter().flatten().all(|v| v.is_finite()))
+                    && l.stages.iter().flatten().all(|w| {
+                        valid(w.center, w.radius)
+                            && w.planes.iter().flatten().all(|v| v.is_finite())
+                            && w.planes.iter().all(|p| p[17] >= 0.0 && p[18] >= p[17])
+                    })
+            })
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -93,7 +131,8 @@ impl AiEdit {
             return Err(AiEditError("AI retouch raster dimensions exceed limits"));
         }
         if let Some(support) = &self.support
-            && (support.points.is_empty()
+            && (support.geometry.as_ref().is_some_and(|g| !g.valid())
+                || support.points.is_empty()
                 || support.points.len() > 4096
                 || !support.points.iter().flatten().all(|v| v.is_finite())
                 || !support.radius.is_finite()
@@ -245,9 +284,48 @@ mod tests {
         assert_eq!(settings.ai_edits[0].decode_pixels().unwrap(), restored.ai_edits[0].decode_pixels().unwrap());
     }
     #[test]
+    fn geometry_snapshot_rejects_malformed_dimensions_transforms_and_lens_metadata() {
+        let valid = AiSupportGeometry {
+            orientation: lightcraft_geom::Orientation::Normal,
+            source_size: [6000, 4000],
+            perspective: lightcraft_geom::Homography::IDENTITY,
+            distortion: 0.0,
+            lens: None,
+            lens_distortion: 1.0,
+        };
+        assert!(valid.valid());
+        let mut invalid = valid.clone();
+        invalid.source_size[0] = 0;
+        assert!(!invalid.valid());
+        invalid = valid.clone();
+        invalid.perspective.0[0] = f64::NAN;
+        assert!(!invalid.valid());
+        invalid = valid.clone();
+        invalid.perspective.0 = [0.0; 9];
+        assert!(!invalid.valid());
+        invalid = valid.clone();
+        invalid.lens_distortion = 2.01;
+        assert!(!invalid.valid());
+        invalid = valid.clone();
+        invalid.distortion = f64::INFINITY;
+        assert!(!invalid.valid());
+        invalid = valid.clone();
+        invalid.lens = Some(crate::EmbeddedLens { warp: Some(crate::EmbeddedWarp::default()), ..Default::default() });
+        assert!(!invalid.valid(), "zero embedded radius is invalid");
+        let mut stage = crate::EmbeddedWarpStage { radius: 0.5, ..Default::default() };
+        stage.planes[1][17] = 1.0;
+        stage.planes[1][18] = 0.5;
+        invalid = valid;
+        invalid.lens = Some(crate::EmbeddedLens { stages: [Some(stage), None, None], ..Default::default() });
+        assert!(!invalid.valid(), "inverted radius range is invalid");
+        let mut e = edit();
+        e.support = Some(AiBrushSupport { geometry: Some(invalid), continuous: true, points: vec![[0.5, 0.5]], radius: 0.01, feather: 0.15 });
+        assert!(e.pixel_count().is_err());
+    }
+    #[test]
     fn brush_support_roundtrips_and_rejects_invalid_bounds() {
         let mut e = edit();
-        e.support = Some(AiBrushSupport { continuous: false, points: vec![[0.25, 0.5]], radius: 0.01, feather: 0.0 });
+        e.support = Some(AiBrushSupport { geometry: None, continuous: false, points: vec![[0.25, 0.5]], radius: 0.01, feather: 0.0 });
         let s = DevelopSettings { ai_edits: vec![e.clone()], ..Default::default() };
         assert_eq!(DevelopSettings::from_json(&s.to_json()).unwrap(), s);
         let mut legacy = s.to_json();

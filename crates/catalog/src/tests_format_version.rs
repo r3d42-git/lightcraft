@@ -239,8 +239,8 @@ fn op_variants_are_versioned() {
             Op::SetDenoiseState { .. } => 10,
         }
     }
-    /// v11: `DevelopSettings.ai_edits` stores non-destructive generated pixels.
-    const NEWEST_FIELDS: u32 = 11;
+    /// v12: AI brush support stores frozen lens/perspective geometry.
+    const NEWEST_FIELDS: u32 = 12;
     let newest = since(&Op::SetHistoryCursor { id: PhotoId(1), cursor: None });
     assert_eq!(newest.max(NEWEST_FIELDS), VERSION, "the newest op's or fields' version must be the current format version");
 }

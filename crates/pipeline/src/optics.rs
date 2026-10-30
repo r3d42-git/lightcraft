@@ -201,6 +201,58 @@ impl Warp {
         self.corrected_to_source(self.to_corrected(p), ch)
     }
 
+    /// Source → transformed green-plane geometry, for exact persisted brush support.
+    /// A bounded Newton solve in lens-corrected coordinates avoids approximating nonlinear
+    /// distortion by mapped centres/radii. Singular, non-finite or unconverged maps fail closed.
+    pub fn source_to_transformed(&self, source: Point) -> Option<Point> {
+        let mut p = source;
+        let epsilon = self.w.max(self.h) * 1e-6;
+        let tolerance = self.w.max(self.h) * 1e-10;
+        for _ in 0..24 {
+            let q = self.corrected_to_source(p, 1);
+            let (ex, ey) = (q.x - source.x, q.y - source.y);
+            if !ex.is_finite() || !ey.is_finite() {
+                return None;
+            }
+            if ex.hypot(ey) <= tolerance {
+                let transformed = self.from_corrected(p);
+                let back = self.to_source(transformed, 1);
+                if !transformed.x.is_finite() || !transformed.y.is_finite() || (back.x - source.x).hypot(back.y - source.y) > tolerance * 2.0 {
+                    return None;
+                }
+                // Check conditioning in final transformed coordinates, including perspective.
+                // A tiny residual must not hide large brush-space error near a fold/horizon.
+                let dx = self.to_source(Point::new(transformed.x + epsilon, transformed.y), 1);
+                let dy = self.to_source(Point::new(transformed.x, transformed.y + epsilon), 1);
+                let (a, b, c, d) = ((dx.x - back.x) / epsilon, (dy.x - back.x) / epsilon, (dx.y - back.y) / epsilon, (dy.y - back.y) / epsilon);
+                let det = a * d - b * c;
+                let inverse_norm = ((d.abs() + b.abs()).max(c.abs() + a.abs())) / det;
+                return (det.is_finite() && det > 1e-10 && inverse_norm.is_finite() && inverse_norm <= 100.0).then_some(transformed);
+            }
+            let dx = self.corrected_to_source(Point::new(p.x + epsilon, p.y), 1);
+            let dy = self.corrected_to_source(Point::new(p.x, p.y + epsilon), 1);
+            let (a, b, c, d) = ((dx.x - q.x) / epsilon, (dy.x - q.x) / epsilon, (dx.y - q.y) / epsilon, (dy.y - q.y) / epsilon);
+            let determinant = a * d - b * c;
+            if !determinant.is_finite() || determinant <= 1e-10 {
+                return None;
+            }
+            let (sx, sy) = ((d * ex - b * ey) / determinant, (a * ey - c * ex) / determinant);
+            // Damping bounds runaway steps from invalid or extreme lens metadata.
+            let factor = (self.w.max(self.h) * 0.25 / sx.hypot(sy)).min(1.0);
+            p = Point::new(p.x - sx * factor, p.y - sy * factor);
+        }
+        None
+    }
+
+    /// Conservative interval bound of a transformed rectangle in the oriented source.
+    /// Used only to choose inference context; exact mask authorization is evaluated separately.
+    pub fn source_bounds(&self, rect: [f64; 4]) -> Option<[f64; 4]> {
+        let (x, y) = self.to_corrected_real(Interval::new(rect[0], rect[2]), Interval::new(rect[1], rect[3]));
+        let (x, y) = self.corrected_to_source_real(x, y, 1);
+        let bounds = [x.lo(), y.lo(), x.hi(), y.hi()];
+        bounds.iter().all(|v| v.is_finite()).then_some(bounds)
+    }
+
     /// Vignetting compensation gain at source position `src` (px).
     pub fn gain(&self, src: Point) -> f32 {
         let mut g = 1.0;
