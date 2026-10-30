@@ -2,6 +2,13 @@
 
 ## 2026-10-30 (R3D test candidate)
 
+### File and folder pickers keep the window responsive
+- Local Browse Folder, import and export destinations, watermark images, watched folders, smart
+  previews, model files, display and print profiles, soft proof profiles, and print/slideshow templates
+  use the desktop background picker. Answers are applied when the picker closes; closing the parent
+  dialog or changing libraries discards its pending answer on the next frame. Hosts without a background picker retain
+  their synchronous services. Native macOS acceptance of this candidate is pending.
+
 ### White Balance presets follow the interface language
 - The White Balance preset menu translates its choices using the existing language catalog.
 
