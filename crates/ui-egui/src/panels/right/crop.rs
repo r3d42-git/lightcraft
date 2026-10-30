@@ -289,8 +289,14 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             let _ = app.run("aiRemove.clearSelection", json!({}));
         }
         if ai_mode {
-            ui.label(crate::i18n::tr("Paint over an object, remove it, then review and accept the preview."));
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(crate::i18n::tr("Paint over an object, remove it, then review and accept the preview."))
+                    .size(12.0)
+                    .color(Tokens::get(ui.ctx()).text_dim),
+            );
         }
+        ui.add_space(4.0);
     });
     if !ai_mode {
         padded(ui, |ui| {
@@ -400,12 +406,16 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     }
     divider(ui);
     padded(ui, |ui| {
-        ui.label(crate::i18n::tr("AI Remove · Local prototype"));
+        let t = Tokens::get(ui.ctx());
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(crate::i18n::tr("AI model")).font(t.semibold(13.0)).color(t.text_label));
         let busy = app.session.ai_remove.busy();
         let backend_key = egui::Id::unique("ai-remove-backend");
         let mut backend = ui.data(|data| data.get_temp::<String>(backend_key)).unwrap_or_else(|| "objectclear".into());
         ui.add_enabled_ui(!busy, |ui| {
             let response = crate::widgets::combo_box("ai-remove-model")
+                .width(ui.available_width())
                 .selected_text(match backend.as_str() {
                     "objectclear" => "ObjectClear",
                     "rorem" => "RORem",
@@ -423,65 +433,90 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             crate::widgets::register(ui, "aiRemoveModel", response.response.rect);
         });
         ui.data_mut(|data| data.insert_temp(backend_key, backend.clone()));
-        ui.small(crate::i18n::tr(match backend.as_str() {
-            "objectclear" => "Object removal and background reconstruction · recommended",
-            "rorem" => "Alternative diffusion reconstruction · slower",
-            _ => "Background and structure reconstruction · fast",
-        }));
+        ui.label(
+            egui::RichText::new(crate::i18n::tr(match backend.as_str() {
+                "objectclear" => "Object removal · recommended",
+                "rorem" => "Alternative reconstruction · slower",
+                _ => "Background reconstruction · fast",
+            }))
+            .size(11.0)
+            .color(t.text_dim),
+        );
+        ui.add_space(8.0);
         if ui
-            .add_enabled(
-                (app.session.ai_remove.selection.is_some() || sel.is_some()) && !busy,
-                egui::Button::new(crate::i18n::tr("Remove selected area")),
-            )
+            .add_enabled_ui((app.session.ai_remove.selection.is_some() || sel.is_some()) && !busy, |ui| {
+                ui.add_sized([ui.available_width(), 34.0], egui::Button::new(crate::i18n::tr("Remove selected area")))
+            })
+            .inner
             .clicked()
             && let Err(e) = app.run("aiRemove.start", json!({"backend":backend}))
         {
             app.toast(ui.ctx(), e);
         }
-        if app.session.ai_remove.selection.is_some() && ui.button(crate::i18n::tr("Clear AI selection")).clicked() {
+        if app.session.ai_remove.selection.is_some()
+            && ui.add_sized([ui.available_width(), 28.0], egui::Button::new(crate::i18n::tr("Clear AI selection"))).clicked()
+        {
             let _ = app.run("aiRemove.clearSelection", json!({}));
         }
         let message = app.session.ai_remove.message.clone();
         if !message.is_empty() {
-            ui.label(crate::i18n::tr(&message));
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(crate::i18n::tr(&message)).size(12.0).color(t.text_dim));
         }
         if busy {
             ui.spinner();
-            if ui.button(crate::i18n::tr("Cancel AI Remove")).clicked() {
+            if ui.add_sized([ui.available_width(), 28.0], egui::Button::new(crate::i18n::tr("Cancel AI Remove"))).clicked() {
                 let _ = app.run("aiRemove.cancel", json!({}));
             }
         }
         if app.session.ai_remove.draft.is_some() {
-            ui.label(crate::i18n::tr("Preview shown on the photo. Accept to keep the result."));
+            ui.add_space(10.0);
+            divider(ui);
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(crate::i18n::tr("Preview shown on the photo. Accept to keep the result.")).size(12.0).color(t.text_dim));
             let mut original = app.session.ai_remove.preview_original;
             let response = ui.checkbox(&mut original, crate::i18n::tr("Show photo without AI draft"));
             crate::widgets::register(ui, "aiRemovePreviewOriginal", response.rect);
             if response.changed() {
                 let _ = app.run("aiRemove.previewOriginal", json!({"enabled":original}));
             }
-            ui.horizontal(|ui| {
-                if ui.button(crate::i18n::tr("Accept AI Remove")).clicked()
-                    && let Err(e) = app.run("aiRemove.accept", json!({}))
-                {
-                    app.toast(ui.ctx(), e);
-                }
-                if ui.button(crate::i18n::tr("Discard")).clicked() {
-                    let _ = app.run("aiRemove.cancel", json!({}));
-                }
-            });
+            ui.add_space(4.0);
+            if ui.add_sized([ui.available_width(), 34.0], egui::Button::new(crate::i18n::tr("Accept AI Remove"))).clicked()
+                && let Err(e) = app.run("aiRemove.accept", json!({}))
+            {
+                app.toast(ui.ctx(), e);
+            }
+            if ui.add_sized([ui.available_width(), 28.0], egui::Button::new(crate::i18n::tr("Discard"))).clicked() {
+                let _ = app.run("aiRemove.cancel", json!({}));
+            }
         }
-        for edit in &d.ai_edits {
-            ui.horizontal(|ui| {
-                let mut enabled = edit.enabled;
-                if ui.checkbox(&mut enabled, crate::i18n::tr_format!("AI patch {}", edit.id)).changed() {
-                    let _ = app.run("aiRemove.update", json!({"id":edit.id,"enabled":enabled}));
-                }
-                if ui.small_button(crate::i18n::tr("Delete")).clicked() {
-                    let _ = app.run("aiRemove.update", json!({"id":edit.id,"delete":true}));
-                }
-            });
-        }
+        ui.add_space(6.0);
     });
+    if !d.ai_edits.is_empty() {
+        divider(ui);
+        padded(ui, |ui| {
+            let t = Tokens::get(ui.ctx());
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(crate::i18n::tr("Saved retouches")).font(t.semibold(13.0)).color(t.text_label));
+            ui.add_space(8.0);
+            ui.spacing_mut().item_spacing.y = 8.0;
+            for edit in &d.ai_edits {
+                ui.horizontal(|ui| {
+                    ui.set_min_height(32.0);
+                    let mut enabled = edit.enabled;
+                    if ui.checkbox(&mut enabled, crate::i18n::tr_format!("AI patch {}", edit.id)).changed() {
+                        let _ = app.run("aiRemove.update", json!({"id":edit.id,"enabled":enabled}));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add_sized([60.0, 28.0], egui::Button::new(crate::i18n::tr("Delete"))).clicked() {
+                            let _ = app.run("aiRemove.update", json!({"id":edit.id,"delete":true}));
+                        }
+                    });
+                });
+            }
+            ui.add_space(4.0);
+        });
+    }
     if !ai_mode {
         // Visualize Spots (A): a black/white high-pass view that makes dust and specks stand out
         padded(ui, |ui| {
