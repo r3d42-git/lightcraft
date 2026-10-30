@@ -177,26 +177,12 @@ pub fn histogram(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         let active = app.ui.show_clipping;
         // Keep the hit target comfortable, with a smaller box and clear space to the plot edges.
         let box_rect = rect.shrink2(vec2(2.0, 2.0));
-        p.rect_filled(
-            box_rect,
-            3.0,
-            if active {
-                t.pressed
-            } else if response.hovered() {
-                t.hover
-            } else {
-                Color32::from_gray(60)
-            },
-        );
+        let (tile, mark) = clip_button_colors(&t, active, response.hovered(), clipped == Some(true));
+        p.rect_filled(box_rect, 3.0, tile);
         if active {
             p.rect_stroke(box_rect, 3.0, Stroke::new(1.0, t.text), egui::StrokeKind::Inside);
         }
-        paint(
-            p,
-            Rect::from_center_size(rect.center(), vec2(16.0, 16.0)),
-            Icon::ChevronDown,
-            if clipped == Some(true) || active { t.text } else { t.text_dim },
-        );
+        paint(p, Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), Icon::ChevronDown, mark);
         let status = match clipped {
             Some(true) => "Clipping detected in this preview.",
             Some(false) => "No clipping detected in this preview.",
@@ -325,10 +311,39 @@ pub(super) fn soft_proofing(app: &mut LightcraftApp, ui: &mut egui::Ui, id: Phot
     divider(ui);
 }
 
+/// The tile and chevron colours of a clipping button, from the theme's own raised fills: the tile
+/// sits one step above the plot's backdrop (`button`) and the chevron (bright when clipping shows, dim otherwise) stands 3:1 on it in every
+/// state and theme.
+fn clip_button_colors(t: &Tokens, active: bool, hovered: bool, clipped: bool) -> (Color32, Color32) {
+    let tile = if active || hovered { t.pressed } else { t.hover };
+    (tile, if clipped || active { t.text } else { t.text_dim })
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::header_buttons;
     use super::*;
+
+    /// The two clipping chevrons were a fixed dark-grey tile (`from_gray(60)`) with a dimmed mark: on
+    /// a light theme they were near-black tiles on a light panel, and the mark barely read.
+    #[test]
+    fn the_clipping_chevron_stands_3_to_1_against_its_tile_in_every_theme() {
+        use crate::theme::ThemeKind;
+        for kind in ThemeKind::ALL {
+            let t = Tokens::for_kind(kind);
+            for (active, hovered, clipped) in
+                [(false, false, false), (false, false, true), (false, true, false), (true, false, false), (true, true, true)]
+            {
+                let (tile, mark) = clip_button_colors(&t, active, hovered, clipped);
+                let c = crate::widgets::button::contrast(mark, tile);
+                assert!(c >= 3.0, "{kind:?} active={active} hovered={hovered} clipped={clipped}: chevron {c:.2}:1 on its tile");
+            }
+            // the idle tile is the theme's own raised fill, not a fixed gray, and a quiet one next to the plot's backdrop
+            let (idle, _) = clip_button_colors(&t, false, false, false);
+            assert_ne!(idle, t.button, "{kind:?}: the tile vanishes into the histogram's backdrop");
+            assert!(crate::widgets::button::contrast(idle, t.button) < 3.0, "{kind:?}: the tile is a heavy block, not a quiet raised fill");
+        }
+    }
 
     /// The Edit header's buttons never cover each other or run past the panel, in any language: a button that doesn't
     /// fit starts the next row, and Reset stays right-aligned. Before, Reset covered HDR in 11 of the 18 languages at

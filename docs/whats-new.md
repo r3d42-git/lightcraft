@@ -1,5 +1,19 @@
 # What's new in LightCraft
 
+## 2026-10-30 (R3D test candidate)
+
+### White Balance presets follow the interface language
+- The White Balance preset menu translates its choices using the existing language catalog.
+
+### The histogram's clipping buttons read in light themes
+- Shadow and highlight clipping buttons use the theme's raised fill and chevron colors in Charcoal,
+  Midnight, Silver and Paper. The R3D spatial clipping overlay is retained.
+
+### Loading thumbnails look different from unreadable ones
+- A grid cell or filmstrip tile whose thumbnail is still loading shows three small still dots on its
+  placeholder. An unreadable thumbnail shows "!"; a replacement request clears the old verdict while
+  it is pending. The dots do not animate.
+
 ## 2026-10-26
 
 ### Lens distortion correction for the Sony A7 III
