@@ -136,3 +136,16 @@ keine Bildschirmaufnahmen des macOS-Compositors.
 Nachweise: `/Volumes/Media/codex/lightcraft/evidence/ai-retouch-20261030/`,
 insbesondere `integrated/comparison-detail.png`, `integrated/native-flow.json`,
 `integrated/normal-launch-internal-test-data.json` und `model-comparison/`.
+
+## Lokale Integration nach Nutzerfreigabe
+
+Der Nutzer hat am 30.10.2026 Integration und Installation in seinen Fork freigegeben;
+weitere Qualitätsversuche mit anderen Fotos folgen im Alltag. Die bisherigen
+Aussagen zur noch ausstehenden Installationsfreigabe sind damit historisch.
+`r3d/build-ai-local.sh` baut das optimierte lokale arm64-Paket einschließlich
+Laufzeit und Modellen. Es übernimmt Kennung, produktive Datenpfade und
+Sprachdeklarationen der installierten R3D-App; installiert/veröffentlicht selbst
+nichts. Vor Austausch ist ein gemeinsam verifizierter Rückrollsatz aus App,
+Bibliothek und vollständiger Konfiguration erforderlich. Katalogformat 11 ist
+für alte Apps nicht lesbar; bei Rückkehr zum alten Stand den zusammengehörigen
+Katalog zurückspielen und zwischenzeitliche neue Bearbeitungen vorher sichern.
