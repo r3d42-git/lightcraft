@@ -5143,11 +5143,31 @@ fn the_loupe_prepares_the_photos_ahead_the_settings_ask_for() {
 /// An unaccepted AI patch uses the main developed photo and leaves the catalogue untouched.
 #[test]
 fn ai_remove_draft_previews_on_photo_and_preserves_before_view() {
+    check_ai_remove_draft_preview(false);
+}
+
+/// Native monitors use a display profile, which also changes the renderer's result key.
+#[test]
+fn ai_remove_draft_previews_with_display_profile() {
+    check_ai_remove_draft_preview(true);
+}
+
+fn check_ai_remove_draft_preview(profiled: bool) {
     use crate::render::Slot;
     use crate::state::BeforeAfter;
     use lightcraft_develop::AiEdit;
     let mut h = demo([1200.0, 800.0]);
     let t = Duration::from_secs(10);
+    let profile_dir = profiled.then(|| {
+        let dir = std::env::temp_dir().join(format!("lightcraft-ai-draft-display-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p3.icc");
+        std::fs::write(&path, lightcraft_codecs::icc::write_named(lightcraft_codecs::NamedSpace::DisplayP3)).unwrap();
+        let r = h.request("engine.execute", json!({"command":"app.displayProfile", "params":{"path":path.to_string_lossy()}}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(h.app.renderer.display_id().is_some());
+        dir
+    });
     h.request("ui.set", json!({"view":"detail", "right":"remove"}), t);
     h.settle(SETTLE);
     let id = h.app.session.active().unwrap();
@@ -5175,7 +5195,7 @@ fn ai_remove_draft_previews_on_photo_and_preserves_before_view() {
     );
     h.step_until(SETTLE, |h| h.app.loupe_shown.map(|l| l.1) == Some("hover"));
     assert_eq!(h.app.loupe_shown.map(|l| l.1), Some("hover"));
-    save_ai_ui_evidence(&mut h, "draft-preview.png");
+    save_ai_ui_evidence(&mut h, if profiled { "draft-preview-display-p3.png" } else { "draft-preview.png" });
     let settings = h.app.session.ai_remove_preview_settings().unwrap();
     let hover = h.app.renderer.textures.get(&Slot::Hover).unwrap();
     assert_eq!(hover.photo, id);
@@ -5203,6 +5223,9 @@ fn ai_remove_draft_previews_on_photo_and_preserves_before_view() {
     assert!(h.app.session.ai_remove.draft.is_none());
     assert!(std::sync::Arc::ptr_eq(&h.app.session.develop_of(id).unwrap(), &before));
     assert_eq!(h.app.session.undo.len(), undo);
+    if let Some(dir) = profile_dir {
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 /// Opt-in QA images for the isolated procedural session; no production catalogue is involved.

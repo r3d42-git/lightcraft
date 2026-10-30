@@ -807,6 +807,8 @@ fn request_hover(app: &mut LightcraftApp, a: &LoupeAsk, [sw, sh]: [usize; 2], [d
         && let Some(job) = app.session.ai_remove_preview_job(a.id, dw.max(8), dh.max(8), a.with_crop)
     {
         let job = job.with_display_fit(a.fit_px[0], a.fit_px[1]).with_overlay(a.overlay).with_proof(app.ui.soft_proof.then_some(app.ui.proof));
+        // Match the key the renderer actually uploads, including the monitor profile.
+        let job = app.renderer.job_for(Slot::Hover, job);
         let key = job.key;
         app.renderer.request(Slot::Hover, job, 105);
         return Some((key, crate::i18n::tr("AI Remove preview · not accepted").to_string()));
@@ -815,6 +817,7 @@ fn request_hover(app: &mut LightcraftApp, a: &LoupeAsk, [sw, sh]: [usize; 2], [d
         Some(h) if !a.interacting => app.session.preview_job(a.id, sw.max(8), sh.max(8), a.with_crop, &h.settings).map(|job| {
             // (the same display fit as the After view, drawn texel for texel like it)
             let job = job.with_display_fit(a.fit_px[0], a.fit_px[1]);
+            let job = app.renderer.job_for(Slot::Hover, job);
             let key = job.key;
             app.renderer.request(Slot::Hover, job, 105);
             (key, h.label)

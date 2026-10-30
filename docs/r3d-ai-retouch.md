@@ -104,6 +104,12 @@ Persistenz, Abbruch und UI sind vorhanden. Der aktuelle vollständige CI-Bericht
 ist grün: alle acht Gates bestanden, Metal auf Apple M5 Max. 172 Capability-Skips
 (137 Korpus, 27 Schriften, 8 Modelle) sind ausdrücklich dokumentiert;
 fehlende RAW-Korpora, optionale Schriften und Modelle gelten nicht als geprüft.
+Ein späterer Nutzerbefund deckte eine fehlende Vorschau auf profilierten Monitoren
+auf: Der Texturvergleich verwendete einen Render-Key ohne Monitorprofil. Die
+Korrektur berücksichtigt das Profil vor dem Vergleich; ein DisplayP3-Test
+reproduziert den Fehler im alten Stand und besteht mit der Korrektur. Native
+Vogel-/Vergleichsschalter-Nachweise liegen separat unter `preview-fix/`.
+
 Aktuelle UI-Aufnahmen während der Abwesenheit sind ausdrücklich Headless-Render,
 keine Bildschirmaufnahmen des macOS-Compositors.
 
