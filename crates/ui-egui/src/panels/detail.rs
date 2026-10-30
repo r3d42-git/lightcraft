@@ -344,7 +344,10 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     let over = OverPhoto { photo: &photo, d: &d, map: &map, canvas, img_rect, fullscreen, crop_tool };
     photo_overlays(app, ui, &p, &over);
     // Cursor selection must also run on gesture frames, when tool input is suppressed.
-    if !navigating && !matches!(right, RightPanel::Crop | RightPanel::Masking | RightPanel::Remove | RightPanel::RedEye) {
+    if !hand
+        && !resp.dragged_by(egui::PointerButton::Middle)
+        && !matches!(right, RightPanel::Crop | RightPanel::Masking | RightPanel::Remove | RightPanel::RedEye)
+    {
         general_cursor(app, ui, &resp, img_rect, main_area);
     }
     if !navigating {
