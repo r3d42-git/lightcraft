@@ -346,6 +346,48 @@ mod tests {
     }
 
     #[test]
+    fn sony_edge_selection_context_is_conservative_and_close_to_dense_oracle() {
+        // Actual ILCE-7 / FE 55mm F1.8 ZA embedded Sony coefficients from the regression photo.
+        // The selection is a small person near the lower edge of its 4000 x 6000 source.
+        let lens = lightcraft_develop::EmbeddedLens {
+            warp: Some(lightcraft_develop::EmbeddedWarp {
+                planes: [
+                    [0.997084443331945, 0.015059009900289482, -0.01632397947312214, -0.004078248205964571, 0.0, 0.0],
+                    [0.9970345916024133, 0.015058256987026312, -0.016323163314083476, -0.0040780443042716125, 0.0, 0.0],
+                    [0.9967853329545124, 0.015054492422777599, -0.016319082523245626, -0.004077024793203159, 0.0, 0.0],
+                ],
+                center: Point::new(0.5, 0.5),
+                radius: 0.6009252125773316,
+            }),
+            ..Default::default()
+        };
+        let mut settings = DevelopSettings::default();
+        settings.optics.lens_profile = true;
+        let frame = crate::geometry::Frame::with_lens(4000, 6000, &settings, false, Some(&lens));
+        let warp = frame.warp.unwrap();
+        let rect = [0.532 * 4000.0 - 72.0, 0.920 * 6000.0 - 72.0, 0.532 * 4000.0 + 72.0, 0.955 * 6000.0 + 72.0];
+        let bounds = warp.source_bounds(rect).unwrap();
+        let mut oracle = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        for y in 0..=512 {
+            for x in 0..=512 {
+                let point =
+                    warp.to_source(Point::new(rect[0] + (rect[2] - rect[0]) * x as f64 / 512.0, rect[1] + (rect[3] - rect[1]) * y as f64 / 512.0), 1);
+                assert!(point.x >= bounds[0] && point.x <= bounds[2] && point.y >= bounds[1] && point.y <= bounds[3]);
+                oracle[0] = oracle[0].min(point.x);
+                oracle[1] = oracle[1].min(point.y);
+                oracle[2] = oracle[2].max(point.x);
+                oracle[3] = oracle[3].max(point.y);
+            }
+        }
+        let margins = [oracle[0] - bounds[0], oracle[1] - bounds[1], bounds[2] - oracle[2], bounds[3] - oracle[3]];
+        assert!(margins.iter().all(|m| *m >= 0.0 && *m < 4.0), "bounds={bounds:?}, oracle={oracle:?}, margins={margins:?}");
+        let width = bounds[2] - bounds[0];
+        let height = bounds[3] - bounds[1];
+        assert!(width < 160.0 && height < 370.0, "selection context must not inflate into a ~1000px box: {width} x {height}");
+        eprintln!("Sony source bounds={bounds:?}; dense oracle={oracle:?}; margins={margins:?}");
+    }
+
+    #[test]
     fn nonlinear_interval_bounds_cover_entire_transformed_selection_rectangle() {
         let mut s = DevelopSettings::default();
         s.optics.lens_profile = true;
@@ -355,6 +397,12 @@ mod tests {
         let warp = frame.warp.unwrap();
         let rect = [200.0, 20.0, 300.0, 140.0];
         let b = warp.source_bounds(rect).unwrap();
+        assert!(warp.source_bounds([f64::NAN, 0.0, 1.0, 1.0]).is_none());
+        assert!(warp.source_bounds([2.0, 0.0, 1.0, 1.0]).is_none());
+        let mut horizon = crate::optics::Warp::identity(320.0, 200.0);
+        horizon.persp = lightcraft_geom::Homography([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0]);
+        horizon.persp_inv = horizon.persp.inverse().unwrap();
+        assert!(horizon.source_bounds([0.0, 0.0, 320.0, 200.0]).is_none(), "a projective horizon must retain the safe full-source fallback");
         for y in 0..101 {
             for x in 0..101 {
                 let p = warp.to_source(Point::new(200.0 + x as f64, 20.0 + y as f64 * 1.2), 1);

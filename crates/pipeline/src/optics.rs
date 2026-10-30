@@ -247,10 +247,44 @@ impl Warp {
     /// Conservative interval bound of a transformed rectangle in the oriented source.
     /// Used only to choose inference context; exact mask authorization is evaluated separately.
     pub fn source_bounds(&self, rect: [f64; 4]) -> Option<[f64; 4]> {
-        let (x, y) = self.to_corrected_real(Interval::new(rect[0], rect[2]), Interval::new(rect[1], rect[3]));
-        let (x, y) = self.corrected_to_source_real(x, y, 1);
-        let bounds = [x.lo(), y.lo(), x.hi(), y.hi()];
-        bounds.iter().all(|v| v.is_finite()).then_some(bounds)
+        if !rect.iter().all(|v| v.is_finite()) || rect[0] > rect[2] || rect[1] > rect[3] {
+            return None;
+        }
+        // Dependency in expressions such as x + (lens(x) - x) * strength makes one
+        // large interval needlessly broad, losing model detail when context is resized.
+        // Bound a covering grid instead: each cell uses the same outward-rounded warp
+        // arithmetic, so their union still contains every possible source position.
+        // Fixed subdivision bounds work even for extreme metadata; undecidable cells
+        // return None and the caller falls back to full-source context.
+        const CELLS: usize = 128;
+        let cuts = |lo: f64, hi: f64| -> Option<[f64; CELLS + 1]> {
+            let extent = hi - lo;
+            if !extent.is_finite() {
+                return None;
+            }
+            let mut cuts = std::array::from_fn(|i| lo + extent * (i as f64 / CELLS as f64));
+            cuts[0] = lo;
+            cuts[CELLS] = hi;
+            cuts.iter().all(|v| v.is_finite()).then_some(cuts)
+        };
+        let xs = cuts(rect[0], rect[2])?;
+        let ys = cuts(rect[1], rect[3])?;
+        let mut bounds = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        for y in ys.windows(2) {
+            for x in xs.windows(2) {
+                let (x, y) = self.to_corrected_real(Interval::new(x[0], x[1]), Interval::new(y[0], y[1]));
+                let (x, y) = self.corrected_to_source_real(x, y, 1);
+                let cell = [x.lo(), y.lo(), x.hi(), y.hi()];
+                if !cell.iter().all(|v| v.is_finite()) {
+                    return None;
+                }
+                bounds[0] = bounds[0].min(cell[0]);
+                bounds[1] = bounds[1].min(cell[1]);
+                bounds[2] = bounds[2].max(cell[2]);
+                bounds[3] = bounds[3].max(cell[3]);
+            }
+        }
+        Some(bounds)
     }
 
     /// Vignetting compensation gain at source position `src` (px).
