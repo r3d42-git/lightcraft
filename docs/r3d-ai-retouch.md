@@ -13,6 +13,11 @@ Die cyanfarbene Auswahl ist vorübergehend und verändert das Foto noch nicht.
 Ein neuer Strich ersetzt die bisherige Auswahl; mehrere getrennte Striche werden
 noch nicht addiert. Der klassische Entfernen-/Heilen-/Klonmodus bleibt erreichbar.
 
+Während das Werkzeug aktiv ist: Leertaste halten und ziehen verschiebt den
+Ausschnitt; Leertaste halten und scrollen zoomt um den Mauszeiger. Nach dem
+Loslassen ist der Pinsel wieder verfügbar. Wird die Leertaste vor der Maustaste
+losgelassen, bleibt der laufende Zug eine Navigation und malt nicht versehentlich.
+
 Die entwickelte Vorschau erscheint im Hauptfoto einschließlich Weißabgleich,
 Tonwerten und Geometrie. Originalansicht, Verwerfen und erneute Variante sind
 vor dem Übernehmen möglich. Erst Übernehmen speichert eine Retusche. Undo/Redo,

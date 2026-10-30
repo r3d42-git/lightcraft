@@ -125,6 +125,61 @@ pub(super) fn middle_pan(app: &mut LightcraftApp, ui: &egui::Ui, resp: &egui::Re
     true
 }
 
+/// Space temporarily lends canvas input to the hand. Keep ownership through release even
+/// if Space is released first: a tool must never see the tail of a navigation drag.
+pub(super) fn temporary_hand(app: &mut LightcraftApp, ui: &egui::Ui, resp: &egui::Response) -> bool {
+    let id = egui::Id::unique("loupe-temporary-hand-drag");
+    let latched = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    let space = space_navigation_allowed(app, ui.ctx()) && ui.input(|i| i.key_down(egui::Key::Space));
+    let over = resp.contains_pointer() || resp.dragged();
+    let hand = space && over;
+    let primary = ui.input(|i| i.pointer.primary_down());
+    if hand && primary && !latched {
+        cancel_canvas_gesture(app);
+        ui.data_mut(|d| d.insert_temp(id, true));
+    } else if latched && !primary {
+        ui.data_mut(|d| d.remove_temp::<bool>(id));
+    }
+    let owns = hand || latched;
+    if owns {
+        ui.ctx().set_cursor_icon(if primary { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+    }
+    owns
+}
+
+/// Navigation interrupts a tool stroke; restore any silent drag edits instead of committing
+/// a line across the newly positioned image on release.
+pub(super) fn cancel_canvas_gesture(app: &mut LightcraftApp) {
+    if app.gesture.take().is_some() {
+        let _ = app.session.cancel_interaction();
+    }
+}
+
+pub(crate) fn space_navigation_allowed(app: &LightcraftApp, ctx: &egui::Context) -> bool {
+    app.recording_shortcut.is_none()
+        && app.ui.slideshow.is_none()
+        && app.ui.dialog.is_none()
+        && app.ui.name_edit.is_none()
+        && ctx.memory(|m| m.focused()).is_none_or(|id| egui::text_edit::TextEditState::load(ctx, id).is_none())
+        && !egui::Popup::is_any_open(ctx)
+}
+
+pub(crate) fn canvas_tool_active(app: &LightcraftApp) -> bool {
+    matches!(
+        app.ui.right,
+        crate::state::RightPanel::Crop | crate::state::RightPanel::Masking | crate::state::RightPanel::Remove | crate::state::RightPanel::RedEye
+    ) || !app.ui.tool.is_empty()
+}
+
+pub(super) fn hand_pan(app: &mut LightcraftApp, ui: &egui::Ui, area: Rect, img: Rect) {
+    if ui.input(|i| i.pointer.primary_down() && !i.pointer.button_pressed(egui::PointerButton::Primary)) {
+        let delta = ui.input(|i| i.pointer.delta());
+        if delta != egui::Vec2::ZERO {
+            pan_image(app, area, img, delta);
+        }
+    }
+}
+
 /// Net vertical notches (up is positive) of unmodified line/page-unit wheel events: a real mouse wheel, not a trackpad.
 fn wheel_notches(events: &[egui::Event]) -> f32 {
     events
@@ -142,15 +197,19 @@ fn wheel_notches(events: &[egui::Event]) -> f32 {
 
 /// Native pinch (also modifier-wheel zoom) and two-finger scroll, scoped to this image view.
 pub(crate) fn navigate_gesture(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Response, area: Rect, img: Rect, native: [usize; 2]) -> bool {
-    if !resp.hovered() {
+    if !resp.contains_pointer() {
         return false;
     }
+    let space = space_navigation_allowed(app, ui.ctx()) && ui.input(|i| i.key_down(egui::Key::Space));
     let (mut factor, mut delta, anchor) =
         ui.input(|i| (i.zoom_delta(), i.translation_delta(), i.multi_touch().map(|t| t.center_pos).or(i.pointer.hover_pos())));
     // A notched mouse wheel (line/page units, no modifier) zooms around the pointer, through egui's smoothed wheel
     // delta like Ctrl+wheel (so it glides instead of jumping); trackpads report points and still pan.
     let wheel_id = egui::Id::unique("loupe-wheel-zoom");
-    if ui.input(|i| wheel_notches(&i.events)) != 0.0 {
+    if ui.input(|i| wheel_notches(&i.events)) != 0.0
+        || (space
+            && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { delta, .. } if delta.y.is_finite() && delta.y != 0.0))))
+    {
         ui.data_mut(|d| d.insert_temp(wheel_id, true));
     }
     if ui.data(|d| d.get_temp::<bool>(wheel_id)).unwrap_or(false) {

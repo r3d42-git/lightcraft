@@ -37,7 +37,8 @@ use filmstrip::navigator;
 pub use geometry::CanvasMap;
 #[cfg(test)]
 pub(crate) use geometry::focus_box;
-use geometry::{animated_rect, middle_pan};
+use geometry::{animated_rect, cancel_canvas_gesture, hand_pan, middle_pan, temporary_hand};
+pub(crate) use geometry::{canvas_tool_active, space_navigation_allowed};
 pub(crate) use geometry::{fit_rect, fit_texture_rect, focus_pan, navigate_gesture, output_px, pan_image, snap_fit_rect, texture_side};
 #[cfg(test)]
 use info::RENDERING_AFTER_SECS;
@@ -173,11 +174,18 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     let mut target_rect = fit_rect(main_area, display_aspect, app.ui.zoom, native, ppp, app.ui.pan);
     let mut img_rect = animated_rect(ui.ctx(), &mut app.ui.zoom_anim, target_rect);
     let in_pane = |pane: Rect, image: Rect| image.translate(pane.center() - main_area.center());
+    let hand = temporary_hand(app, ui, &resp);
     let navigating = areas.iter().any(|&view_area| {
         let view_img = in_pane(view_area, img_rect);
-        navigate_gesture(app, ui, &resp, view_area, view_img, native) || middle_pan(app, ui, &resp, view_area, view_img)
-    });
+        let over = ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| view_area.contains(p));
+        let gesture = navigate_gesture(app, ui, &resp, view_area, view_img, native);
+        if hand && over {
+            hand_pan(app, ui, view_area, view_img);
+        }
+        gesture || (hand && over) || (over && middle_pan(app, ui, &resp, view_area, view_img))
+    }) || hand;
     if navigating {
+        cancel_canvas_gesture(app);
         target_rect = fit_rect(main_area, display_aspect, app.ui.zoom, native, ppp, app.ui.pan);
         img_rect = target_rect;
     }
@@ -336,7 +344,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     let over = OverPhoto { photo: &photo, d: &d, map: &map, canvas, img_rect, fullscreen, crop_tool };
     photo_overlays(app, ui, &p, &over);
     // Cursor selection must also run on gesture frames, when tool input is suppressed.
-    if !matches!(right, RightPanel::Crop | RightPanel::Masking | RightPanel::Remove | RightPanel::RedEye) {
+    if !navigating && !matches!(right, RightPanel::Crop | RightPanel::Masking | RightPanel::Remove | RightPanel::RedEye) {
         general_cursor(app, ui, &resp, img_rect, main_area);
     }
     if !navigating {

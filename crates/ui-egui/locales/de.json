@@ -1,5 +1,6 @@
 {
   "AI model": "KI-Modell",
+  "Hold Space: drag to pan, scroll to zoom.": "Leertaste + Ziehen: Verschieben\nLeertaste + Scrollen: Zoom",
   "Reconstructs backgrounds and structures. Recommended for object removal.": "Rekonstruiert Hintergründe und Strukturen. Zum Entfernen von Objekten empfohlen.",
   "Diffusion model for alternative results. Slower; may invent new details.": "Diffusionsmodell für alternative Ergebnisse. Langsamer; kann neue Details erfinden.",
   "Alternative diffusion reconstruction · slower": "Alternative Rekonstruktion mit Diffusion · langsamer",

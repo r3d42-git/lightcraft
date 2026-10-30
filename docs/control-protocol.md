@@ -124,6 +124,12 @@ Kelvin on a Kelvin raw pass `"scale": "kelvin"` or use `develop.set` / `develop.
 Image navigation is also available directly as the UI command `view.navigate`, with
 `{zoom?: "fit" | "fill" | {"percent": number}, pan?: [x, y]}`. Percentage zoom accepts fractional
 values greater than 0 and at most 1600; pan is the normalized image centre, with coordinates from 0 to 1.
+With an editing tool active in Detail, hold Space over the photo to temporarily
+use the hand: primary-button drag pans, Space + wheel zooms around the pointer
+(including point-unit wheels). Releasing Space restores the tool after the
+current mouse drag ends; navigation does not paint or change a saved edit.
+Text entry and slideshow Space retain their usual behavior.
+
 Pinching keeps the image point under the pointer steady and zooms between Fit and 1600%; two-finger
 scrolling pans in both axes and respects the operating system's scrolling direction and momentum.
 These gestures work in Detail (including editing tools and full-screen preview), Compare and Reference

@@ -382,6 +382,18 @@ pub fn handle(app: &mut LightcraftApp, ctx: &egui::Context) {
     if app.recording_shortcut.is_none() && app.ui.name_edit.is_none() && crate::panels::person::handle_bulk_key(app, ctx) {
         return;
     }
+    // A panel button may still have keyboard focus after picking a tool. Over the photo,
+    // Space belongs to the temporary hand; give up that non-text focus before panels draw.
+    if app.ui.view == crate::state::ViewMode::Detail
+        && crate::panels::detail::canvas_tool_active(app)
+        && crate::panels::detail::space_navigation_allowed(app, ctx)
+        && ctx.input(|i| i.key_down(Key::Space) && i.pointer.hover_pos().is_some_and(|p| app.canvas_rect.is_some_and(|r| r.contains(p))))
+    {
+        if let Some(id) = ctx.memory(|m| m.focused()) {
+            ctx.memory_mut(|m| m.surrender_focus(id));
+        }
+        return;
+    }
     // don't steal keys from text fields or from the keymap editor recording a shortcut
     if keyboard_owned(app, ctx) || app.recording_shortcut.is_some() || app.ui.name_edit.is_some() {
         return;
@@ -439,6 +451,10 @@ fn pressed_commands(app: &LightcraftApp, ctx: &egui::Context) -> (Vec<String>, V
         for (sc, id, params) in ALIASES {
             if let Some((m, k)) = parse(sc).filter(|_| !native(sc))
                 && !(k == Key::Escape && popup_open)
+                && !(k == Key::Space
+                    && app.ui.slideshow.is_none()
+                    && app.ui.view == crate::state::ViewMode::Detail
+                    && crate::panels::detail::canvas_tool_active(app))
                 && !taken.contains(&(m, k))
                 && matches(i, m, k)
             {

@@ -392,6 +392,9 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             crate::panels::edit::apply_slider_out(app, &spec, out, |app, v| app.run("spot.update", json!({key: v / scale})));
         }
     }
+    padded(ui, |ui| {
+        ui.label(egui::RichText::new(crate::i18n::tr("Hold Space: drag to pan, scroll to zoom.")).size(12.0).color(Tokens::get(ui.ctx()).text_dim));
+    });
     if sel.is_some() {
         padded(ui, |ui| {
             ui.horizontal(|ui| {
