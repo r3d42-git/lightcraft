@@ -137,7 +137,12 @@ fn runtime_selection(app: &mut crate::LightcraftApp, ui: &mut egui::Ui, model: &
     }
     if let Some(runtime) = current {
         if runtime["execution"] == "native-protocol-v1" {
-            ui.add(egui::Label::new(crate::i18n::tr("ObjectClear native runtime: S-Lab License 1.0, non-commercial use.")).wrap());
+            let notice = if model["backend"] == "objectclear" {
+                crate::i18n::tr("ObjectClear native runtime: S-Lab License 1.0, non-commercial use.")
+            } else {
+                crate::i18n::tr("Native runtime: see the package license notices.")
+            };
+            ui.add(egui::Label::new(notice).wrap());
         }
         ui.push_id(("ai-runtime-details", id), |ui| {
             ui.collapsing(crate::i18n::tr("Runtime details"), |ui| {

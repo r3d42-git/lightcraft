@@ -3538,6 +3538,7 @@
   "Import AI package…": "KI-Paket importieren …",
   "Runtime": "Laufzeit",
   "Use original runtime": "Ursprüngliche Laufzeit verwenden",
+  "Native runtime: see the package license notices.": "Native Laufzeit: Lizenzhinweise des Pakets beachten.",
   "ObjectClear native runtime: S-Lab License 1.0, non-commercial use.": "Native ObjectClear-Laufzeit: S-Lab-Lizenz 1.0, nichtkommerzielle Nutzung.",
   "Runtime details": "Laufzeitdetails",
   "Native runtime (Rust)": "Native Laufzeit (Rust)",
