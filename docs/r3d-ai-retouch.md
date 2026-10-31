@@ -175,3 +175,11 @@ isolierte App-Abnahme erforderlich. Frühere ObjectClear-Nutzerabnahme gilt
 nicht automatisch für die neue native LaMa-/RORem-Ausführung. Native Ausführung
 ist kein Geschwindigkeitsversprechen: der aktuelle RORem-F32-Pfad ist langsamer
 als die bisherige Python-F16-Ausführung und kann lokal andere Texturen erzeugen.
+
+Native Worker müssen JSON-Koordinaten mit `serde_json/float_roundtrip` einlesen.
+Die App vergleicht das zurückgemeldete Rechteck exakt mit dem Auftrag. Der schnelle
+Standardparser kann einen Wert wie `0.9999999999999999` zu `1.0` runden; bei manuellen
+Auswahlen führt das trotz korrekter Inferenz zum Provenienzfehler. Die korrigierten
+Laufzeitrevisionen erhalten die Koordinaten bitgenau. Regressionsfälle prüfen die
+wirkliche Anfrage-/Antwortdateigrenze mit verschiedenen Rechtecken; die App verwirft
+weiterhin auch um ein Bit veränderte Rechtecke und andere Auftragsidentitäten.

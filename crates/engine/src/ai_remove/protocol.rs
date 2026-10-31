@@ -116,12 +116,7 @@ impl RetouchRunner for ProtocolRunner<'_> {
             let reported = response.get("pixels").and_then(Value::as_str).ok_or("Native AI worker omitted output provenance.")?;
             let reported = Path::new(reported).canonicalize().map_err(|e| e.to_string())?;
             let expected_output = output.canonicalize().map_err(|e| e.to_string())?;
-            if response.get("model") != package.manifest.get("name")
-                || response.get("model_version") != package.manifest.get("model_version")
-                || response.get("seed").and_then(Value::as_u64) != Some(u64::from(seed))
-                || response.get("rect") != Some(&json!(rect))
-                || reported != expected_output
-            {
+            if !matches_request_provenance(&response, &package.manifest, seed, rect) || reported != expected_output {
                 return Err("Native AI worker returned mismatched request provenance.".into());
             }
         }
@@ -163,6 +158,15 @@ fn decode_rgb(raw: &[u8]) -> std::result::Result<Vec<[f32; 3]>, String> {
             Ok(rgb)
         })
         .collect()
+}
+
+/// Rectangles are an exact job identity, not a tolerance-based geometry comparison.
+/// Workers must enable serde_json's float_roundtrip just like this application.
+fn matches_request_provenance(response: &Value, manifest: &Value, seed: u32, rect: [f64; 4]) -> bool {
+    response.get("model") == manifest.get("name")
+        && response.get("model_version") == manifest.get("model_version")
+        && response.get("seed").and_then(Value::as_u64) == Some(u64::from(seed))
+        && response.get("rect") == Some(&json!(rect))
 }
 
 pub(super) fn backend_directory(backend: &str) -> Option<&'static str> {
@@ -219,6 +223,25 @@ mod tests {
         assert_eq!(command.get_program(), runtime.join("bin/python3"));
         assert_eq!(command.get_args().collect::<Vec<_>>(), ["-I", "-B", "/synthetic/runtime/worker.py"]);
         assert_eq!(runner.identity().adapter, "python-protocol-v1");
+    }
+    #[test]
+    fn native_provenance_preserves_precise_rectangles_and_rejects_changed_job_fields() {
+        let manifest = json!({"name":"test-model","model_version":"test-revision"});
+        let rect = [0.125, 0.25, 0.9999999999999999, 0.9];
+        let correct = json!({"model":"test-model","model_version":"test-revision","seed":42,"rect":rect});
+        let wire: Value = serde_json::from_slice(&serde_json::to_vec(&correct).unwrap()).unwrap();
+        assert!(matches_request_provenance(&wire, &manifest, 42, rect));
+        for (field, value) in [
+            ("rect", json!([0.125, 0.25, 1.0, 0.9])),
+            ("seed", json!(43)),
+            ("model", json!("different-model")),
+            ("model_version", json!("different-revision")),
+            ("rect", Value::Null),
+        ] {
+            let mut changed = wire.clone();
+            changed[field] = value;
+            assert!(!matches_request_provenance(&changed, &manifest, 42, rect), "{field}");
+        }
     }
     #[test]
     fn untrusted_native_runtime_cannot_construct_launch_command() {
