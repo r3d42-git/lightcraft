@@ -107,6 +107,11 @@ fn parses_direct_mount_compatibility_without_inference() {
 }
 
 #[test]
+fn rejects_mismatched_xml_closing_tags() {
+    assert!(LensDb::parse("<lensdatabase><lens><maker>X</lensdatabase><model>L</model></lens>").is_err());
+}
+
+#[test]
 fn malformed_documents_are_errors_not_panics() {
     assert!(LensDb::parse("").is_err());
     assert!(LensDb::parse("<lensdatabase><lens><maker>").is_ok_and(|d| d.lenses.is_empty()));

@@ -5,7 +5,8 @@ use super::{Arc, Deserialize, DevelopSettings, MediaKind, Photo, Rgb32f, Rgba8, 
 // 77: invalidate views that a late pre-denoise/previous-model source could have populated.
 // 78: automatic optical-edge crop; above combined source/product protection cache 77.
 // 79: apply validated embedded distortion for newly decoded Sony ILCE-7M3 sources.
-pub const RENDER_CACHE_VERSION: u64 = 79;
+// 80: v0.16.0 grayscale JPEG XL LinearRaw decoding; invalidate previous R3D output.
+pub const RENDER_CACHE_VERSION: u64 = 80;
 
 /// Thumbnails render at one of these long edges (so window/cell size changes reuse the cache).
 pub const THUMB_SIZES: [usize; 4] = [128, 256, 384, 512];

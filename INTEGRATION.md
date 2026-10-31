@@ -1,9 +1,32 @@
 # R3D optics integration
 
-This fork integrates the unchanged LightCraft `v0.15.0` release,
-`e381c1ae6b2006ce627b243fe41697ce0d9608e0`, into its tested R3D feature line. The machine-readable base is
+This fork integrates the unchanged LightCraft `v0.16.0` release,
+`cdf00cc84bf87f544d6dbc40e3bc0456641661a9`, into its tested R3D feature line. The machine-readable base is
 `r3d/upstream-base.json`. This is a local development implementation, not a released
 replacement for the official application.
+
+## v0.16.0 compatibility integration (2026-10-31)
+
+Merged the exact upstream release into the existing R3D history. Inclusive search
+comparisons, decoder/parser fixes, native Edit menu grouping, translated macOS
+panels and updated dependencies are retained. Existing mount compatibility tests
+and the upstream malformed XML test coexist. Russian translations include both
+upstream additions and the fork's background-preparation messages.
+
+The fork retains its browser-only update action: the upstream updater-icon work
+must not enable official-binary installation over this private app. Background
+preparation keeps its broader priority/scope controls; the overlapping upstream
+condition rewrite changes no behavior. Render cache **80** invalidates earlier
+R3D views for the upstream grayscale JPEG XL LinearRaw decoding change. Catalogue
+format 12 and camera look 13 remain unchanged. AI package IDs, trust pins and
+external native runtimes are unchanged; ordinary app updates do not rebuild them.
+
+The app bundle must preserve upstream CFBundleLocalizations when adapting the
+installed private identity. Native retouch, optics, denoise defaults, safe exports,
+clipping and Option/Alt sharpening-mask preview remain required behavior.
+Validation, skipped checks and personal acceptance are recorded separately in
+`../evidence/update-0.16.0-20261031/`. Source integration is not user acceptance.
+No release, tag or upstream PR is created by this update.
 
 ## v0.15.0 compatibility integration (2026-10-29)
 
