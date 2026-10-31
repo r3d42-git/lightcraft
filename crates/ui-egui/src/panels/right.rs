@@ -11,6 +11,8 @@ use crate::state::RightPanel;
 use crate::theme::Tokens;
 use crate::widgets::{divider, register, slider, text_button};
 
+#[cfg(not(target_arch = "wasm32"))]
+mod ai_models;
 mod crop;
 mod history;
 mod info;

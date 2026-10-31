@@ -3,8 +3,39 @@ use crate::{EngineError, PhotoId, Result, Session};
 use lightcraft_develop::{AiEdit, DevelopSettings, Spot};
 use serde_json::{Value, json};
 
+#[cfg(not(target_arch = "wasm32"))]
+mod input;
+#[cfg(not(target_arch = "wasm32"))]
+mod patch;
+#[cfg(not(target_arch = "wasm32"))]
+mod python;
+#[cfg(not(target_arch = "wasm32"))]
+mod runner;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use input::context_rect;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use python::{backend_directory, wait_worker};
+
+/// Observable job lifecycle. Cancellation remains pending until the worker acknowledges completion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Phase {
+    #[default]
+    Idle,
+    Preparing,
+    Loading,
+    Running,
+    Finalizing,
+    Ready,
+    Failed,
+    Cancelling,
+    Cancelled,
+}
+
 #[derive(Default)]
 pub struct AiRemove {
+    pub phase: Phase,
+    cancel_reason: Option<&'static str>,
     pub message: String,
     pub draft: Option<AiEdit>,
     preview_settings: Option<(std::sync::Arc<DevelopSettings>, u64)>,
@@ -18,6 +49,7 @@ pub struct AiRemove {
 }
 #[cfg(not(target_arch = "wasm32"))]
 struct Job {
+    phases: std::sync::mpsc::Receiver<Phase>,
     reply: std::sync::mpsc::Receiver<std::result::Result<AiEdit, String>>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -25,6 +57,36 @@ struct Job {
 impl Drop for Job {
     fn drop(&mut self) {
         self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl Job {
+    fn spawn(
+        activity: &crate::activity::Activity,
+        detail: &str,
+        work: impl FnOnce(&std::sync::atomic::AtomicBool, &dyn Fn(Phase)) -> std::result::Result<AiEdit, String> + Send + 'static,
+    ) -> std::result::Result<Self, String> {
+        let (tx, reply) = std::sync::mpsc::channel();
+        let (phase_tx, phases) = std::sync::mpsc::channel();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = cancel.clone();
+        let task = activity.start("retouch", "AI Remove", crate::activity::Cancel::Flag(cancel.clone()));
+        task.detail(detail);
+        std::thread::Builder::new()
+            .name("ai-remove".into())
+            .spawn(move || {
+                let result = crate::guard::catch("AI Remove", || {
+                    work(&stopped, &|phase| {
+                        let _ = phase_tx.send(phase);
+                    })
+                })
+                .unwrap_or_else(Err);
+                // A completion acknowledges that inference, process reaping and activity cleanup finished.
+                drop(task);
+                let _ = tx.send(result);
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Self { reply, phases, cancel })
     }
 }
 impl AiRemove {
@@ -66,23 +128,46 @@ impl Session {
                 .is_some_and(|((id, d, g), (now, settings, generation))| *id == now && *g == generation && std::sync::Arc::ptr_eq(d, &settings))
         {
             self.ai_remove_cancel();
-            self.ai_remove.message = "AI result discarded because the photo or edits changed.".into();
+            self.ai_remove.cancel_reason = Some("AI result discarded because the photo or edits changed.");
+            self.ai_remove.message = self.ai_remove.cancel_reason.unwrap_or_default().into();
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(result) = self.ai_remove.job.as_ref().and_then(|j| match j.reply.try_recv() {
-            Ok(r) => Some(r),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err("AI worker stopped unexpectedly.".into())),
-            Err(_) => None,
-        }) {
-            self.ai_remove.job = None;
-            match result {
-                Ok(edit) => {
-                    self.ai_remove.draft = Some(edit);
-                    self.ai_remove.message = "Result ready. Review the patch before accepting.".into();
-                }
-                Err(e) => {
-                    self.ai_remove.message = e;
-                    self.ai_remove.tag = None;
+        if let Some(job) = &self.ai_remove.job {
+            let cancelled = job.cancel.load(std::sync::atomic::Ordering::Relaxed);
+            if cancelled {
+                self.ai_remove.phase = Phase::Cancelling;
+                self.ai_remove.draft = None;
+                self.ai_remove.preview_settings = None;
+                self.ai_remove.preview_original = false;
+                self.ai_remove.tag = None;
+                self.ai_remove.message = self.ai_remove.cancel_reason.unwrap_or("Cancelling AI Remove…").into();
+            } else if let Some(phase) = job.phases.try_iter().last() {
+                self.ai_remove.phase = phase;
+            }
+            let result = match job.reply.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err("AI worker stopped unexpectedly.".into())),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            };
+            if let Some(result) = result {
+                let cancelled = job.cancel.load(std::sync::atomic::Ordering::Relaxed);
+                self.ai_remove.job = None;
+                if cancelled {
+                    self.ai_remove.phase = Phase::Cancelled;
+                    self.ai_remove.message = self.ai_remove.cancel_reason.unwrap_or("Cancelled.").into();
+                } else {
+                    match result {
+                        Ok(edit) => {
+                            self.ai_remove.draft = Some(edit);
+                            self.ai_remove.phase = Phase::Ready;
+                            self.ai_remove.message = "Result ready. Review the patch before accepting.".into();
+                        }
+                        Err(e) => {
+                            self.ai_remove.phase = Phase::Failed;
+                            self.ai_remove.message = e;
+                            self.ai_remove.tag = None;
+                        }
+                    }
                 }
             }
         }
@@ -119,15 +204,17 @@ impl Session {
     }
 
     fn ai_remove_cancel(&mut self) {
+        self.ai_remove.cancel_reason = None;
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.ai_remove.job = None;
+        if let Some(job) = &self.ai_remove.job {
+            job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
+        self.ai_remove.phase = if self.ai_remove.busy() { Phase::Cancelling } else { Phase::Cancelled };
         self.ai_remove.draft = None;
         self.ai_remove.preview_settings = None;
         self.ai_remove.preview_original = false;
         self.ai_remove.tag = None;
-        self.ai_remove.message = "Cancelled.".into();
+        self.ai_remove.message = if self.ai_remove.busy() { "Cancelling AI Remove…" } else { "Cancelled." }.into();
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn ai_remove_start(&mut self, backend: Option<&'static str>, model_id: Option<String>) -> Result<Value> {
@@ -157,24 +244,36 @@ impl Session {
         let source = self.media.source_ref(&photo, crate::media::SourceLevel::Full);
         let info = self.source_info(id);
         let settings = (*d).clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let stopped = cancel.clone();
         static NEXT_SEED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(42);
         let seed = if backend == "lama" { 0 } else { next_diffusion_seed(&NEXT_SEED) };
-        std::thread::Builder::new()
-            .name("ai-remove".into())
-            .spawn(move || {
-                let result = crate::guard::catch("AI Remove", || {
-                    let _store_lock = crate::ai_models::store_lock(&ai_root).map_err(|e| e.to_string())?;
-                    let selected = crate::ai_models::resolve(&ai_root, Some(&selected_id), Some(&backend), false).map_err(|e| e.to_string())?;
-                    run_worker(&selected.runtime, &backend, Some(&selected), source, info, settings, spot, index.is_none(), seed, &stopped)
-                })
-                .unwrap_or_else(Err);
-                let _ = tx.send(result);
-            })
-            .map_err(error)?;
+        let detail = selected_id.clone();
+        let job = Job::spawn(&self.activity, &detail, move |stopped, progress| {
+            progress(Phase::Loading);
+            let _store_lock = crate::ai_models::store_lock(&ai_root).map_err(|e| e.to_string())?;
+            if stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("Cancelled.".into());
+            }
+            let selected = crate::ai_models::resolve(&ai_root, Some(&selected_id), Some(&backend), false).map_err(|e| e.to_string())?;
+            match selected.adapter().map_err(|e| e.to_string())?.execution {
+                crate::ai_models::ExecutionKind::PythonProtocolV1 => run_worker_with_progress(
+                    &selected.runtime,
+                    &backend,
+                    Some(&selected),
+                    source,
+                    info,
+                    settings,
+                    spot,
+                    index.is_none(),
+                    seed,
+                    stopped,
+                    progress,
+                ),
+            }
+        })
+        .map_err(error)?;
         self.ai_remove = AiRemove {
+            phase: Phase::Loading,
+            cancel_reason: None,
             message: "AI Remove is working locally…".into(),
             draft: None,
             preview_settings: None,
@@ -183,7 +282,7 @@ impl Session {
             spot: index,
             selection: self.ai_remove.selection.clone(),
             selection_tag: self.ai_remove.selection_tag.clone(),
-            job: Some(Job { reply: rx, cancel }),
+            job: Some(job),
         };
         Ok(json!({"running":true}))
     }
@@ -198,6 +297,7 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             s.ai_remove_cancel();
             s.ai_remove.selection = Some(selection);
             s.ai_remove.selection_tag = Some(tag);
+            if !s.ai_remove.busy() { s.ai_remove.phase = Phase::Idle; }
             s.ai_remove.message = "AI selection ready. Run AI Remove to create a preview.".into();
             Ok(json!({"selected":true}))
         }),
@@ -213,7 +313,7 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             #[cfg(not(target_arch = "wasm32"))] { s.ai_remove_start(backend, model_id) }
             #[cfg(target_arch = "wasm32")] { let _ = (s, backend, model_id); Err(error("Local AI Remove is unavailable in the browser.")) }
         }),
-        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some(),"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message})) }),
+        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some(),"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
         cmd!(query "aiRemove.previewOriginal", "Show Photo Without AI Draft", [], None, "{enabled:bool} — compare the pending result without accepting it", has_active, |s, p| {
             s.ai_remove_poll();
             if s.ai_remove.draft.is_none() { return Err(error("No current AI result to preview.")); }
@@ -238,6 +338,7 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             s.ai_remove_cancel();
             s.ai_remove.selection = None;
             s.ai_remove.selection_tag = None;
+            s.ai_remove.phase = Phase::Idle;
             s.ai_remove.message = "AI Remove accepted. Undo is available.".into();
             Ok(json!({}))
         }),
@@ -309,16 +410,6 @@ fn backend_param(params: &Value) -> Result<&'static str> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn backend_directory(backend: &str) -> Option<&'static str> {
-    match backend {
-        "objectclear" => Some("objectclear"),
-        "lama" => Some("lama"),
-        "rorem" => Some("model"),
-        _ => None,
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn next_diffusion_seed(counter: &std::sync::atomic::AtomicU32) -> u32 {
     // Skip zero even when the counter wraps after u32::MAX.
     counter
@@ -327,34 +418,9 @@ fn next_diffusion_seed(counter: &std::sync::atomic::AtomicU32) -> u32 {
         .max(1)
 }
 
-/// Use equal context on both axes, shifting at edges instead of clipping it.
-/// Very narrow originals retain all available context on the shorter axis.
-#[cfg(not(target_arch = "wasm32"))]
-fn context_rect(bounds: [f64; 4], width: usize, height: usize) -> Option<[f64; 4]> {
-    let [left, top, right, bottom] = bounds;
-    let (width, height) = (width as f64, height as f64);
-    if !bounds.iter().all(|v| v.is_finite())
-        || right <= left
-        || bottom <= top
-        || width == 0.0
-        || height == 0.0
-        || right <= 0.0
-        || bottom <= 0.0
-        || left >= width
-        || top >= height
-    {
-        return None;
-    }
-    let half = (right - left).max(bottom - top).max(256.0);
-    let side = (half * 2.0).ceil();
-    let (w, h) = (side.min(width), side.min(height));
-    let x = (((left + right) * 0.5 - w * 0.5).floor()).clamp(0.0, width - w);
-    let y = (((top + bottom) * 0.5 - h * 0.5).floor()).clamp(0.0, height - h);
-    Some([x, y, x + w, y + h])
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))]
 fn run_worker(
     runtime: &std::path::Path,
     backend: &str,
@@ -367,215 +433,36 @@ fn run_worker(
     seed: u32,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> std::result::Result<AiEdit, String> {
-    use std::{fs, sync::atomic::Ordering, time::Duration};
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!("lightcraft-ai-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-    let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(&dir).map_err(|e| e.to_string())?;
-    struct Scratch(std::path::PathBuf);
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _scratch = Scratch(dir.clone());
-    let work = || -> std::result::Result<AiEdit, String> {
-        let decoded = source.load_source()?;
-        if decoded.from_proxy {
-            return Err("AI Remove needs the original photo online.".into());
-        }
-        let edited = lightcraft_pipeline::ai_edits::source_with_edits(&decoded.image, &d);
-        let full = edited.as_ref();
-        let frame = lightcraft_pipeline::frame_for(full, decoded.info.as_ref().unwrap_or(&info), &d, false);
-        let radius = spot.size * full.width.max(full.height) as f64;
-        if !radius.is_finite() || radius <= 0.0 || spot.points.is_empty() || spot.points.len() > 4096 {
-            return Err("Invalid brush mask.".into());
-        }
-        let mut bounds = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-        for p in &spot.points {
-            if !p.x.is_finite() || !p.y.is_finite() {
-                return Err("Invalid brush point.".into());
-            }
-            let (x, y) = (p.x * frame.ow, p.y * frame.oh);
-            bounds[0] = bounds[0].min(x - radius);
-            bounds[1] = bounds[1].min(y - radius);
-            bounds[2] = bounds[2].max(x + radius);
-            bounds[3] = bounds[3].max(y + radius);
-        }
-        // Bound the entire transformed brush rectangle through the nonlinear warp. Mapping
-        // only centres (or a few boundary points) could clip curved capsule support.
-        let oriented = frame.warp.as_ref().map_or(Some(bounds), |warp| warp.source_bounds(bounds)).unwrap_or([0.0, 0.0, frame.ow, frame.oh]);
-        bounds = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-        for (x, y) in [(oriented[0], oriented[1]), (oriented[0], oriented[3]), (oriented[2], oriented[1]), (oriented[2], oriented[3])] {
-            let (x, y) = d.orientation.inverse().map(x, y, frame.ow, frame.oh);
-            bounds[0] = bounds[0].min(x);
-            bounds[1] = bounds[1].min(y);
-            bounds[2] = bounds[2].max(x);
-            bounds[3] = bounds[3].max(y);
-        }
-        let support = lightcraft_pipeline::ai_edits::brush_support(&frame, &spot, continuous);
-        let brush = lightcraft_pipeline::ai_edits::BrushSupport::new(&support, full.width, full.height);
-        let [x0, y0, x1, y1] = context_rect(bounds, full.width, full.height).ok_or_else(|| "The mask is outside the photo.".to_string())?;
-        let scale = (1024.0 / (x1 - x0).max(y1 - y0)).min(1.0);
-        let (w, h) = (((x1 - x0) * scale).ceil() as usize, ((y1 - y0) * scale).ceil() as usize);
-        let rect = [x0 / full.width as f64, y0 / full.height as f64, x1 / full.width as f64, y1 / full.height as f64];
-        let mut src = lightcraft_raster::Rgb32f::new(w, h);
-        for (i, p) in src.data.iter_mut().enumerate() {
-            *p = full.sample_bilinear(
-                (x0 + ((i % w) as f64 + 0.5) * (x1 - x0) / w as f64 - 0.5) as f32,
-                (y0 + ((i / w) as f64 + 0.5) * (y1 - y0) / h as f64 - 0.5) as f32,
-            );
-        }
-        let mut input = Vec::with_capacity(w.saturating_mul(h).saturating_mul(12));
-        for p in &src.data {
-            for v in p {
-                input.extend_from_slice(&v.to_le_bytes());
-            }
-        }
-        let mut mask = vec![0u8; w.saturating_mul(h)];
-        // Evaluate exact frozen transformed support at each source-space inference sample.
-        for (i, m) in mask.iter_mut().enumerate() {
-            if i % 1024 == 0 && cancel.load(Ordering::Relaxed) {
-                return Err("Cancelled.".into());
-            }
-            let point = [
-                (x0 + ((i % w) as f64 + 0.5) * (x1 - x0) / w as f64) / full.width as f64,
-                (y0 + ((i / w) as f64 + 0.5) * (y1 - y0) / h as f64) / full.height as f64,
-            ];
-            if brush.alpha(point, full.width, full.height) > 0.0 {
-                *m = 255;
-            }
-        }
-        if !mask.contains(&255) {
-            return Err("The selected mask is empty.".into());
-        }
-        fs::write(dir.join("input.rgb"), input).map_err(|e| e.to_string())?;
-        fs::write(dir.join("mask.u8"), &mask).map_err(|e| e.to_string())?;
-        let request = json!({"version":1,"input":dir.join("input.rgb"),"mask":dir.join("mask.u8"),"output":dir.join("output.rgba"),"width":w,"height":h,"rect":rect,"backend":backend,"model_dir":package.map(|p| p.model.clone()).unwrap_or_else(|| runtime.join(backend_directory(backend).unwrap_or(""))),"model_package":package.map(|p|json!({"path":p.model,"manifest":p.manifest})),"seed":seed,"steps":20});
-        fs::write(dir.join("request.json"), serde_json::to_vec(&request).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        if cancel.load(Ordering::Relaxed) {
-            return Err("Cancelled.".into());
-        }
-        let mut child = std::process::Command::new(runtime.join("bin/python3"))
-            .arg("-I")
-            .arg("-B")
-            .arg(package.map(|p| p.worker.clone()).unwrap_or_else(|| runtime.join("worker.py")))
-            .arg(dir.join("request.json"))
-            .arg(dir.join("response.json"))
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("Cannot start AI Remove: {e}"))?;
-        if let Err(failure) = wait_worker(&mut child, cancel, Duration::from_secs(600)) {
-            if !cancel.load(Ordering::Relaxed) {
-                let response = dir.join("response.json");
-                if fs::metadata(&response).is_ok_and(|m| m.len() <= 65536)
-                    && let Ok(bytes) = fs::read(response)
-                    && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
-                    && let Some(detail) = value.get("error").and_then(Value::as_str)
-                {
-                    return Err(format!("AI Remove failed: {}", detail.chars().take(1000).collect::<String>()));
-                }
-            }
-            return Err(failure);
-        }
-        let response_path = dir.join("response.json");
-        if fs::metadata(&response_path).map_err(|e| e.to_string())?.len() > 65536 {
-            return Err("Worker response is too large.".into());
-        }
-        let response: Value = serde_json::from_slice(&fs::read(response_path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        if response.get("version").and_then(Value::as_u64) != Some(1)
-            || response.get("width").and_then(Value::as_u64) != Some(w as u64)
-            || response.get("height").and_then(Value::as_u64) != Some(h as u64)
-        {
-            return Err("AI worker returned mismatched dimensions.".into());
-        }
-        let output = dir.join("output.rgba");
-        let expected = w.saturating_mul(h).saturating_mul(16);
-        if fs::metadata(&output).map_err(|e| e.to_string())?.len() != expected as u64 {
-            return Err("AI worker returned invalid pixel data.".into());
-        }
-        let raw = fs::read(output).map_err(|e| e.to_string())?;
-        let mut pixels = Vec::with_capacity(mask.len());
-        for (i, chunk) in raw.chunks_exact(16).enumerate() {
-            let mut p = [0.0f32; 4];
-            for (v, bytes) in p.iter_mut().zip(chunk.chunks_exact(4)) {
-                let a = <[u8; 4]>::try_from(bytes).map_err(|e| e.to_string())?;
-                *v = f32::from_le_bytes(a);
-            }
-            // Never trust worker alpha: only the exact user-authorized source mask can change pixels.
-            p[3] = f32::from(mask.get(i).copied().unwrap_or(0)) / 255.0;
-            if p[3] == 0.0
-                && let Some(original) = src.data.get(i)
-            {
-                p[0] = original[0];
-                p[1] = original[1];
-                p[2] = original[2];
-            }
-            pixels.push(p);
-        }
-        AiEdit::from_pixels(
-            AiEdit {
-                id: 0,
-                enabled: true,
-                rect,
-                support: Some(support),
-                width: w as u32,
-                height: h as u32,
-                pixels: String::new(),
-                model: response.get("model").and_then(Value::as_str).ok_or("Worker omitted model provenance.")?.into(),
-                model_version: response
-                    .get("model_version")
-                    .or_else(|| response.get("revision"))
-                    .and_then(Value::as_str)
-                    .ok_or("Worker omitted model revision.")?
-                    .into(),
-                seed: u64::from(seed),
-            },
-            &pixels,
-        )
-        .map_err(|e| e.to_string())
-    };
-    work()
+    run_worker_with_progress(runtime, backend, package, source, info, d, spot, continuous, seed, cancel, &|_| {})
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn wait_worker(
-    child: &mut std::process::Child,
+#[allow(clippy::too_many_arguments)]
+fn run_worker_with_progress(
+    runtime: &std::path::Path,
+    backend: &str,
+    package: Option<&crate::ai_models::Resolved>,
+    source: crate::media::SourceRef,
+    info: lightcraft_pipeline::SourceInfo,
+    d: DevelopSettings,
+    spot: Spot,
+    continuous: bool,
+    seed: u32,
     cancel: &std::sync::atomic::AtomicBool,
-    timeout: std::time::Duration,
-) -> std::result::Result<(), String> {
-    use std::{sync::atomic::Ordering, time::Duration};
-    let started = std::time::Instant::now();
-    loop {
-        if cancel.load(Ordering::Relaxed) || started.elapsed() > timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(if cancel.load(Ordering::Relaxed) { "Cancelled." } else { "AI Remove timed out after ten minutes." }.into());
-        }
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(_)) => return Err("The local AI worker failed. Check the model/runtime setup.".into()),
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(e.to_string());
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-        }
-    }
+    progress: &dyn Fn(Phase),
+) -> std::result::Result<AiEdit, String> {
+    progress(Phase::Preparing);
+    let prepared = input::prepare(source, info, d, spot, continuous, seed, cancel)?;
+    runner::execute_with_progress(prepared, &python::PythonRunner { runtime, backend, package }, cancel, progress)
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn draft(s: &mut Session) {
+    pub(super) fn draft(s: &mut Session) {
         let edit = AiEdit::from_pixels(
             AiEdit {
                 id: 0,
@@ -623,6 +510,8 @@ mod tests {
             &launcher,
             r#"#!/bin/sh
 cp "$4" "$(dirname "$0")/../captured-request.json"
+cp "$(dirname "$4")/input.rgb" "$(dirname "$0")/../captured-input.rgb"
+cp "$(dirname "$4")/mask.u8" "$(dirname "$0")/../captured-mask.u8"
 cp "$(dirname "$0")/../pixels.rgba" "$(dirname "$5")/output.rgba"
 printf '%s' '{"version":1,"width":128,"height":96,"model":"test","model_version":"geometry-1"}' > "$5"
 "#,
@@ -632,6 +521,8 @@ printf '%s' '{"version":1,"width":128,"height":96,"model":"test","model_version"
         let mut settings = DevelopSettings::default();
         settings.optics.lens_profile = true;
         settings.optics.remove_ca = true;
+        settings.geometry.vertical = 12.0;
+        settings.geometry.horizontal = -8.0;
         settings.optics.ca_red = 30.0;
         settings.optics.vignetting = 40.0;
         let lens = lightcraft_develop::EmbeddedLens {
@@ -675,6 +566,23 @@ printf '%s' '{"version":1,"width":128,"height":96,"model":"test","model_version"
         assert_eq!(request["model_package"]["manifest"]["id"], "lama-test-revision");
         assert!(edit.support.as_ref().unwrap().geometry.is_some());
         assert_eq!(edit.model, "test");
+        assert_ne!(edit.support.as_ref().unwrap().geometry.as_ref().unwrap().perspective, lightcraft_geom::Homography::IDENTITY);
+        assert!(edit.support.as_ref().unwrap().geometry.as_ref().unwrap().lens.is_some());
+        assert_eq!(request["version"], 1);
+        assert_eq!(request["steps"], 20);
+        assert_eq!(request["seed"], 0);
+        assert_eq!(request["backend"], "lama");
+        let expected_rgb: Vec<u8> = (0..128 * 96).flat_map(|_| [0.1f32, 0.2, 0.3].into_iter().flat_map(f32::to_le_bytes)).collect();
+        assert_eq!(std::fs::read(runtime.path().join("captured-input.rgb")).unwrap(), expected_rgb);
+        let mask = std::fs::read(runtime.path().join("captured-mask.u8")).unwrap();
+        assert_eq!(mask.len(), 128 * 96);
+        let pixels = edit.decode_pixels().unwrap();
+        for (pixel, alpha) in pixels.iter().zip(mask) {
+            assert_eq!(pixel[3], f32::from(alpha) / 255.0);
+            if alpha == 0 {
+                assert_eq!(*pixel, [0.1, 0.2, 0.3, 0.0]);
+            }
+        }
         let mut patched = settings.clone();
         patched.ai_edits.push(edit);
         let src = lightcraft_raster::Rgb32f::from_fn(128, 96, |_, _| [0.1, 0.2, 0.3]);

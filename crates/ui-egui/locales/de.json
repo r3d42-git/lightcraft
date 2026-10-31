@@ -1,4 +1,7 @@
 {
+  "Model details": "Modelldetails",
+  "Included licence and notice files:": "Enthaltene Lizenz- und Hinweisdateien:",
+  "Cancelling AI Remove…": "KI-Berechnung wird abgebrochen …",
   "AI model": "KI-Modell",
   "Hold Space: drag to pan, scroll to zoom.": "Leertaste + Ziehen: Verschieben\nLeertaste + Scrollen: Zoom",
   "Reconstructs backgrounds and structures. Recommended for object removal.": "Rekonstruiert Hintergründe und Strukturen. Zum Entfernen von Objekten empfohlen.",

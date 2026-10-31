@@ -9,6 +9,100 @@ use std::path::{Component, Path, PathBuf};
 fn err(e: impl ToString) -> EngineError {
     EngineError::Other(e.to_string())
 }
+/// Retouch model families supported by the trusted worker. Package strings remain
+/// unchanged on disk; parsing them does not enable arbitrary model code.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelFamily {
+    Lama,
+    Rorem,
+    ObjectClear,
+}
+impl ModelFamily {
+    pub fn from_backend(backend: &str) -> Option<Self> {
+        match backend {
+            "lama" => Some(Self::Lama),
+            "rorem" => Some(Self::Rorem),
+            "objectclear" => Some(Self::ObjectClear),
+            _ => None,
+        }
+    }
+    pub fn backend(self) -> &'static str {
+        match self {
+            Self::Lama => "lama",
+            Self::Rorem => "rorem",
+            Self::ObjectClear => "objectclear",
+        }
+    }
+    pub fn adapter(self) -> AdapterDescriptor {
+        let (display_name, required_files, weight_components): (&'static str, &'static [&'static str], &'static [&'static str]) = match self {
+            Self::Lama => ("Carve/LaMa-ONNX", &["lama_fp32.onnx"], &[]),
+            Self::Rorem => (
+                "LetsThink/RORem",
+                &[
+                    "model_index.json",
+                    "unet/config.json",
+                    "vae/config.json",
+                    "scheduler/scheduler_config.json",
+                    "text_encoder/config.json",
+                    "tokenizer/tokenizer_config.json",
+                ],
+                &["unet/", "vae/", "text_encoder/"],
+            ),
+            Self::ObjectClear => (
+                "jixin0101/ObjectClear",
+                &[
+                    "model_index.json",
+                    "unet/config.json",
+                    "vae/config.json",
+                    "scheduler/scheduler_config.json",
+                    "text_encoder/config.json",
+                    "text_encoder_2/config.json",
+                    "tokenizer/tokenizer_config.json",
+                    "tokenizer_2/tokenizer_config.json",
+                    "image_prompt_encoder/config.json",
+                    "postfuse_module/config.json",
+                ],
+                &["unet/", "vae/", "text_encoder/", "text_encoder_2/", "image_prompt_encoder/", "postfuse_module/"],
+            ),
+        };
+        AdapterDescriptor {
+            family: self,
+            display_name,
+            adapter_version: 1,
+            execution: ExecutionKind::PythonProtocolV1,
+            required_files,
+            weight_components,
+        }
+    }
+}
+/// Execution supported by the current installed adapter, independently of the
+/// model family. Native inference is not an installed adapter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionKind {
+    PythonProtocolV1,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AdapterDescriptor {
+    pub family: ModelFamily,
+    pub display_name: &'static str,
+    pub adapter_version: u32,
+    pub execution: ExecutionKind,
+    required_files: &'static [&'static str],
+    weight_components: &'static [&'static str],
+}
+impl AdapterDescriptor {
+    fn from_manifest(m: &Value) -> Result<Self> {
+        let family = ModelFamily::from_backend(m["backend"].as_str().unwrap_or_default()).ok_or_else(|| err("Unsupported AI model family."))?;
+        let adapter = family.adapter();
+        if m["adapter_version"] != adapter.adapter_version {
+            return Err(err("Unsupported AI package or worker adapter."));
+        }
+        if m["name"] != adapter.display_name {
+            return Err(err("Unsupported AI model family."));
+        }
+        Ok(adapter)
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Model {
     pub id: String,
@@ -48,6 +142,15 @@ pub struct Resolved {
     pub worker: PathBuf,
     pub backend: String,
     pub manifest: Value,
+}
+impl Resolved {
+    pub fn adapter(&self) -> Result<AdapterDescriptor> {
+        let adapter = AdapterDescriptor::from_manifest(&self.manifest)?;
+        if adapter.family.backend() != self.backend {
+            return Err(err("AI model/runtime registry mismatch."));
+        }
+        Ok(adapter)
+    }
 }
 #[derive(Default)]
 pub struct Store {
@@ -156,57 +259,19 @@ fn objectclear_pins() -> Result<Value> {
     serde_json::from_str(r#"{"LICENSE":"73c84d2c2ebcdde03cb7fc853aaec0d4b3b280ee8b47f98a3d6c1931430d5aae","objectclear/__init__.py":"1993604ebfb1097873491ead796e5ad3fd6711387452145f04a79aae7012e39b","objectclear/models/__init__.py":"c0a02b976d31b4aba72ee728fa9445d915ce59374f5740c595ac41c3df3b1b95","objectclear/models/clip_image_encoder.py":"8deb2e9634168a8f96723a8f7487df5eaea229d36a4bdaaceed8878b7b1c596f","objectclear/models/postfuse_module.py":"3384daa88be0d463b3117d5f2065387f02e6b7589f3036ecfb746ff1a39cb768","objectclear/pipelines/__init__.py":"5666324f2e22aebd7954a33d4ff14f3b6d9004ccbec18756045f9e92d441d02d","objectclear/pipelines/pipeline_objectclear.py":"f0919c0dc8e2b5e5d9768b907e9d78e6182722a20b2626716311c43bbe0474bc","objectclear/utils/__init__.py":"0bd93dc8b73246d7516feabfd3c9ea22721991732a9a6ead89e4db54192348dd","objectclear/utils/attention_guided_fusion.py":"66f92ed57791e7e453b93f07205f8d4dcadf1b8d776898d3d824456233cbfdb1","objectclear/utils/image_utils.py":"a374fa4b0c7b7a1fb663b67fc0f2563900b7c38cf0f59b568bbb298a20881e71"}"#).map_err(err)
 }
 fn model_adapter(dir: &Path, m: &Value, files: &std::collections::HashSet<&str>) -> Result<()> {
-    let backend = m["backend"].as_str().unwrap_or_default();
-    let name = match backend {
-        "lama" => "Carve/LaMa-ONNX",
-        "rorem" => "LetsThink/RORem",
-        "objectclear" => "jixin0101/ObjectClear",
-        _ => return Err(err("Unsupported AI model family.")),
-    };
-    if m["name"] != name {
-        return Err(err("Unsupported AI model family."));
-    }
-    let required: &[&str] = match backend {
-        "lama" => &["lama_fp32.onnx"],
-        "rorem" => &[
-            "model_index.json",
-            "unet/config.json",
-            "vae/config.json",
-            "scheduler/scheduler_config.json",
-            "text_encoder/config.json",
-            "tokenizer/tokenizer_config.json",
-        ],
-        _ => &[
-            "model_index.json",
-            "unet/config.json",
-            "vae/config.json",
-            "scheduler/scheduler_config.json",
-            "text_encoder/config.json",
-            "text_encoder_2/config.json",
-            "tokenizer/tokenizer_config.json",
-            "tokenizer_2/tokenizer_config.json",
-            "image_prompt_encoder/config.json",
-            "postfuse_module/config.json",
-        ],
-    };
-    for path in required {
+    let adapter = AdapterDescriptor::from_manifest(m)?;
+    for path in adapter.required_files {
         if !files.contains(path) {
             return Err(err(format!("Model adapter asset missing: {path}")));
         }
     }
-    if backend != "lama" {
-        for component in if backend == "objectclear" {
-            vec!["unet/", "vae/", "text_encoder/", "text_encoder_2/", "image_prompt_encoder/", "postfuse_module/"]
-        } else {
-            vec!["unet/", "vae/", "text_encoder/"]
-        } {
-            if !files.iter().any(|p| p.starts_with(component) && p.ends_with(".safetensors")) {
-                return Err(err(format!("Model safe tensor weights missing: {component}")));
-            }
+    for component in adapter.weight_components {
+        if !files.iter().any(|p| p.starts_with(*component) && p.ends_with(".safetensors")) {
+            return Err(err(format!("Model safe tensor weights missing: {component}")));
         }
     }
     let pins = objectclear_pins()?;
-    if backend == "objectclear" {
+    if adapter.family == ModelFamily::ObjectClear {
         if m["code_pins"] != pins {
             return Err(err("ObjectClear code pins do not match the trusted worker."));
         }
@@ -248,7 +313,7 @@ fn model_adapter(dir: &Path, m: &Value, files: &std::collections::HashSet<&str>)
             }
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
             let executable = matches!(ext.as_str(), "py" | "pyc" | "so" | "dylib" | "dll" | "pyd" | "exe" | "sh" | "bash" | "zsh");
-            let pinned = backend == "objectclear" && rel.strip_prefix("code/").is_some_and(|n| pins.get(n).is_some());
+            let pinned = adapter.family == ModelFamily::ObjectClear && rel.strip_prefix("code/").is_some_and(|n| pins.get(n).is_some());
             if executable && !pinned {
                 return Err(err("Model package contains untrusted executable code."));
             }
@@ -265,15 +330,15 @@ fn model_adapter(dir: &Path, m: &Value, files: &std::collections::HashSet<&str>)
 }
 fn manifest(dir: &Path, kind: &str, hashes: bool) -> Result<Value> {
     let m = read_json(&inside(dir, "package.json")?)?;
-    if m["version"] != 1 || m["kind"] != kind || m["adapter_version"] != 1 {
+    if m["version"] != 1 || m["kind"] != kind || (kind != "model" && m["adapter_version"] != 1) {
         return Err(err("Unsupported AI package or worker adapter."));
+    }
+    if kind == "model" {
+        AdapterDescriptor::from_manifest(&m)?;
     }
     id(m["id"].as_str().ok_or_else(|| err("Missing AI package ID."))?)?;
     if kind == "runtime" && m["architecture"] != format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS) {
         return Err(err("AI runtime architecture is incompatible with this computer."));
-    }
-    if kind == "model" && !matches!(m["backend"].as_str(), Some("lama" | "rorem" | "objectclear")) {
-        return Err(err("Unsupported AI model architecture."));
     }
     for field in ["name", "model_version", "source"] {
         if m[field].as_str().is_none_or(|v| v.is_empty()) {
@@ -382,13 +447,41 @@ fn write_registry(root: &Path, r: &Registry) -> Result<()> {
     std::fs::write(&path, serde_json::to_vec_pretty(r).map_err(err)?).map_err(err)?;
     std::fs::rename(path, root.join("registry.json")).map_err(err)
 }
+/// Display-only provenance from a structurally validated model manifest. File
+/// names identify included notices; they do not establish usage permissions.
+fn display_metadata(manifest: &Value) -> Value {
+    let mut metadata = json!({"source":manifest["source"].as_str().unwrap_or_default()});
+    if let Some(revision) = manifest["source_revision"].as_str().filter(|s| !s.is_empty()) {
+        metadata["source_revision"] = json!(revision);
+    }
+    let notices: Vec<&str> = manifest["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f["path"].as_str())
+        .filter(|path| {
+            relative(path).is_ok()
+                && Path::new(path).file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+                    let name = name.to_ascii_lowercase();
+                    ["license", "licence", "copying", "notice"].iter().any(|part| name.contains(part))
+                })
+        })
+        .collect();
+    metadata["licence_files"] = json!(notices);
+    metadata
+}
 fn snapshot(root: &Path) -> Result<Value> {
     let r = registry(root)?;
     let mut v = serde_json::to_value(&r).map_err(err)?;
     v["root"] = json!(root);
     for m in v["models"].as_array_mut().into_iter().flatten() {
         m["status"] = json!(match resolve(root, m["id"].as_str(), None, false) {
-            Ok(_) => "Installed · structural checks passed".to_string(),
+            Ok(resolved) => {
+                for (key, value) in display_metadata(&resolved.manifest).as_object().into_iter().flatten() {
+                    m[key.as_str()] = value.clone();
+                }
+                "Installed · structural checks passed".to_string()
+            }
             Err(e) => e.to_string(),
         });
     }
@@ -580,6 +673,71 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn display_metadata_only_reports_source_and_listed_notice_filenames() {
+        let manifest = json!({
+            "source":"Example/Model@revision-1",
+            "source_revision":"code-revision-2",
+            "licence":"Do not infer permissions from this field",
+            "runtime_id":"implementation-detail",
+            "files":[
+                {"path":"code/LICENSE"},
+                {"path":"Model-LicenCe.txt"},
+                {"path":"COPYING.md"},
+                {"path":"docs/Notice.txt"},
+                {"path":"licenses/weights.json"},
+                {"path":"README.md"},
+                {"path":"../LICENSE"},
+                {"path":"/LICENSE"}
+            ]
+        });
+        assert_eq!(
+            display_metadata(&manifest),
+            json!({"source":"Example/Model@revision-1","source_revision":"code-revision-2","licence_files":["code/LICENSE","Model-LicenCe.txt","COPYING.md","docs/Notice.txt"]})
+        );
+        let mut no_revision = manifest;
+        no_revision["source_revision"] = Value::Null;
+        let metadata = display_metadata(&no_revision);
+        assert!(metadata.get("source_revision").is_none());
+        assert!(metadata.get("licence").is_none());
+        assert!(metadata.get("runtime_id").is_none());
+        assert_eq!(display_metadata(&json!({"source":"source","files":[]})), json!({"source":"source","licence_files":[]}));
+    }
+    #[test]
+    fn supported_descriptors_match_package_v1_identities() {
+        for (backend, name, family, required_count, weight_count) in [
+            ("lama", "Carve/LaMa-ONNX", ModelFamily::Lama, 1, 0),
+            ("rorem", "LetsThink/RORem", ModelFamily::Rorem, 6, 3),
+            ("objectclear", "jixin0101/ObjectClear", ModelFamily::ObjectClear, 10, 6),
+        ] {
+            let manifest = json!({"backend":backend,"name":name,"adapter_version":1});
+            let adapter = AdapterDescriptor::from_manifest(&manifest).unwrap();
+            assert_eq!(adapter.family, family);
+            assert_eq!(adapter.family.backend(), backend);
+            assert_eq!(adapter.display_name, name);
+            assert_eq!(adapter.adapter_version, 1);
+            assert_eq!(adapter.execution, ExecutionKind::PythonProtocolV1);
+            assert_eq!(adapter.required_files.len(), required_count);
+            assert_eq!(adapter.weight_components.len(), weight_count);
+        }
+    }
+    #[test]
+    fn unsupported_descriptor_family_version_and_identity_are_rejected() {
+        for family in [ModelFamily::Lama, ModelFamily::Rorem, ModelFamily::ObjectClear] {
+            let descriptor = family.adapter();
+            let valid = json!({"backend":family.backend(),"name":descriptor.display_name,"adapter_version":1});
+            for version in [Value::Null, json!(0), json!(2), json!("1")] {
+                let mut invalid = valid.clone();
+                invalid["adapter_version"] = version;
+                assert!(AdapterDescriptor::from_manifest(&invalid).is_err());
+            }
+            let mut wrong_name = valid;
+            wrong_name["name"] = json!("Unknown/Model");
+            assert!(AdapterDescriptor::from_manifest(&wrong_name).is_err());
+        }
+        assert!(ModelFamily::from_backend("native-objectclear").is_none());
+        assert!(AdapterDescriptor::from_manifest(&json!({"backend":"unknown","name":"unknown","adapter_version":1})).is_err());
+    }
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
@@ -610,10 +768,61 @@ mod tests {
             write_registry(&p, &Registry::default()).unwrap();
             p
         }
+        // Structural model fixtures deliberately do not contain real weights or
+        // executable source. Hash verification is covered by the import tests.
+        fn structural_model(&self, family: ModelFamily) -> PathBuf {
+            let adapter = family.adapter();
+            let p = self.0.join(family.backend());
+            std::fs::create_dir(&p).unwrap();
+            let mut files = Vec::new();
+            let mut add = |path: &str, hash: String| {
+                let target = p.join(path);
+                std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                std::fs::write(target, b"data").unwrap();
+                files.push(json!({"path":path,"bytes":4,"sha256":hash}));
+            };
+            for path in adapter.required_files {
+                add(path, format!("{:x}", Sha256::digest(b"data")));
+            }
+            for component in adapter.weight_components {
+                add(&format!("{component}model.safetensors"), format!("{:x}", Sha256::digest(b"data")));
+            }
+            let pins = objectclear_pins().unwrap();
+            if family == ModelFamily::ObjectClear {
+                for (name, hash) in pins.as_object().unwrap() {
+                    add(&format!("code/{name}"), hash.as_str().unwrap().to_owned());
+                }
+            }
+            let mut m = json!({"version":1,"kind":"model","id":family.backend(),"backend":family.backend(),"name":adapter.display_name,"model_version":"revision-1","source":"synthetic-test","adapter_version":1,"files":files});
+            if family == ModelFamily::ObjectClear {
+                m["code_pins"] = pins;
+            }
+            std::fs::write(p.join("package.json"), serde_json::to_vec(&m).unwrap()).unwrap();
+            p
+        }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    #[test]
+    fn descriptors_enforce_each_existing_model_asset_schema() {
+        let f = Fixture::new();
+        for family in [ModelFamily::Lama, ModelFamily::Rorem, ModelFamily::ObjectClear] {
+            let p = f.structural_model(family);
+            let m = manifest(&p, "model", false).unwrap();
+            let adapter = AdapterDescriptor::from_manifest(&m).unwrap();
+            let files: std::collections::HashSet<&str> = m["files"].as_array().unwrap().iter().map(|v| v["path"].as_str().unwrap()).collect();
+            for path in adapter.required_files {
+                let mut incomplete = files.clone();
+                incomplete.remove(path);
+                assert!(model_adapter(&p, &m, &incomplete).unwrap_err().to_string().contains("Model adapter asset missing"));
+            }
+            for component in adapter.weight_components {
+                let incomplete = files.iter().copied().filter(|path| !(path.starts_with(*component) && path.ends_with(".safetensors"))).collect();
+                assert!(model_adapter(&p, &m, &incomplete).unwrap_err().to_string().contains("Model safe tensor weights missing"));
+            }
         }
     }
     #[test]
@@ -636,6 +845,11 @@ mod tests {
         let resolved = resolve(&root, None, None, true).unwrap();
         assert_eq!(resolved.model, root.join("models/lama-revision-1"));
         assert_eq!(resolved.runtime, root.join("runtimes/runtime-1"));
+        assert_eq!(resolved.adapter().unwrap().family, ModelFamily::Lama);
+        let display = snapshot(&root).unwrap();
+        assert_eq!(display["models"][0]["source"], "test");
+        assert_eq!(display["models"][0]["licence_files"], json!([]));
+        assert!(read_json(&root.join("registry.json")).unwrap()["models"][0].get("source").is_none());
         let second = f.package("model", "lama-revision-2", "lama");
         let mut second_m = read_json(&second.join("package.json")).unwrap();
         second_m["model_version"] = json!("revision-2");
