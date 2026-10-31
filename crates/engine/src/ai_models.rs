@@ -370,6 +370,9 @@ struct NativePin {
     binary_sha256: String,
     model_id: String,
     model_manifest_sha256: String,
+    /// Native shared libraries are executable code and require application-owned pins.
+    #[serde(default)]
+    dependency_sha256: BTreeMap<String, String>,
 }
 fn native_trust() -> Result<NativeTrust> {
     let trust: NativeTrust = serde_json::from_str(include_str!("ai_models_native_trust.json")).map_err(err)?;
@@ -414,8 +417,17 @@ fn runtime_entry(dir: &Path, manifest: &Value, trust: &NativeTrust) -> Result<(E
     if kind == ExecutionKind::NativeProtocolV1 {
         let runtime_id = manifest["id"].as_str().ok_or_else(|| err("Missing runtime ID."))?;
         let binary_hash = sha256(&entry)?;
-        if trust.version != 1 || !trust.runtimes.iter().any(|pin| pin.id == runtime_id && pin.binary_sha256 == binary_hash) {
-            return Err(err("Native AI runtime binary is not approved by this application."));
+        let pin = trust
+            .runtimes
+            .iter()
+            .find(|pin| pin.id == runtime_id && pin.binary_sha256 == binary_hash)
+            .filter(|_| trust.version == 1)
+            .ok_or_else(|| err("Native AI runtime binary is not approved by this application."))?;
+        for (relative, expected) in &pin.dependency_sha256 {
+            let dependency = inside(dir, relative)?;
+            if !std::fs::symlink_metadata(dir.join(relative)).map_err(err)?.is_file() || sha256(&dependency)? != *expected {
+                return Err(err("Native AI runtime dependency is not approved by this application."));
+            }
         }
         if !manifest["files"]
             .as_array()
@@ -1015,11 +1027,29 @@ mod tests {
             runtimes: vec![NativePin {
                 id: "native-1".into(),
                 binary_sha256: sha256(&native.join("bin/lightcraft-ai-native")).unwrap(),
+                dependency_sha256: BTreeMap::new(),
                 model_id: "lama-revision-1".into(),
                 model_manifest_sha256: sha256(&root.join("models/lama-revision-1/package.json")).unwrap(),
             }],
         };
         (fixture, root, native, trust)
+    }
+    #[test]
+    fn native_dependency_is_rechecked_even_when_package_manifest_is_rewritten() {
+        let (_fixture, _root, native, mut trust) = native_fixture();
+        std::fs::create_dir(native.join("lib")).unwrap();
+        let dependency = native.join("lib/inference.dylib");
+        std::fs::write(&dependency, b"approved native library").unwrap();
+        trust.runtimes[0].dependency_sha256.insert("lib/inference.dylib".into(), sha256(&dependency).unwrap());
+        let mut metadata = read_json(&native.join("package.json")).unwrap();
+        let entry = json!({"path":"lib/inference.dylib", "bytes":23, "sha256":sha256(&dependency).unwrap()});
+        metadata["files"].as_array_mut().unwrap().push(entry);
+        runtime_entry(&native, &metadata, &trust).unwrap();
+        std::fs::write(&dependency, b"altered native library").unwrap();
+        metadata["files"][1]["sha256"] = json!(sha256(&dependency).unwrap());
+        assert!(runtime_entry(&native, &metadata, &trust).is_err());
+        std::fs::remove_file(&dependency).unwrap();
+        assert!(runtime_entry(&native, &metadata, &trust).is_err());
     }
     #[test]
     fn fresh_native_only_store_bootstraps_without_python_and_rejects_other_models() {

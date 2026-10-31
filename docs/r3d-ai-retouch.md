@@ -153,3 +153,25 @@ nichts. Vor Austausch ist ein gemeinsam verifizierter Rückrollsatz aus App,
 Bibliothek und vollständiger Konfiguration erforderlich. Katalogformat 12 ist
 für alte Apps nicht lesbar; bei Rückkehr zum alten Stand den zusammengehörigen
 Katalog zurückspielen und zwischenzeitliche neue Bearbeitungen vorher sichern.
+
+## Native Laufzeitpakete für alle drei Modellfamilien (31.10.2026)
+
+Der Protocol-v1-Adapter unterstützt geprüfte native Pakete für LaMa, RORem und
+ObjectClear. LaMa verwendet native ONNX Runtime auf der CPU; RORem und ObjectClear
+verwenden Rust/Candle mit Metal. Diese Ausführung benötigt weder einen
+Python-Prozess noch eine Python-Laufzeit. Modelle und Laufzeitpakete bleiben
+separat installierte, versionierte Daten. Die Anwendung enthält keine Gewichte.
+
+Jeder native Worker ist an seinen Binärhash und das genaue Modellmanifest
+gebunden. Native Bibliotheken wie LaMas ONNX Runtime werden zusätzlich durch
+anwendungseigene SHA256-Pins unmittelbar vor dem Start geprüft. Eine Änderung am
+externen Paketmanifest kann diese Pins nicht ersetzen. Die Laufzeitwahl wird
+pro Modell ausdrücklich gespeichert; bereits gespeicherte Rasterpatches werden
+bei einem Laufzeitwechsel weder geändert noch neu berechnet.
+
+Die privaten Zusatzquellen werden nicht mit dem Produktrepo veröffentlicht.
+Vor produktiver Auswahl der beiden zusätzlichen Pakete ist die gemeinsame
+isolierte App-Abnahme erforderlich. Frühere ObjectClear-Nutzerabnahme gilt
+nicht automatisch für die neue native LaMa-/RORem-Ausführung. Native Ausführung
+ist kein Geschwindigkeitsversprechen: der aktuelle RORem-F32-Pfad ist langsamer
+als die bisherige Python-F16-Ausführung und kann lokal andere Texturen erzeugen.
