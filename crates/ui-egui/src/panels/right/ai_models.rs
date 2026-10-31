@@ -18,12 +18,12 @@ pub(super) fn ai_model_management(app: &mut crate::LightcraftApp, ui: &mut egui:
             egui::ScrollArea::vertical().max_height(650.0).show(ui, |ui| {
                 let store = &status["store"];
                 let running = status["running"] == true || app.session.ai_remove.busy();
-                ui.label(crate::i18n::tr("Runtimes are installed or repaired with the LightCraft installer."));
+                ui.add(egui::Label::new(crate::i18n::tr("Models and compatible runtimes can be imported as separate packages.")).wrap());
                 ui.label(store["root"].as_str().unwrap_or(crate::i18n::tr("AI model folder unavailable")));
                 ui.add_enabled_ui(!running, |ui| {
                     for (label, widget, command) in [
                         ("Choose existing AI store…", "aiModelsChooseRoot", "aiModels.setRoot"),
-                        ("Import model package…", "aiModelsImport", "aiModels.import"),
+                        ("Import AI package…", "aiModelsImport", "aiModels.import"),
                     ] {
                         let response = ui.add_enabled(app.services.pick_folder.is_some(), egui::Button::new(crate::i18n::tr(label)));
                         crate::widgets::register(ui, widget, response.rect);
@@ -50,6 +50,7 @@ pub(super) fn ai_model_management(app: &mut crate::LightcraftApp, ui: &mut egui:
                         )
                         .on_hover_text(ai_model_details(model));
                         ui.label(crate::i18n::tr(model["status"].as_str().unwrap_or_default()));
+                        runtime_selection(app, ui, model);
                         ui.push_id(("ai-model-details", id), |ui| {
                             ui.collapsing(crate::i18n::tr("Model details"), |ui| {
                                 ui.add(
@@ -104,6 +105,60 @@ pub(super) fn ai_model_management(app: &mut crate::LightcraftApp, ui: &mut egui:
             });
         });
     ui.data_mut(|d| d.insert_temp(open_key, open));
+}
+
+fn runtime_selection(app: &mut crate::LightcraftApp, ui: &mut egui::Ui, model: &serde_json::Value) {
+    let id = model["id"].as_str().unwrap_or_default();
+    let selected = model["selected_runtime_id"].as_str().or_else(|| model["runtime_id"].as_str()).unwrap_or_default();
+    let choices = model["runtime_choices"].as_array();
+    let current = choices.and_then(|choices| choices.iter().find(|choice| choice["id"] == selected));
+    let selected_label = current.map(runtime_label).unwrap_or_else(|| selected.to_owned());
+    ui.label(crate::i18n::tr("Runtime"));
+    let response = crate::widgets::combo_box(("ai-runtime", id)).selected_text(selected_label).show_ui(ui, |ui| {
+        for choice in choices.into_iter().flatten() {
+            let runtime_id = choice["id"].as_str().unwrap_or_default();
+            let response = ui.selectable_label(runtime_id == selected, runtime_label(choice));
+            crate::widgets::register(ui, format!("aiModelsRuntimeOption-{id}-{runtime_id}"), response.rect);
+            if response.clicked()
+                && runtime_id != selected
+                && let Err(error) = app.run("aiModels.setRuntime", json!({"modelId":id,"runtimeId":runtime_id}))
+            {
+                app.toast(ui.ctx(), error);
+            }
+        }
+    });
+    crate::widgets::name_combo(&response.response, crate::i18n::tr("Runtime"));
+    crate::widgets::register(ui, format!("aiModelsRuntime-{id}"), response.response.rect);
+    if model["runtime_id"].as_str().is_some_and(|original| original != selected)
+        && ui.button(crate::i18n::tr("Use original runtime")).clicked()
+        && let Err(error) = app.run("aiModels.setRuntime", json!({"modelId":id,"runtimeId":null}))
+    {
+        app.toast(ui.ctx(), error);
+    }
+    if let Some(runtime) = current {
+        if runtime["execution"] == "native-protocol-v1" {
+            ui.add(egui::Label::new(crate::i18n::tr("ObjectClear native runtime: S-Lab License 1.0, non-commercial use.")).wrap());
+        }
+        ui.push_id(("ai-runtime-details", id), |ui| {
+            ui.collapsing(crate::i18n::tr("Runtime details"), |ui| {
+                ui.add(egui::Label::new(selected).wrap());
+                if let Some(source) = runtime["source"].as_str().filter(|s| !s.is_empty()) {
+                    ui.add(egui::Label::new(crate::i18n::tr_format!("Source: {}", source)).wrap());
+                }
+                for path in runtime["licence_files"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str) {
+                    ui.add(egui::Label::new(path).wrap());
+                }
+            });
+        });
+    }
+}
+
+fn runtime_label(runtime: &serde_json::Value) -> String {
+    match runtime["execution"].as_str() {
+        Some("native-protocol-v1") => crate::i18n::tr("Native runtime (Rust)").to_owned(),
+        Some("python-protocol-v1") => crate::i18n::tr("Reference runtime (Python)").to_owned(),
+        _ => runtime["name"].as_str().or_else(|| runtime["id"].as_str()).unwrap_or_default().to_owned(),
+    }
 }
 
 pub(super) fn ai_model_label(model: &serde_json::Value) -> String {

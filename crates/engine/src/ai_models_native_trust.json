@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "runtimes": [
+    {
+      "id": "objectclear-native-e939d254ffd9",
+      "binary_sha256": "e939d254ffd96bbccdf7a62a7722d9b68f6f6b7db828bdab46b7567a8bcfe62a",
+      "model_id": "objectclear-c73af80888dbd519819d0a521b5c8d0f3cda6859",
+      "model_manifest_sha256": "648b4cf99273df09b0bae5c484a4169fe87d789cbfcafe3cc10f9dc95a7e5fdc"
+    }
+  ]
+}

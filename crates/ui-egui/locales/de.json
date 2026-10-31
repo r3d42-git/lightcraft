@@ -3533,5 +3533,13 @@
   "Confirm removal": "Entfernen bestätigen",
   "Manage models…": "Modelle verwalten…",
   "AI models": "KI-Modelle",
-  "Installed · structural checks passed": "Installiert · Strukturprüfung bestanden"
+  "Installed · structural checks passed": "Installiert · Strukturprüfung bestanden",
+  "Models and compatible runtimes can be imported as separate packages.": "Modelle und passende Laufzeiten können als getrennte Pakete importiert werden.",
+  "Import AI package…": "KI-Paket importieren …",
+  "Runtime": "Laufzeit",
+  "Use original runtime": "Ursprüngliche Laufzeit verwenden",
+  "ObjectClear native runtime: S-Lab License 1.0, non-commercial use.": "Native ObjectClear-Laufzeit: S-Lab-Lizenz 1.0, nichtkommerzielle Nutzung.",
+  "Runtime details": "Laufzeitdetails",
+  "Native runtime (Rust)": "Native Laufzeit (Rust)",
+  "Reference runtime (Python)": "Referenzlaufzeit (Python)"
 }

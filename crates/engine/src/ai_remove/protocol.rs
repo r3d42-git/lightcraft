@@ -1,19 +1,47 @@
-//! Reference Python adapter. Protocol v1 bytes and invocation stay compatible.
+//! Protocol-v1 process boundary for separately verified Python/native runtimes.
 use super::runner::{RetouchIdentity, RetouchOutput, RetouchProvenance, RetouchRequest, RetouchRunner};
 use serde_json::{Value, json};
 use std::path::Path;
 
-pub(super) struct PythonRunner<'a> {
+pub(super) struct ProtocolRunner<'a> {
     pub runtime: &'a Path,
     pub backend: &'a str,
     pub package: Option<&'a crate::ai_models::Resolved>,
 }
-impl RetouchRunner for PythonRunner<'_> {
+impl ProtocolRunner<'_> {
+    fn execution(&self) -> crate::ai_models::ExecutionKind {
+        self.package.map_or(crate::ai_models::ExecutionKind::PythonProtocolV1, |p| p.execution)
+    }
+
+    fn command(&self) -> std::result::Result<std::process::Command, String> {
+        if let Some(package) = self.package {
+            if package.runtime != self.runtime || package.backend != self.backend {
+                return Err("AI request package identity changed.".into());
+            }
+            package.verify_execution().map_err(|e| e.to_string())?;
+        }
+        match self.execution() {
+            crate::ai_models::ExecutionKind::PythonProtocolV1 => {
+                let mut command = std::process::Command::new(self.runtime.join("bin/python3"));
+                command.arg("-I").arg("-B").arg(self.package.map(|p| p.worker.clone()).unwrap_or_else(|| self.runtime.join("worker.py")));
+                Ok(command)
+            }
+            crate::ai_models::ExecutionKind::NativeProtocolV1 => {
+                let package = self.package.ok_or("Native AI execution needs a verified runtime package.")?;
+                Ok(std::process::Command::new(&package.worker))
+            }
+        }
+    }
+}
+impl RetouchRunner for ProtocolRunner<'_> {
     fn identity(&self) -> RetouchIdentity {
         RetouchIdentity {
             model: self.package.map(|p| p.id.clone()).unwrap_or_else(|| self.backend.into()),
             runtime: self.runtime.into(),
-            adapter: "python-protocol-v1",
+            adapter: match self.execution() {
+                crate::ai_models::ExecutionKind::PythonProtocolV1 => "python-protocol-v1",
+                crate::ai_models::ExecutionKind::NativeProtocolV1 => "native-protocol-v1",
+            },
         }
     }
     fn run(&self, request: RetouchRequest<'_>, cancel: &std::sync::atomic::AtomicBool) -> std::result::Result<RetouchOutput, String> {
@@ -46,10 +74,11 @@ impl RetouchRunner for PythonRunner<'_> {
         if cancel.load(Ordering::Relaxed) {
             return Err("Cancelled.".into());
         }
-        let mut child = std::process::Command::new(self.runtime.join("bin/python3"))
-            .arg("-I")
-            .arg("-B")
-            .arg(self.package.map(|p| p.worker.clone()).unwrap_or_else(|| self.runtime.join("worker.py")))
+        let mut command = self.command()?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Cancelled.".into());
+        }
+        let mut child = command
             .arg(dir.join("request.json"))
             .arg(dir.join("response.json"))
             .stdin(std::process::Stdio::null())
@@ -82,6 +111,20 @@ impl RetouchRunner for PythonRunner<'_> {
             return Err("AI worker returned mismatched dimensions.".into());
         }
         let output = dir.join("output.rgba");
+        if self.execution() == crate::ai_models::ExecutionKind::NativeProtocolV1 {
+            let package = self.package.ok_or("Native AI execution needs a verified runtime package.")?;
+            let reported = response.get("pixels").and_then(Value::as_str).ok_or("Native AI worker omitted output provenance.")?;
+            let reported = Path::new(reported).canonicalize().map_err(|e| e.to_string())?;
+            let expected_output = output.canonicalize().map_err(|e| e.to_string())?;
+            if response.get("model") != package.manifest.get("name")
+                || response.get("model_version") != package.manifest.get("model_version")
+                || response.get("seed").and_then(Value::as_u64) != Some(u64::from(seed))
+                || response.get("rect") != Some(&json!(rect))
+                || reported != expected_output
+            {
+                return Err("Native AI worker returned mismatched request provenance.".into());
+            }
+        }
         let expected = w.saturating_mul(h).saturating_mul(16);
         if fs::metadata(&output).map_err(|e| e.to_string())?.len() != expected as u64 {
             return Err("AI worker returned invalid pixel data.".into());
@@ -167,5 +210,32 @@ mod tests {
         assert_eq!(encode_rgb(&rgb), expected);
         let rgba: Vec<u8> = [0.25f32, -0.5, 4.0, f32::NAN, 1.0, 0.0, -0.0, -100.0].into_iter().flat_map(f32::to_le_bytes).collect();
         assert_eq!(decode_rgb(&rgba).unwrap(), rgb);
+    }
+    #[test]
+    fn legacy_python_launch_keeps_isolation_and_worker_arguments() {
+        let runtime = Path::new("/synthetic/runtime");
+        let runner = ProtocolRunner { runtime, backend: "objectclear", package: None };
+        let command = runner.command().unwrap();
+        assert_eq!(command.get_program(), runtime.join("bin/python3"));
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["-I", "-B", "/synthetic/runtime/worker.py"]);
+        assert_eq!(runner.identity().adapter, "python-protocol-v1");
+    }
+    #[test]
+    fn untrusted_native_runtime_cannot_construct_launch_command() {
+        let package = crate::ai_models::Resolved {
+            id: "objectclear-test".into(),
+            runtime_id: "test-runtime".into(),
+            runtime: "/missing/native-runtime".into(),
+            model: "/missing/model".into(),
+            worker: "/missing/native-runtime/bin/lightcraft-ai-native".into(),
+            backend: "objectclear".into(),
+            execution: crate::ai_models::ExecutionKind::NativeProtocolV1,
+            manifest: json!({}),
+        };
+        let runner = ProtocolRunner { runtime: &package.runtime, backend: "objectclear", package: Some(&package) };
+        assert_eq!(runner.identity().adapter, "native-protocol-v1");
+        assert!(runner.command().is_err());
+        let mismatched = ProtocolRunner { runtime: Path::new("/different"), backend: "objectclear", package: Some(&package) };
+        assert!(mismatched.command().unwrap_err().contains("identity changed"));
     }
 }

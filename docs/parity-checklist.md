@@ -1,5 +1,18 @@
 # Lightroom parity checklist
 
+## R3D native retouch candidate — 2026-10-31
+
+- Separate approved native runtime packages can execute the existing retouch
+  protocol without Python. Existing Python selections remain unchanged; runtime
+  overrides are explicit. See `r3d/AI-STORE.md`, `crates/engine/src/ai_models.rs`
+  and `crates/engine/src/ai_remove/protocol.rs`.
+- Isolated Mac checks cover a real RAW with resolved lens/perspective correction,
+  draft/original/discard, cancel/navigation, accept, undo/redo, disable/enable and
+  identical export after reopening without AI assets. This is one-photo coverage;
+  manual acceptance and broader quality testing remain open. No parity status or
+  count is upgraded. The separately prepared ObjectClear addon is private test
+  material, not a distributable product asset.
+
 | 2026-10-25 | patch | LR-BEHAV-TITLEBAR: the top bar's title-bar gestures come from craft-window's `title_bar`: a double-click follows the system setting, and a press on a button, the search field or a panel floating over the bar never moves the window; status counts unchanged |
 
 ## R3D test candidate — 2026-10-30

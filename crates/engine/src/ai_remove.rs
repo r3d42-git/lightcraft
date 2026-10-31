@@ -8,13 +8,13 @@ mod input;
 #[cfg(not(target_arch = "wasm32"))]
 mod patch;
 #[cfg(not(target_arch = "wasm32"))]
-mod python;
+mod protocol;
 #[cfg(not(target_arch = "wasm32"))]
 mod runner;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use input::context_rect;
 #[cfg(all(test, not(target_arch = "wasm32")))]
-use python::{backend_directory, wait_worker};
+use protocol::{backend_directory, wait_worker};
 
 /// Observable job lifecycle. Cancellation remains pending until the worker acknowledges completion.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -255,7 +255,7 @@ impl Session {
             }
             let selected = crate::ai_models::resolve(&ai_root, Some(&selected_id), Some(&backend), false).map_err(|e| e.to_string())?;
             match selected.adapter().map_err(|e| e.to_string())?.execution {
-                crate::ai_models::ExecutionKind::PythonProtocolV1 => run_worker_with_progress(
+                crate::ai_models::ExecutionKind::PythonProtocolV1 | crate::ai_models::ExecutionKind::NativeProtocolV1 => run_worker_with_progress(
                     &selected.runtime,
                     &backend,
                     Some(&selected),
@@ -453,7 +453,7 @@ fn run_worker_with_progress(
 ) -> std::result::Result<AiEdit, String> {
     progress(Phase::Preparing);
     let prepared = input::prepare(source, info, d, spot, continuous, seed, cancel)?;
-    runner::execute_with_progress(prepared, &python::PythonRunner { runtime, backend, package }, cancel, progress)
+    runner::execute_with_progress(prepared, &protocol::ProtocolRunner { runtime, backend, package }, cancel, progress)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -542,6 +542,8 @@ printf '%s' '{"version":1,"width":128,"height":96,"model":"test","model_version"
         let spot = Spot { points: vec![lightcraft_geom::Point::new(0.8, 0.25)], size: 0.04, ..Default::default() };
         let package = crate::ai_models::Resolved {
             id: "lama-test-revision".into(),
+            runtime_id: "test-runtime".into(),
+            execution: crate::ai_models::ExecutionKind::PythonProtocolV1,
             runtime: runtime.path().into(),
             model: runtime.path().join("separate-model"),
             worker: runtime.path().join("trusted-worker.py"),
