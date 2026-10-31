@@ -5,6 +5,11 @@ This fork integrates the unchanged LightCraft `v0.16.0` release,
 `r3d/upstream-base.json`. This is a local development implementation, not a released
 replacement for the official application.
 
+The active local checkout is `update-0.16.0/` on the fork's default branch
+`r3d/update-0.16.0`. The former 0.15.0 names were renamed after the 0.16.0
+installation was accepted. Historical evidence paths below retain their original
+names. The checkout's existing `target` symlink keeps using the shared build cache.
+
 ## v0.16.0 compatibility integration (2026-10-31)
 
 Merged the exact upstream release into the existing R3D history. Inclusive search

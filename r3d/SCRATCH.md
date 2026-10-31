@@ -19,6 +19,13 @@ Vorgaben unter `$R3D_SCRATCH_ROOT/lightcraft/`:
 - `R3D_AI_STAGING`, `R3D_AI_APP`, `R3D_AI_DIST` und `R3D_AI_TEST_APP`:
   Paketstaging und große lokale Apps auf demselben Volume
 
+Ein vorhandener `target`-Symlink des Checkouts wird ohne explizites
+`CARGO_TARGET_DIR` als gemeinsamer Buildcache weiterverwendet, auch nach einer
+Umbenennung des Quellordners. Sein aufgelöstes Ziel muss die Scratch-Prüfung
+bestehen. Ohne Symlink gilt der obige checkoutbezogene Standard; eine explizite
+Zielvorgabe hat Vorrang. Der Cache muss nicht mit jeder App-Version umbenannt
+oder neu aufgebaut werden.
+
 Explizite Pfade bleiben erhalten, müssen aber absolut innerhalb des geprüften
 Scratch-Volumes liegen. Symlink-Ausbrüche und eingebettete andere Volumes werden
 abgewiesen. Ein alternatives `R3D_SCRATCH_ROOT` muss selbst der Mountpoint eines

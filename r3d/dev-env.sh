@@ -2,10 +2,16 @@
 # Source this file; no global shell configuration is changed.
 R3D_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 R3D_PROJECT="$(dirname "$R3D_SOURCE")"
-# Each update checkout gets its own build and runtime; explicit caller overrides survive.
+# Runtime defaults follow the checkout name; explicit caller overrides survive.
 R3D_INSTANCE="${R3D_INSTANCE:-$(basename "$R3D_SOURCE")}"
 export CARGO_HOME="${CARGO_HOME:-$R3D_PROJECT/.tools/cargo}"
 export RUSTUP_HOME="${RUSTUP_HOME:-$R3D_PROJECT/.tools/rustup}"
+# Keep the existing shared build cache when an update checkout is renamed.
+# scratch-env.sh validates the resolved target before any directory is created.
+if [[ -z "${CARGO_TARGET_DIR:-}" && -L "$R3D_SOURCE/target" ]]; then
+  CARGO_TARGET_DIR="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$R3D_SOURCE/target")" || return 1
+  export CARGO_TARGET_DIR
+fi
 source "$R3D_SOURCE/r3d/scratch-env.sh" || return 1
 export PATH="$CARGO_HOME/bin:$PATH"
 export LIGHTCRAFT_R3D_CONFIG_DIR="${LIGHTCRAFT_R3D_CONFIG_DIR-$R3D_PROJECT/test-runtime/$R3D_INSTANCE/config}"

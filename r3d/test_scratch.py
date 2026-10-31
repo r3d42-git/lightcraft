@@ -1,6 +1,7 @@
 """Small shell integration checks; no Rust build or macOS configuration changes."""
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -55,7 +56,14 @@ fi
             self.env.pop(key, None)
         self.env.update(R3D_SCRATCH_ROOT=str(self.root),
                         PATH=f"{self.bin}:{self.env['PATH']}")
-        self.script = Path(__file__).resolve().parent / "dev-env.sh"
+        # Exercise a disposable checkout, independent of the live target symlink.
+        self.checkout = self.base / "update-before"
+        scripts = self.checkout / "r3d"
+        scripts.mkdir(parents=True)
+        for name in ("dev-env.sh", "scratch-env.sh", "scratch-paths.py"):
+            shutil.copyfile(Path(__file__).resolve().parent / name, scripts / name)
+        self.env.pop("R3D_INSTANCE", None)
+        self.script = scripts / "dev-env.sh"
 
     def source(self, **overrides):
         return subprocess.run(["bash", "-c",
@@ -81,6 +89,29 @@ fi
         result = self.source(R3D_SCRATCH_ROOT=str(self.base / "missing"))
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.base / "missing").exists())
+
+    def test_checkout_rename_retains_shared_target_and_respects_override(self):
+        cache = self.root / "lightcraft/shared-cache"
+        cache.mkdir(parents=True)
+        (self.checkout / "target").symlink_to(cache, target_is_directory=True)
+        before = self.source()
+        self.assertEqual(before.returncode, 0, before.stderr)
+        self.assertEqual(before.stdout.splitlines()[0], str(cache))
+        renamed = self.base / "update-after"
+        self.checkout.rename(renamed)
+        self.script = renamed / "r3d/dev-env.sh"
+        after = self.source()
+        self.assertEqual(after.returncode, 0, after.stderr)
+        self.assertEqual(after.stdout.splitlines()[0], str(cache))
+        self.assertEqual(after.stdout.splitlines()[1], str(self.root / "lightcraft/tmp-update-after"))
+        override = str(self.root / "explicit-target")
+        explicit = self.source(CARGO_TARGET_DIR=override)
+        self.assertEqual(explicit.returncode, 0, explicit.stderr)
+        self.assertEqual(explicit.stdout.splitlines()[0], override)
+
+    def test_checkout_target_symlink_cannot_escape_scratch(self):
+        (self.checkout / "target").symlink_to(self.base / "outside")
+        self.assertNotEqual(self.source().returncode, 0)
 
     def test_outside_and_symlink_escape_fail(self):
         escape = self.root / "escape"
