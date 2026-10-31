@@ -114,11 +114,15 @@ Die Modellrechte sind unabhängig von der Lizenz des Installationshelfers.
 
 ## Stand der Vorbereitung
 
-Der lokale Einrichtungskandidat ist ein **Entwicklungsartefakt**, noch kein
-öffentlicher oder notarisierter Download. Die bisherigen Laufzeitpakete tragen
-historische Prototyp-Metadaten; diese werden beim Vorbereiten nicht heimlich
-geändert. Vor öffentlicher Auslieferung sind finale Developer-ID-Signierung,
-Notarisierung und dazu passende App-Binärbindungen sowie ein Test auf einem
-weiteren Mac erforderlich. Signieren verändert die Binärhashes; deshalb darf ein
-signiertes neues Laufzeitpaket nicht unter einem alten Vertrauenseintrag verteilt
-werden. Die persönliche App bleibt bei dieser Vorbereitung unverändert.
+In diesem Fork werden Änderungen **committed und gepusht, keine Releases
+erstellt**. Ein möglicher späterer Upstream-PR ist ein gesonderter Auftrag;
+für den 31.10.2026 ist kein PR vorgesehen. Aus der Vorbereitung folgt kein
+Signierungs-, Notarisierungs- oder Veröffentlichungsauftrag.
+
+Der lokale Einrichtungskandidat ist ein **Entwicklungsartefakt**, kein öffentlicher
+oder notarisierter Download. Die bisherigen Laufzeitpakete tragen historische
+Prototyp-Metadaten; diese werden beim Vorbereiten nicht heimlich geändert. Die
+persönliche App bleibt unverändert. Eine hypothetische spätere Verteilung der
+Zusatzpakete wäre getrennt zu prüfen; sie ist kein geplanter Fork-Release.
+Technisch gilt unabhängig davon: Signieren verändert die Binärhashes. Eine
+veränderte Laufzeit braucht deshalb passende neue App-Vertrauensbindungen.
