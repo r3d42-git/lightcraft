@@ -1,0 +1,492 @@
+{
+  "checked_at_utc": "2026-10-31T15:39:40.636028+00:00",
+  "purpose": "Read-only original source mapping verification; no model weights downloaded or executed",
+  "checks": [
+    {
+      "model": "lama",
+      "path": "lama_fp32.onnx",
+      "source_url": "https://huggingface.co/api/models/Carve/LaMa-ONNX/tree/c3c0c9e468934d62e79c329e35d82dd09ff8c444?recursive=true&expand=false",
+      "method": "pinned HF LFS metadata (weight bytes not downloaded)",
+      "bytes": 208044816,
+      "sha256": "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "README.md",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/README.md",
+      "method": "downloaded small original bytes",
+      "bytes": 340,
+      "sha256": "66f628f54b9411fbbf879e92835f9eaf8a32235c28b69543d0106445bfb6c878",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "code/LICENSE",
+      "source_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/LICENSE",
+      "method": "downloaded small original bytes",
+      "bytes": 1924,
+      "sha256": "73c84d2c2ebcdde03cb7fc853aaec0d4b3b280ee8b47f98a3d6c1931430d5aae",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "code/objectclear/__init__.py",
+      "source_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/__init__.py",
+      "method": "downloaded small original bytes",
+      "bytes": 309,
+      "sha256": "1993604ebfb1097873491ead796e5ad3fd6711387452145f04a79aae7012e39b",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "code/objectclear/models/__init__.py",
+      "source_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/models/__init__.py",
+      "method": "downloaded small original bytes",
+      "bytes": 143,
+      "sha256": "c0a02b976d31b4aba72ee728fa9445d915ce59374f5740c595ac41c3df3b1b95",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "code/objectclear/models/clip_image_encoder.py",
+      "source_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/models/clip_image_encoder.py",
+      "method": "downloaded small original bytes",
+      "bytes": 2228,
+      "sha256": "8deb2e9634168a8f96723a8f7487df5eaea229d36a4bdaaceed8878b7b1c596f",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "code/objectclear/models/postfuse_module.py",
+      "source_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/models/postfuse_module.py",
+      "method": "downloaded small original bytes",
+      "bytes": 1734,
+      "sha256": "3384daa88be0d463b3117d5f2065387f02e6b7589f3036ecfb746ff1a39cb768",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "code/objectclear/pipelines/__init__.py",
+      "source_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/pipelines/__init__.py",
+      "method": "downloaded small original bytes",
+      "bytes": 89,
+      "sha256": "5666324f2e22aebd7954a33d4ff14f3b6d9004ccbec18756045f9e92d441d02d",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "code/objectclear/pipelines/pipeline_objectclear.py",
+      "source_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/pipelines/pipeline_objectclear.py",
+      "method": "downloaded small original bytes",
+      "bytes": 101155,
+      "sha256": "f0919c0dc8e2b5e5d9768b907e9d78e6182722a20b2626716311c43bbe0474bc",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "code/objectclear/utils/__init__.py",
+      "source_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/utils/__init__.py",
+      "method": "downloaded small original bytes",
+      "bytes": 244,
+      "sha256": "0bd93dc8b73246d7516feabfd3c9ea22721991732a9a6ead89e4db54192348dd",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "code/objectclear/utils/attention_guided_fusion.py",
+      "source_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/utils/attention_guided_fusion.py",
+      "method": "downloaded small original bytes",
+      "bytes": 2749,
+      "sha256": "66f92ed57791e7e453b93f07205f8d4dcadf1b8d776898d3d824456233cbfdb1",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "code/objectclear/utils/image_utils.py",
+      "source_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/utils/image_utils.py",
+      "method": "downloaded small original bytes",
+      "bytes": 1063,
+      "sha256": "a374fa4b0c7b7a1fb663b67fc0f2563900b7c38cf0f59b568bbb298a20881e71",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "image_prompt_encoder/config.json",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/image_prompt_encoder/config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 1218,
+      "sha256": "96eaadaeeb52b21b9d0856cd0e6ff9d8b9231f48a2c3720dcaf857d6a48b0e6b",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "image_prompt_encoder/model.fp16.safetensors",
+      "source_url": "https://huggingface.co/api/models/jixin0101/ObjectClear/tree/c73af80888dbd519819d0a521b5c8d0f3cda6859?recursive=true&expand=false",
+      "method": "pinned HF LFS metadata (weight bytes not downloaded)",
+      "bytes": 855304146,
+      "sha256": "0ebf6aa2b0f8db475ca7bd1148fcc2dc131f989cb452a45103ff23e3ece825c8",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "model_index.json",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/model_index.json",
+      "method": "downloaded small original bytes",
+      "bytes": 677,
+      "sha256": "eb5879ebaa9438feb542b8c3a23d96a6948f9f62344454de727348eb44957713",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "postfuse_module/config.json",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/postfuse_module/config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 88,
+      "sha256": "e77d22f7c0ea6ce33cd63bd05fa7370014fb735570b37efa16d86246a472c970",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "postfuse_module/model.fp16.safetensors",
+      "source_url": "https://huggingface.co/api/models/jixin0101/ObjectClear/tree/c73af80888dbd519819d0a521b5c8d0f3cda6859?recursive=true&expand=false",
+      "method": "pinned HF LFS metadata (weight bytes not downloaded)",
+      "bytes": 28348576,
+      "sha256": "3e3f1dca78cfe25f36ff8b9a8b16ab52cfd0982c81afd04864cace1e4c2afaaf",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "scheduler/scheduler_config.json",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/scheduler/scheduler_config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 479,
+      "sha256": "a8e9a8517e8739938ea85819012bad195d41ccb3e11e2501cf196da64099b1f6",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "text_encoder/config.json",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/text_encoder/config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 631,
+      "sha256": "fcb477b961c7233eff97a02375bee975c4925075b80720793933fec5602878f9",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "text_encoder/model.fp16.safetensors",
+      "source_url": "https://huggingface.co/api/models/jixin0101/ObjectClear/tree/c73af80888dbd519819d0a521b5c8d0f3cda6859?recursive=true&expand=false",
+      "method": "pinned HF LFS metadata (weight bytes not downloaded)",
+      "bytes": 246144867,
+      "sha256": "fc83cf401d930147807e7c44021c164bcc5508c9d4cc0ff35f4e354685ca9cd0",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "text_encoder_2/config.json",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/text_encoder_2/config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 641,
+      "sha256": "927bbd612346a9da1de0bc10d79f24ec7d64756cc8bb0ca1257604f163c83f4a",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "text_encoder_2/model.fp16.safetensors",
+      "source_url": "https://huggingface.co/api/models/jixin0101/ObjectClear/tree/c73af80888dbd519819d0a521b5c8d0f3cda6859?recursive=true&expand=false",
+      "method": "pinned HF LFS metadata (weight bytes not downloaded)",
+      "bytes": 1389382884,
+      "sha256": "a8622bd41f8d359df484fdf9de091edb9337a2fd747f0a5c9c320a62e24d1fd3",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "tokenizer/merges.txt",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer/merges.txt",
+      "method": "downloaded small original bytes",
+      "bytes": 524619,
+      "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "tokenizer/special_tokens_map.json",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer/special_tokens_map.json",
+      "method": "downloaded small original bytes",
+      "bytes": 472,
+      "sha256": "c4864a9376a8401918425bed71fc14fc0e81f9b59ec45c1cf96cccb2df508eac",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "tokenizer/tokenizer_config.json",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer/tokenizer_config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 737,
+      "sha256": "19d7b034cb0cc3ce9766c2231373ab8aa8991fc72e2c8f76558bfaae3de0d563",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "tokenizer/vocab.json",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer/vocab.json",
+      "method": "downloaded small original bytes",
+      "bytes": 1059962,
+      "sha256": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "tokenizer_2/merges.txt",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer_2/merges.txt",
+      "method": "downloaded small original bytes",
+      "bytes": 524619,
+      "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "tokenizer_2/special_tokens_map.json",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer_2/special_tokens_map.json",
+      "method": "downloaded small original bytes",
+      "bytes": 460,
+      "sha256": "f118ab3a983206e4f32583448de6bd6aae4ee21869135cef1f5848a753cdaab6",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "tokenizer_2/tokenizer_config.json",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer_2/tokenizer_config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 725,
+      "sha256": "c9d23941f76a41cbd50eda9290f57be7828f0a7a677939e9ef181f7e12bd1bdf",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "tokenizer_2/vocab.json",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer_2/vocab.json",
+      "method": "downloaded small original bytes",
+      "bytes": 1059962,
+      "sha256": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "unet/config.json",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/unet/config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 1955,
+      "sha256": "d0b7bf0c11f5811883d6bd6afc99c9779286e58b62fe7ad4acbfda5f9d2aef5d",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "unet/diffusion_pytorch_model.fp16.safetensors",
+      "source_url": "https://huggingface.co/api/models/jixin0101/ObjectClear/tree/c73af80888dbd519819d0a521b5c8d0f3cda6859?recursive=true&expand=false",
+      "method": "pinned HF LFS metadata (weight bytes not downloaded)",
+      "bytes": 5135178536,
+      "sha256": "fb0c35b0be8bba4ecd61dfca4e716a0a9878639c5fc271a05a780b4dc2366c31",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "vae/config.json",
+      "source_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/vae/config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 678,
+      "sha256": "d51651b33b00f1c4a1f4aeb9e6a7efe56b0ff8c0c822f5a902c028a5161cfc10",
+      "matches": true
+    },
+    {
+      "model": "objectclear",
+      "path": "vae/diffusion_pytorch_model.fp16.safetensors",
+      "source_url": "https://huggingface.co/api/models/jixin0101/ObjectClear/tree/c73af80888dbd519819d0a521b5c8d0f3cda6859?recursive=true&expand=false",
+      "method": "pinned HF LFS metadata (weight bytes not downloaded)",
+      "bytes": 167335338,
+      "sha256": "4ad62825e5c8b31eefb77355ba6693785619bf7d669d9b1a6fd9f19dec6d65b3",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": ".gitattributes",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/.gitattributes",
+      "method": "downloaded small original bytes",
+      "bytes": 1519,
+      "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "README.md",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/README.md",
+      "method": "downloaded small original bytes",
+      "bytes": 31,
+      "sha256": "4bcf87ecfbbb8e07a01b21415a970c8b53a5283bf6872b657040d3f45c9241f7",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "model_index.json",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/model_index.json",
+      "method": "downloaded small original bytes",
+      "bytes": 787,
+      "sha256": "6bbb51e728849016e28b3b9426bf34dcadb089d7d758ea04406fe240a284133f",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "scheduler/scheduler_config.json",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/scheduler/scheduler_config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 613,
+      "sha256": "7c3996754c270ade2a9674636f63eb5a5e4133319eca3596fe728c1fd22525de",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "text_encoder/config.json",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/text_encoder/config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 743,
+      "sha256": "79afdab1d0562fbfe88050b9ae5c754ce218a28e9f1dd2464934ffd8412ace69",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "text_encoder/model.safetensors",
+      "source_url": "https://huggingface.co/api/models/LetsThink/RORem/tree/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b?recursive=true&expand=false",
+      "method": "pinned HF LFS metadata (weight bytes not downloaded)",
+      "bytes": 246144152,
+      "sha256": "660c6f5b1abae9dc498ac2d21e1347d2abdb0cf6c0c0c8576cd796491d9a6cdd",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "text_encoder_2/config.json",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/text_encoder_2/config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 755,
+      "sha256": "fd4532a8004620304d0f53d50f0aea5ed2d47cdbf0ae7a32ccd3f01ad49b6ba0",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "text_encoder_2/model.safetensors",
+      "source_url": "https://huggingface.co/api/models/LetsThink/RORem/tree/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b?recursive=true&expand=false",
+      "method": "pinned HF LFS metadata (weight bytes not downloaded)",
+      "bytes": 1389382176,
+      "sha256": "ec310df2af79c318e24d20511b601a591ca8cd4f1fce1d8dff822a356bcdb1f4",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "tokenizer/merges.txt",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer/merges.txt",
+      "method": "downloaded small original bytes",
+      "bytes": 524619,
+      "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "tokenizer/special_tokens_map.json",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer/special_tokens_map.json",
+      "method": "downloaded small original bytes",
+      "bytes": 472,
+      "sha256": "c4864a9376a8401918425bed71fc14fc0e81f9b59ec45c1cf96cccb2df508eac",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "tokenizer/tokenizer_config.json",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer/tokenizer_config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 704,
+      "sha256": "7eb36a76a02551ce8583dbee08d062e672997a5fe1db82ebc642d88c7e79cc96",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "tokenizer/vocab.json",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer/vocab.json",
+      "method": "downloaded small original bytes",
+      "bytes": 1059962,
+      "sha256": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "tokenizer_2/merges.txt",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer_2/merges.txt",
+      "method": "downloaded small original bytes",
+      "bytes": 524619,
+      "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "tokenizer_2/special_tokens_map.json",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer_2/special_tokens_map.json",
+      "method": "downloaded small original bytes",
+      "bytes": 460,
+      "sha256": "f118ab3a983206e4f32583448de6bd6aae4ee21869135cef1f5848a753cdaab6",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "tokenizer_2/tokenizer_config.json",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer_2/tokenizer_config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 855,
+      "sha256": "516314ccab66918d7cb647480ac27abd3520d14e1e5825aac99f50c851c16071",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "tokenizer_2/vocab.json",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer_2/vocab.json",
+      "method": "downloaded small original bytes",
+      "bytes": 1059962,
+      "sha256": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "unet/config.json",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/unet/config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 2027,
+      "sha256": "5af962909637ac683e1aadf88ae70c7015905446a759a068c9a09687f3be58f9",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "unet/diffusion_pytorch_model.safetensors",
+      "source_url": "https://huggingface.co/api/models/LetsThink/RORem/tree/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b?recursive=true&expand=false",
+      "method": "pinned HF LFS metadata (weight bytes not downloaded)",
+      "bytes": 5135178560,
+      "sha256": "ed10552914ce17189e9544071b2b3d1cbd467834e0e5a7b79469dc32800b8b4e",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "vae/config.json",
+      "source_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/vae/config.json",
+      "method": "downloaded small original bytes",
+      "bytes": 939,
+      "sha256": "f88842ae29663e47f34161fb520f081a355a1511af7810c3e5fb1d6c282c8bb6",
+      "matches": true
+    },
+    {
+      "model": "rorem",
+      "path": "vae/diffusion_pytorch_model.safetensors",
+      "source_url": "https://huggingface.co/api/models/LetsThink/RORem/tree/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b?recursive=true&expand=false",
+      "method": "pinned HF LFS metadata (weight bytes not downloaded)",
+      "bytes": 167335342,
+      "sha256": "6353737672c94b96174cb590f711eac6edf2fcce5b6e91aa9d73c5adc589ee48",
+      "matches": true
+    }
+  ]
+}

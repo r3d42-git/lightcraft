@@ -1,0 +1,25 @@
+{
+  "adapter_version": 1,
+  "backend": "lama",
+  "files": [
+    {
+      "bytes": 208044816,
+      "path": "lama_fp32.onnx",
+      "sha256": "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6"
+    },
+    {
+      "bytes": 170,
+      "path": "manifest.json",
+      "sha256": "4274a67892414541c0ab43a2392d20413fc73a05bd92b5d06c642715bafaf57f"
+    }
+  ],
+  "id": "lama-c3c0c9e468934d62e79c329e35d82dd09ff8c444",
+  "kind": "model",
+  "model_version": "c3c0c9e468934d62e79c329e35d82dd09ff8c444",
+  "name": "Carve/LaMa-ONNX",
+  "runtime_compatibility": [
+    "cpython311-ai-retouch-v1"
+  ],
+  "source": "Carve/LaMa-ONNX@c3c0c9e468934d62e79c329e35d82dd09ff8c444",
+  "version": 1
+}

@@ -1,3 +1,10 @@
+# Aktueller Einrichtungsweg
+
+Alle drei Modelle laufen seit 31.10.2026 in der lokalen App nativ. Die Anleitung
+für getrennte, selbst geladene Modelle steht in [r3d-ai-install.md](r3d-ai-install.md).
+Die unten dokumentierten Python-Prototypen und offenen lokalen Abnahmen sind
+historisch. Der neue Installationskandidat ist noch kein öffentlicher Release.
+
 # Lokale KI-Retusche – privater Mac-Prototyp
 
 Stand 30.10.2026. Persönlicher Nutzerauftrag: lokale, non-destruktive

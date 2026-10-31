@@ -1,0 +1,198 @@
+{
+  "adapter_version": 1,
+  "backend": "objectclear",
+  "code_pins": {
+    "LICENSE": "73c84d2c2ebcdde03cb7fc853aaec0d4b3b280ee8b47f98a3d6c1931430d5aae",
+    "objectclear/__init__.py": "1993604ebfb1097873491ead796e5ad3fd6711387452145f04a79aae7012e39b",
+    "objectclear/models/__init__.py": "c0a02b976d31b4aba72ee728fa9445d915ce59374f5740c595ac41c3df3b1b95",
+    "objectclear/models/clip_image_encoder.py": "8deb2e9634168a8f96723a8f7487df5eaea229d36a4bdaaceed8878b7b1c596f",
+    "objectclear/models/postfuse_module.py": "3384daa88be0d463b3117d5f2065387f02e6b7589f3036ecfb746ff1a39cb768",
+    "objectclear/pipelines/__init__.py": "5666324f2e22aebd7954a33d4ff14f3b6d9004ccbec18756045f9e92d441d02d",
+    "objectclear/pipelines/pipeline_objectclear.py": "f0919c0dc8e2b5e5d9768b907e9d78e6182722a20b2626716311c43bbe0474bc",
+    "objectclear/utils/__init__.py": "0bd93dc8b73246d7516feabfd3c9ea22721991732a9a6ead89e4db54192348dd",
+    "objectclear/utils/attention_guided_fusion.py": "66f92ed57791e7e453b93f07205f8d4dcadf1b8d776898d3d824456233cbfdb1",
+    "objectclear/utils/image_utils.py": "a374fa4b0c7b7a1fb663b67fc0f2563900b7c38cf0f59b568bbb298a20881e71"
+  },
+  "files": [
+    {
+      "bytes": 340,
+      "path": "README.md",
+      "sha256": "66f628f54b9411fbbf879e92835f9eaf8a32235c28b69543d0106445bfb6c878"
+    },
+    {
+      "bytes": 1924,
+      "path": "code/LICENSE",
+      "sha256": "73c84d2c2ebcdde03cb7fc853aaec0d4b3b280ee8b47f98a3d6c1931430d5aae"
+    },
+    {
+      "bytes": 309,
+      "path": "code/objectclear/__init__.py",
+      "sha256": "1993604ebfb1097873491ead796e5ad3fd6711387452145f04a79aae7012e39b"
+    },
+    {
+      "bytes": 143,
+      "path": "code/objectclear/models/__init__.py",
+      "sha256": "c0a02b976d31b4aba72ee728fa9445d915ce59374f5740c595ac41c3df3b1b95"
+    },
+    {
+      "bytes": 2228,
+      "path": "code/objectclear/models/clip_image_encoder.py",
+      "sha256": "8deb2e9634168a8f96723a8f7487df5eaea229d36a4bdaaceed8878b7b1c596f"
+    },
+    {
+      "bytes": 1734,
+      "path": "code/objectclear/models/postfuse_module.py",
+      "sha256": "3384daa88be0d463b3117d5f2065387f02e6b7589f3036ecfb746ff1a39cb768"
+    },
+    {
+      "bytes": 89,
+      "path": "code/objectclear/pipelines/__init__.py",
+      "sha256": "5666324f2e22aebd7954a33d4ff14f3b6d9004ccbec18756045f9e92d441d02d"
+    },
+    {
+      "bytes": 101155,
+      "path": "code/objectclear/pipelines/pipeline_objectclear.py",
+      "sha256": "f0919c0dc8e2b5e5d9768b907e9d78e6182722a20b2626716311c43bbe0474bc"
+    },
+    {
+      "bytes": 244,
+      "path": "code/objectclear/utils/__init__.py",
+      "sha256": "0bd93dc8b73246d7516feabfd3c9ea22721991732a9a6ead89e4db54192348dd"
+    },
+    {
+      "bytes": 2749,
+      "path": "code/objectclear/utils/attention_guided_fusion.py",
+      "sha256": "66f92ed57791e7e453b93f07205f8d4dcadf1b8d776898d3d824456233cbfdb1"
+    },
+    {
+      "bytes": 1063,
+      "path": "code/objectclear/utils/image_utils.py",
+      "sha256": "a374fa4b0c7b7a1fb663b67fc0f2563900b7c38cf0f59b568bbb298a20881e71"
+    },
+    {
+      "bytes": 1218,
+      "path": "image_prompt_encoder/config.json",
+      "sha256": "96eaadaeeb52b21b9d0856cd0e6ff9d8b9231f48a2c3720dcaf857d6a48b0e6b"
+    },
+    {
+      "bytes": 855304146,
+      "path": "image_prompt_encoder/model.fp16.safetensors",
+      "sha256": "0ebf6aa2b0f8db475ca7bd1148fcc2dc131f989cb452a45103ff23e3ece825c8"
+    },
+    {
+      "bytes": 183,
+      "path": "lightcraft-model.json",
+      "sha256": "42647c66e6271f986bf98a9c46a0d463b377d3963bdd0530c7d452e8f0c8a35b"
+    },
+    {
+      "bytes": 677,
+      "path": "model_index.json",
+      "sha256": "eb5879ebaa9438feb542b8c3a23d96a6948f9f62344454de727348eb44957713"
+    },
+    {
+      "bytes": 88,
+      "path": "postfuse_module/config.json",
+      "sha256": "e77d22f7c0ea6ce33cd63bd05fa7370014fb735570b37efa16d86246a472c970"
+    },
+    {
+      "bytes": 28348576,
+      "path": "postfuse_module/model.fp16.safetensors",
+      "sha256": "3e3f1dca78cfe25f36ff8b9a8b16ab52cfd0982c81afd04864cace1e4c2afaaf"
+    },
+    {
+      "bytes": 479,
+      "path": "scheduler/scheduler_config.json",
+      "sha256": "a8e9a8517e8739938ea85819012bad195d41ccb3e11e2501cf196da64099b1f6"
+    },
+    {
+      "bytes": 631,
+      "path": "text_encoder/config.json",
+      "sha256": "fcb477b961c7233eff97a02375bee975c4925075b80720793933fec5602878f9"
+    },
+    {
+      "bytes": 246144867,
+      "path": "text_encoder/model.fp16.safetensors",
+      "sha256": "fc83cf401d930147807e7c44021c164bcc5508c9d4cc0ff35f4e354685ca9cd0"
+    },
+    {
+      "bytes": 641,
+      "path": "text_encoder_2/config.json",
+      "sha256": "927bbd612346a9da1de0bc10d79f24ec7d64756cc8bb0ca1257604f163c83f4a"
+    },
+    {
+      "bytes": 1389382884,
+      "path": "text_encoder_2/model.fp16.safetensors",
+      "sha256": "a8622bd41f8d359df484fdf9de091edb9337a2fd747f0a5c9c320a62e24d1fd3"
+    },
+    {
+      "bytes": 524619,
+      "path": "tokenizer/merges.txt",
+      "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a"
+    },
+    {
+      "bytes": 472,
+      "path": "tokenizer/special_tokens_map.json",
+      "sha256": "c4864a9376a8401918425bed71fc14fc0e81f9b59ec45c1cf96cccb2df508eac"
+    },
+    {
+      "bytes": 737,
+      "path": "tokenizer/tokenizer_config.json",
+      "sha256": "19d7b034cb0cc3ce9766c2231373ab8aa8991fc72e2c8f76558bfaae3de0d563"
+    },
+    {
+      "bytes": 1059962,
+      "path": "tokenizer/vocab.json",
+      "sha256": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349"
+    },
+    {
+      "bytes": 524619,
+      "path": "tokenizer_2/merges.txt",
+      "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a"
+    },
+    {
+      "bytes": 460,
+      "path": "tokenizer_2/special_tokens_map.json",
+      "sha256": "f118ab3a983206e4f32583448de6bd6aae4ee21869135cef1f5848a753cdaab6"
+    },
+    {
+      "bytes": 725,
+      "path": "tokenizer_2/tokenizer_config.json",
+      "sha256": "c9d23941f76a41cbd50eda9290f57be7828f0a7a677939e9ef181f7e12bd1bdf"
+    },
+    {
+      "bytes": 1059962,
+      "path": "tokenizer_2/vocab.json",
+      "sha256": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349"
+    },
+    {
+      "bytes": 1955,
+      "path": "unet/config.json",
+      "sha256": "d0b7bf0c11f5811883d6bd6afc99c9779286e58b62fe7ad4acbfda5f9d2aef5d"
+    },
+    {
+      "bytes": 5135178536,
+      "path": "unet/diffusion_pytorch_model.fp16.safetensors",
+      "sha256": "fb0c35b0be8bba4ecd61dfca4e716a0a9878639c5fc271a05a780b4dc2366c31"
+    },
+    {
+      "bytes": 678,
+      "path": "vae/config.json",
+      "sha256": "d51651b33b00f1c4a1f4aeb9e6a7efe56b0ff8c0c822f5a902c028a5161cfc10"
+    },
+    {
+      "bytes": 167335338,
+      "path": "vae/diffusion_pytorch_model.fp16.safetensors",
+      "sha256": "4ad62825e5c8b31eefb77355ba6693785619bf7d669d9b1a6fd9f19dec6d65b3"
+    }
+  ],
+  "id": "objectclear-c73af80888dbd519819d0a521b5c8d0f3cda6859",
+  "kind": "model",
+  "model_version": "c73af80888dbd519819d0a521b5c8d0f3cda6859",
+  "name": "jixin0101/ObjectClear",
+  "runtime_compatibility": [
+    "cpython311-ai-retouch-v1"
+  ],
+  "source": "jixin0101/ObjectClear@c73af80888dbd519819d0a521b5c8d0f3cda6859",
+  "source_revision": "c052d91ecd8772744a5ab97527441c813ab83009",
+  "version": 1
+}

@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "model": "lama",
+  "package": {
+    "path": "lama/package.json",
+    "bytes": 687,
+    "sha256": "094490fa97b51ac42d79eab137d995d5081f450d596458cf8696812f9ef0c8f3"
+  },
+  "sources": {
+    "snapshot": {
+      "kind": "huggingface",
+      "repository": "Carve/LaMa-ONNX",
+      "revision": "c3c0c9e468934d62e79c329e35d82dd09ff8c444",
+      "url": "https://huggingface.co/Carve/LaMa-ONNX/tree/c3c0c9e468934d62e79c329e35d82dd09ff8c444"
+    },
+    "templates": {
+      "kind": "local",
+      "description": "Exact deterministic LightCraft metadata; no upstream source or weights"
+    }
+  },
+  "files": [
+    {
+      "path": "lama_fp32.onnx",
+      "source": "snapshot",
+      "source_path": "lama_fp32.onnx",
+      "download_url": "https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/lama_fp32.onnx"
+    },
+    {
+      "path": "manifest.json",
+      "source": "templates",
+      "source_path": "lama/manifest.json"
+    }
+  ]
+}

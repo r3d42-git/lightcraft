@@ -1,0 +1,120 @@
+{
+  "adapter_version": 1,
+  "backend": "rorem",
+  "files": [
+    {
+      "bytes": 1519,
+      "path": ".gitattributes",
+      "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361"
+    },
+    {
+      "bytes": 31,
+      "path": "README.md",
+      "sha256": "4bcf87ecfbbb8e07a01b21415a970c8b53a5283bf6872b657040d3f45c9241f7"
+    },
+    {
+      "bytes": 84,
+      "path": "lightcraft-model.json",
+      "sha256": "7136aff43d15552e34f9b23cb190df27ef70c1b904384d09fdb6d30bf4074146"
+    },
+    {
+      "bytes": 787,
+      "path": "model_index.json",
+      "sha256": "6bbb51e728849016e28b3b9426bf34dcadb089d7d758ea04406fe240a284133f"
+    },
+    {
+      "bytes": 613,
+      "path": "scheduler/scheduler_config.json",
+      "sha256": "7c3996754c270ade2a9674636f63eb5a5e4133319eca3596fe728c1fd22525de"
+    },
+    {
+      "bytes": 743,
+      "path": "text_encoder/config.json",
+      "sha256": "79afdab1d0562fbfe88050b9ae5c754ce218a28e9f1dd2464934ffd8412ace69"
+    },
+    {
+      "bytes": 246144152,
+      "path": "text_encoder/model.safetensors",
+      "sha256": "660c6f5b1abae9dc498ac2d21e1347d2abdb0cf6c0c0c8576cd796491d9a6cdd"
+    },
+    {
+      "bytes": 755,
+      "path": "text_encoder_2/config.json",
+      "sha256": "fd4532a8004620304d0f53d50f0aea5ed2d47cdbf0ae7a32ccd3f01ad49b6ba0"
+    },
+    {
+      "bytes": 1389382176,
+      "path": "text_encoder_2/model.safetensors",
+      "sha256": "ec310df2af79c318e24d20511b601a591ca8cd4f1fce1d8dff822a356bcdb1f4"
+    },
+    {
+      "bytes": 524619,
+      "path": "tokenizer/merges.txt",
+      "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a"
+    },
+    {
+      "bytes": 472,
+      "path": "tokenizer/special_tokens_map.json",
+      "sha256": "c4864a9376a8401918425bed71fc14fc0e81f9b59ec45c1cf96cccb2df508eac"
+    },
+    {
+      "bytes": 704,
+      "path": "tokenizer/tokenizer_config.json",
+      "sha256": "7eb36a76a02551ce8583dbee08d062e672997a5fe1db82ebc642d88c7e79cc96"
+    },
+    {
+      "bytes": 1059962,
+      "path": "tokenizer/vocab.json",
+      "sha256": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349"
+    },
+    {
+      "bytes": 524619,
+      "path": "tokenizer_2/merges.txt",
+      "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a"
+    },
+    {
+      "bytes": 460,
+      "path": "tokenizer_2/special_tokens_map.json",
+      "sha256": "f118ab3a983206e4f32583448de6bd6aae4ee21869135cef1f5848a753cdaab6"
+    },
+    {
+      "bytes": 855,
+      "path": "tokenizer_2/tokenizer_config.json",
+      "sha256": "516314ccab66918d7cb647480ac27abd3520d14e1e5825aac99f50c851c16071"
+    },
+    {
+      "bytes": 1059962,
+      "path": "tokenizer_2/vocab.json",
+      "sha256": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349"
+    },
+    {
+      "bytes": 2027,
+      "path": "unet/config.json",
+      "sha256": "5af962909637ac683e1aadf88ae70c7015905446a759a068c9a09687f3be58f9"
+    },
+    {
+      "bytes": 5135178560,
+      "path": "unet/diffusion_pytorch_model.safetensors",
+      "sha256": "ed10552914ce17189e9544071b2b3d1cbd467834e0e5a7b79469dc32800b8b4e"
+    },
+    {
+      "bytes": 939,
+      "path": "vae/config.json",
+      "sha256": "f88842ae29663e47f34161fb520f081a355a1511af7810c3e5fb1d6c282c8bb6"
+    },
+    {
+      "bytes": 167335342,
+      "path": "vae/diffusion_pytorch_model.safetensors",
+      "sha256": "6353737672c94b96174cb590f711eac6edf2fcce5b6e91aa9d73c5adc589ee48"
+    }
+  ],
+  "id": "rorem-22d02de974c8dc92c717cd3431f8b0fe0eeecc3b",
+  "kind": "model",
+  "model_version": "22d02de974c8dc92c717cd3431f8b0fe0eeecc3b",
+  "name": "LetsThink/RORem",
+  "runtime_compatibility": [
+    "cpython311-ai-retouch-v1"
+  ],
+  "source": "LetsThink/RORem@22d02de974c8dc92c717cd3431f8b0fe0eeecc3b",
+  "version": 1
+}

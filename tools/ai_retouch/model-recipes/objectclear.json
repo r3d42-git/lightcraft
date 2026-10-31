@@ -1,0 +1,232 @@
+{
+  "version": 1,
+  "model": "objectclear",
+  "package": {
+    "path": "objectclear/package.json",
+    "bytes": 7238,
+    "sha256": "648b4cf99273df09b0bae5c484a4169fe87d789cbfcafe3cc10f9dc95a7e5fdc"
+  },
+  "sources": {
+    "snapshot": {
+      "kind": "huggingface",
+      "repository": "jixin0101/ObjectClear",
+      "revision": "c73af80888dbd519819d0a521b5c8d0f3cda6859",
+      "url": "https://huggingface.co/jixin0101/ObjectClear/tree/c73af80888dbd519819d0a521b5c8d0f3cda6859"
+    },
+    "templates": {
+      "kind": "local",
+      "description": "Exact deterministic LightCraft metadata; no upstream source or weights"
+    },
+    "objectclear-source": {
+      "kind": "github",
+      "repository": "zjx0101/ObjectClear",
+      "revision": "c052d91ecd8772744a5ab97527441c813ab83009",
+      "url": "https://github.com/zjx0101/ObjectClear/tree/c052d91ecd8772744a5ab97527441c813ab83009"
+    }
+  },
+  "files": [
+    {
+      "path": "README.md",
+      "source": "snapshot",
+      "source_path": "README.md",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/README.md"
+    },
+    {
+      "path": "code/LICENSE",
+      "source": "objectclear-source",
+      "source_path": "LICENSE",
+      "download_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/LICENSE"
+    },
+    {
+      "path": "code/objectclear/__init__.py",
+      "source": "objectclear-source",
+      "source_path": "objectclear/__init__.py",
+      "download_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/__init__.py"
+    },
+    {
+      "path": "code/objectclear/models/__init__.py",
+      "source": "objectclear-source",
+      "source_path": "objectclear/models/__init__.py",
+      "download_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/models/__init__.py"
+    },
+    {
+      "path": "code/objectclear/models/clip_image_encoder.py",
+      "source": "objectclear-source",
+      "source_path": "objectclear/models/clip_image_encoder.py",
+      "download_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/models/clip_image_encoder.py"
+    },
+    {
+      "path": "code/objectclear/models/postfuse_module.py",
+      "source": "objectclear-source",
+      "source_path": "objectclear/models/postfuse_module.py",
+      "download_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/models/postfuse_module.py"
+    },
+    {
+      "path": "code/objectclear/pipelines/__init__.py",
+      "source": "objectclear-source",
+      "source_path": "objectclear/pipelines/__init__.py",
+      "download_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/pipelines/__init__.py"
+    },
+    {
+      "path": "code/objectclear/pipelines/pipeline_objectclear.py",
+      "source": "objectclear-source",
+      "source_path": "objectclear/pipelines/pipeline_objectclear.py",
+      "download_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/pipelines/pipeline_objectclear.py"
+    },
+    {
+      "path": "code/objectclear/utils/__init__.py",
+      "source": "objectclear-source",
+      "source_path": "objectclear/utils/__init__.py",
+      "download_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/utils/__init__.py"
+    },
+    {
+      "path": "code/objectclear/utils/attention_guided_fusion.py",
+      "source": "objectclear-source",
+      "source_path": "objectclear/utils/attention_guided_fusion.py",
+      "download_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/utils/attention_guided_fusion.py"
+    },
+    {
+      "path": "code/objectclear/utils/image_utils.py",
+      "source": "objectclear-source",
+      "source_path": "objectclear/utils/image_utils.py",
+      "download_url": "https://raw.githubusercontent.com/zjx0101/ObjectClear/c052d91ecd8772744a5ab97527441c813ab83009/objectclear/utils/image_utils.py"
+    },
+    {
+      "path": "image_prompt_encoder/config.json",
+      "source": "snapshot",
+      "source_path": "image_prompt_encoder/config.json",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/image_prompt_encoder/config.json"
+    },
+    {
+      "path": "image_prompt_encoder/model.fp16.safetensors",
+      "source": "snapshot",
+      "source_path": "image_prompt_encoder/model.fp16.safetensors",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/image_prompt_encoder/model.fp16.safetensors"
+    },
+    {
+      "path": "lightcraft-model.json",
+      "source": "templates",
+      "source_path": "objectclear/lightcraft-model.json"
+    },
+    {
+      "path": "model_index.json",
+      "source": "snapshot",
+      "source_path": "model_index.json",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/model_index.json"
+    },
+    {
+      "path": "postfuse_module/config.json",
+      "source": "snapshot",
+      "source_path": "postfuse_module/config.json",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/postfuse_module/config.json"
+    },
+    {
+      "path": "postfuse_module/model.fp16.safetensors",
+      "source": "snapshot",
+      "source_path": "postfuse_module/model.fp16.safetensors",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/postfuse_module/model.fp16.safetensors"
+    },
+    {
+      "path": "scheduler/scheduler_config.json",
+      "source": "snapshot",
+      "source_path": "scheduler/scheduler_config.json",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/scheduler/scheduler_config.json"
+    },
+    {
+      "path": "text_encoder/config.json",
+      "source": "snapshot",
+      "source_path": "text_encoder/config.json",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/text_encoder/config.json"
+    },
+    {
+      "path": "text_encoder/model.fp16.safetensors",
+      "source": "snapshot",
+      "source_path": "text_encoder/model.fp16.safetensors",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/text_encoder/model.fp16.safetensors"
+    },
+    {
+      "path": "text_encoder_2/config.json",
+      "source": "snapshot",
+      "source_path": "text_encoder_2/config.json",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/text_encoder_2/config.json"
+    },
+    {
+      "path": "text_encoder_2/model.fp16.safetensors",
+      "source": "snapshot",
+      "source_path": "text_encoder_2/model.fp16.safetensors",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/text_encoder_2/model.fp16.safetensors"
+    },
+    {
+      "path": "tokenizer/merges.txt",
+      "source": "snapshot",
+      "source_path": "tokenizer/merges.txt",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer/merges.txt"
+    },
+    {
+      "path": "tokenizer/special_tokens_map.json",
+      "source": "snapshot",
+      "source_path": "tokenizer/special_tokens_map.json",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer/special_tokens_map.json"
+    },
+    {
+      "path": "tokenizer/tokenizer_config.json",
+      "source": "snapshot",
+      "source_path": "tokenizer/tokenizer_config.json",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer/tokenizer_config.json"
+    },
+    {
+      "path": "tokenizer/vocab.json",
+      "source": "snapshot",
+      "source_path": "tokenizer/vocab.json",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer/vocab.json"
+    },
+    {
+      "path": "tokenizer_2/merges.txt",
+      "source": "snapshot",
+      "source_path": "tokenizer_2/merges.txt",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer_2/merges.txt"
+    },
+    {
+      "path": "tokenizer_2/special_tokens_map.json",
+      "source": "snapshot",
+      "source_path": "tokenizer_2/special_tokens_map.json",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer_2/special_tokens_map.json"
+    },
+    {
+      "path": "tokenizer_2/tokenizer_config.json",
+      "source": "snapshot",
+      "source_path": "tokenizer_2/tokenizer_config.json",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer_2/tokenizer_config.json"
+    },
+    {
+      "path": "tokenizer_2/vocab.json",
+      "source": "snapshot",
+      "source_path": "tokenizer_2/vocab.json",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/tokenizer_2/vocab.json"
+    },
+    {
+      "path": "unet/config.json",
+      "source": "snapshot",
+      "source_path": "unet/config.json",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/unet/config.json"
+    },
+    {
+      "path": "unet/diffusion_pytorch_model.fp16.safetensors",
+      "source": "snapshot",
+      "source_path": "unet/diffusion_pytorch_model.fp16.safetensors",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/unet/diffusion_pytorch_model.fp16.safetensors"
+    },
+    {
+      "path": "vae/config.json",
+      "source": "snapshot",
+      "source_path": "vae/config.json",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/vae/config.json"
+    },
+    {
+      "path": "vae/diffusion_pytorch_model.fp16.safetensors",
+      "source": "snapshot",
+      "source_path": "vae/diffusion_pytorch_model.fp16.safetensors",
+      "download_url": "https://huggingface.co/jixin0101/ObjectClear/resolve/c73af80888dbd519819d0a521b5c8d0f3cda6859/vae/diffusion_pytorch_model.fp16.safetensors"
+    }
+  ]
+}

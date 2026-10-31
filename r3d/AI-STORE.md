@@ -1,3 +1,12 @@
+# Optional user-installed native models (31.10.2026)
+
+The current user setup path is documented in [r3d-ai-install.md](../docs/r3d-ai-install.md).
+`r3d/build-ai-setup.sh` prepares a separate, weight-free setup candidate with
+a native macOS assembler, exact download recipes, license notices and the three
+reviewed runtime packages supplied by the developer. End users need no Python.
+This does not publish/notarize the candidate or alter any active app/store.
+The earlier prototype and migration notes below are historical where superseded.
+
 # External offline AI store
 
 Normal `build-ai-local.sh` / `build-ai-dev.sh` builds copy only

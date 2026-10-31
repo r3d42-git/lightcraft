@@ -1,0 +1,148 @@
+{
+  "version": 1,
+  "model": "rorem",
+  "package": {
+    "path": "rorem/package.json",
+    "bytes": 3771,
+    "sha256": "eab1b9eea7ce889aad317aa632f8dd8fc85c91caede9c2ec344396f23811d470"
+  },
+  "sources": {
+    "snapshot": {
+      "kind": "huggingface",
+      "repository": "LetsThink/RORem",
+      "revision": "22d02de974c8dc92c717cd3431f8b0fe0eeecc3b",
+      "url": "https://huggingface.co/LetsThink/RORem/tree/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b"
+    },
+    "templates": {
+      "kind": "local",
+      "description": "Exact deterministic LightCraft metadata; no upstream source or weights"
+    }
+  },
+  "files": [
+    {
+      "path": ".gitattributes",
+      "source": "snapshot",
+      "source_path": ".gitattributes",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/.gitattributes"
+    },
+    {
+      "path": "README.md",
+      "source": "snapshot",
+      "source_path": "README.md",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/README.md"
+    },
+    {
+      "path": "lightcraft-model.json",
+      "source": "templates",
+      "source_path": "rorem/lightcraft-model.json"
+    },
+    {
+      "path": "model_index.json",
+      "source": "snapshot",
+      "source_path": "model_index.json",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/model_index.json"
+    },
+    {
+      "path": "scheduler/scheduler_config.json",
+      "source": "snapshot",
+      "source_path": "scheduler/scheduler_config.json",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/scheduler/scheduler_config.json"
+    },
+    {
+      "path": "text_encoder/config.json",
+      "source": "snapshot",
+      "source_path": "text_encoder/config.json",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/text_encoder/config.json"
+    },
+    {
+      "path": "text_encoder/model.safetensors",
+      "source": "snapshot",
+      "source_path": "text_encoder/model.safetensors",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/text_encoder/model.safetensors"
+    },
+    {
+      "path": "text_encoder_2/config.json",
+      "source": "snapshot",
+      "source_path": "text_encoder_2/config.json",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/text_encoder_2/config.json"
+    },
+    {
+      "path": "text_encoder_2/model.safetensors",
+      "source": "snapshot",
+      "source_path": "text_encoder_2/model.safetensors",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/text_encoder_2/model.safetensors"
+    },
+    {
+      "path": "tokenizer/merges.txt",
+      "source": "snapshot",
+      "source_path": "tokenizer/merges.txt",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer/merges.txt"
+    },
+    {
+      "path": "tokenizer/special_tokens_map.json",
+      "source": "snapshot",
+      "source_path": "tokenizer/special_tokens_map.json",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer/special_tokens_map.json"
+    },
+    {
+      "path": "tokenizer/tokenizer_config.json",
+      "source": "snapshot",
+      "source_path": "tokenizer/tokenizer_config.json",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer/tokenizer_config.json"
+    },
+    {
+      "path": "tokenizer/vocab.json",
+      "source": "snapshot",
+      "source_path": "tokenizer/vocab.json",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer/vocab.json"
+    },
+    {
+      "path": "tokenizer_2/merges.txt",
+      "source": "snapshot",
+      "source_path": "tokenizer_2/merges.txt",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer_2/merges.txt"
+    },
+    {
+      "path": "tokenizer_2/special_tokens_map.json",
+      "source": "snapshot",
+      "source_path": "tokenizer_2/special_tokens_map.json",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer_2/special_tokens_map.json"
+    },
+    {
+      "path": "tokenizer_2/tokenizer_config.json",
+      "source": "snapshot",
+      "source_path": "tokenizer_2/tokenizer_config.json",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer_2/tokenizer_config.json"
+    },
+    {
+      "path": "tokenizer_2/vocab.json",
+      "source": "snapshot",
+      "source_path": "tokenizer_2/vocab.json",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/tokenizer_2/vocab.json"
+    },
+    {
+      "path": "unet/config.json",
+      "source": "snapshot",
+      "source_path": "unet/config.json",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/unet/config.json"
+    },
+    {
+      "path": "unet/diffusion_pytorch_model.safetensors",
+      "source": "snapshot",
+      "source_path": "unet/diffusion_pytorch_model.safetensors",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/unet/diffusion_pytorch_model.safetensors"
+    },
+    {
+      "path": "vae/config.json",
+      "source": "snapshot",
+      "source_path": "vae/config.json",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/vae/config.json"
+    },
+    {
+      "path": "vae/diffusion_pytorch_model.safetensors",
+      "source": "snapshot",
+      "source_path": "vae/diffusion_pytorch_model.safetensors",
+      "download_url": "https://huggingface.co/LetsThink/RORem/resolve/22d02de974c8dc92c717cd3431f8b0fe0eeecc3b/vae/diffusion_pytorch_model.safetensors"
+    }
+  ]
+}
