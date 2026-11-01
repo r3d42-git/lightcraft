@@ -262,41 +262,20 @@ fn a_manual_slideshow_waits_for_the_arrow_keys() {
     run(&mut h, "slideshow.end", json!({}));
     // the Settings checkbox turns it on
     run(&mut h, "view.slideshowOptions", json!({}));
-    h.step();
-    let target = reveal(&mut h, "check:settings.slideshowManual");
-    let diagnose = |phase: &str, h: &Headless| {
-        let id = "check:settings.slideshowManual";
-        let rect = latest_widget_rect(h, id);
-        let hit = crate::control::widget_hit(&h.app, id);
-        let visible = rect.is_some_and(|r| crate::control::widget_target_visible(&h.view.ctx, hit, r.center()));
-        eprintln!(
-            "manual-checkbox {phase}: manual={} time={} frames={} target={target:?} rect={rect:?} room={:?} hit={hit:?} visible={visible} input={:?} dialog={:?} notices={:?} quit_prompt={} notice_barrier={} library_problem={} library_barrier={} in_flight={} pending={:?} toast={:?}",
-            h.app.session.slideshow.manual,
-            h.time(),
-            h.frames(),
-            latest_widget_rect(h, "settings:pageRoom"),
-            h.view.ctx.input(|i| (i.is_scrolling(), i.modifiers, i.keys_down.clone(), i.pointer.any_down())),
-            h.app.ui.dialog,
-            h.app.notices,
-            h.app.quit_prompt.is_some(),
-            crate::panels::notices::blocks_input(&h.app),
-            h.app.library_problem.is_some(),
-            crate::panels::library_problem::blocks_file_drops(&h.app),
-            h.app.renderer.in_flight(),
-            h.app.renderer.pending_slots(),
-            h.app.ui.toast,
-        );
-    };
-    diagnose("before-click", &h);
+    // The preview adds its explanatory hint only once the selected photo is rendered.
+    // Wait for that layout change before revealing the checkbox: otherwise a render
+    // completing between the real pointer press and release moves its hit target.
+    let selected = h.app.session.active().expect("the slideshow leaves a photo selected");
+    assert!(
+        h.step_until(SETTLE, |h| h.app.renderer.textures.get(&Slot::SlidePreview).is_some_and(|t| t.photo == selected)),
+        "the selected photo's settings preview is rendered before the click"
+    );
+    assert!(h.settle(SETTLE), "settings rendering and layout settle before revealing the checkbox");
+    reveal(&mut h, "check:settings.slideshowManual");
     assert!(!h.app.session.slideshow.manual, "the checkbox starts unchecked before the real click");
-    let journal_before = h.app.session.journal.len();
     let r = h.request("ui.clickWidget", json!({"id": "check:settings.slideshowManual"}), T);
-    diagnose("after-request", &h);
-    eprintln!("manual-checkbox reply={r} journal_since_click={:?}", h.app.session.journal.get(journal_before..));
     assert_eq!(r["ok"], true, "{r}");
     h.step();
-    diagnose("after-existing-step", &h);
-    eprintln!("manual-checkbox journal_after_existing_step={:?}", h.app.session.journal.get(journal_before..));
     assert!(h.app.session.slideshow.manual, "the checkbox goes through slideshow.playback");
     h.settle(SETTLE);
 }

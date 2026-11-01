@@ -24,7 +24,7 @@ jobs:
       # Match the toolchain used to build and validate the installed R3D app.
       # Upgrade it deliberately alongside local verification, not via floating stable.
       toolchain: "1.95.0"
-      # Same craft-fonts commit as release.yml.
+      # Pinned fonts for reproducible UI tests; this fork has no release workflow.
       craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
       timeout-minutes: 90
       # xtask ci runs cargo test: the demo scene cache is per process, so nextest is slower here.
