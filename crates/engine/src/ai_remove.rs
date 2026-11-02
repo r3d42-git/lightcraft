@@ -413,7 +413,7 @@ fn backend_param(params: &Value) -> Result<&'static str> {
 fn next_diffusion_seed(counter: &std::sync::atomic::AtomicU32) -> u32 {
     // Skip zero even when the counter wraps after u32::MAX.
     counter
-        .fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |seed| Some(seed.wrapping_add(1).max(1)))
+        .try_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |seed| Some(seed.wrapping_add(1).max(1)))
         .unwrap_or(42)
         .max(1)
 }

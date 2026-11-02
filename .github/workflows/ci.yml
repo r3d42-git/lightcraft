@@ -4,7 +4,7 @@ name: CI
 # suite's shared gate workflow in craft-common-actions.
 on:
   push:
-    branches: [main, r3d/update-0.16.0]
+    branches: [main, r3d/update-0.16.0, r3d/update-0.17.0]
   pull_request:
   workflow_dispatch:
 
@@ -23,7 +23,7 @@ jobs:
     with:
       # Match the toolchain used to build and validate the installed R3D app.
       # Upgrade it deliberately alongside local verification, not via floating stable.
-      toolchain: "1.95.0"
+      toolchain: "1.99.1"
       # Pinned fonts for reproducible UI tests; this fork has no release workflow.
       craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
       timeout-minutes: 90

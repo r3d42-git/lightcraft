@@ -31,7 +31,7 @@ pub(crate) use grading::{WheelGrab, WheelLock, WheelMods, wheel_pick};
 pub use histogram::histogram;
 use histogram::soft_proofing;
 use mixer::{mixer, point_color};
-use sliders::{REL_TEMP, REL_TINT, hdr_row, k_to_rel, profile_menu, quick_develop, rel_to_k, reset_tip, section};
+use sliders::{REL_TEMP, REL_TINT, hdr_row, header_buttons, k_to_rel, profile_menu, quick_develop, rel_to_k, reset_tip, section};
 pub use sliders::{apply_slider_out, sub_title};
 pub(crate) use sliders::{control, reload_preview_only};
 
@@ -394,73 +394,4 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     if reset_clicked {
         let _ = app.run("develop.reset", json!({}));
     }
-}
-
-/// Which of the Edit header's buttons were clicked.
-#[derive(Default)]
-struct HeaderClicks {
-    auto: bool,
-    bw: bool,
-    hdr: bool,
-    reset: bool,
-}
-
-/// The Edit header's buttons: Auto, B&W and HDR on the left, Reset on the right. A button that doesn't fit on the
-/// row starts the next one (long translations in a narrow panel, such as German *Zurücksetzen* beside HDR), so none
-/// covers another; Reset stays right-aligned on whichever row it lands.
-fn header_buttons(ui: &mut egui::Ui, auto: bool, bw: bool, hdr: bool, reset_tip: &str) -> HeaderClicks {
-    const GAP: f32 = 8.0;
-    let mut clicks = HeaderClicks::default();
-    let avail = ui.available_width();
-    let left = [("auto", "Auto", auto), ("bw", "B&W", bw), ("hdr", "HDR", hdr)];
-    // rows of `left` indices, filled greedily; `used` is the width taken on the current (last) row
-    let mut rows: Vec<Vec<usize>> = Vec::new();
-    let mut row: Vec<usize> = Vec::new();
-    let mut used = 0.0;
-    for (i, (_, label, _)) in left.iter().enumerate() {
-        let w = crate::widgets::text_button_size(ui, label);
-        if row.is_empty() {
-            used = w;
-        } else if used + GAP + w > avail {
-            rows.push(std::mem::take(&mut row));
-            used = w;
-        } else {
-            used += GAP + w;
-        }
-        row.push(i);
-    }
-    rows.push(row);
-    let reset_on_last = used + GAP + crate::widgets::text_button_size(ui, "Reset") <= avail;
-    let reset = |ui: &mut egui::Ui, clicks: &mut HeaderClicks| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            clicks.reset = text_button(ui, "reset", crate::i18n::tr("Reset"), false).on_hover_text(reset_tip).clicked();
-        });
-    };
-    let last = rows.len() - 1;
-    for (r, row) in rows.iter().enumerate() {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = GAP;
-            for &i in row {
-                let (id, label, active) = left[i];
-                let mut resp = crate::widgets::filled_text_button(ui, id, crate::i18n::tr(label), active);
-                if id == "hdr" {
-                    // HDR editing, next to B&W as Lightroom has it
-                    resp = resp.on_hover_text(crate::i18n::tr("Edit in HDR: highlights above SDR white, for HDR exports and displays"));
-                }
-                let clicked = resp.clicked();
-                match id {
-                    "auto" => clicks.auto = clicked,
-                    "bw" => clicks.bw = clicked,
-                    _ => clicks.hdr = clicked,
-                }
-            }
-            if r == last && reset_on_last {
-                reset(ui, &mut clicks);
-            }
-        });
-    }
-    if !reset_on_last {
-        ui.horizontal(|ui| reset(ui, &mut clicks));
-    }
-    clicks
 }

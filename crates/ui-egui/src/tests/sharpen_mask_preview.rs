@@ -40,6 +40,10 @@ fn sharpen_mask_logic_uses_refreshed_host_focus_not_previous_ui_focus() {
 }
 
 fn start_drag(alt: bool) -> (Headless, Pos2, usize) {
+    start_control_drag(alt, "detail.sharpenMasking")
+}
+
+fn start_control_drag(alt: bool, control: &str) -> (Headless, Pos2, usize) {
     let app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), Services { png: None, ..Default::default() });
     let mut h = Headless::new(app, [1400.0, 1000.0], 1.0);
     h.app.renderer.keep_pixels = true;
@@ -51,10 +55,10 @@ fn start_drag(alt: bool) -> (Headless, Pos2, usize) {
         h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "detail.sharpenAmount", "value": 80.0}}), t)["ok"],
         true
     );
-    h.app.ui.open_sections = vec!["detail".to_string()];
+    h.app.ui.open_sections = vec![control.split_once('.').unwrap().0.to_string()];
     h.step();
     h.step();
-    let track = h.app.widgets.iter().find(|(id, _)| id == "slider:detail.sharpenMasking").unwrap().1;
+    let track = h.app.widgets.iter().find(|(id, _)| id == &format!("slider:{control}")).unwrap().1;
     let from = egui::pos2(track.left() + track.width() * 0.15, track.center().y);
     let to = from + egui::vec2(track.width() * 0.35, 0.0);
     let history = h.app.session.undo.len();
@@ -65,8 +69,8 @@ fn start_drag(alt: bool) -> (Headless, Pos2, usize) {
     h.events.push(Event::PointerMoved(to));
     h.step();
     h.step();
-    assert_eq!(h.app.ui.dragging_control.as_deref(), Some("detail.sharpenMasking"));
-    assert_eq!(slider_mask_preview(&h.app, &h.view.ctx), alt.then_some(Overlay::SharpenMask));
+    assert_eq!(h.app.ui.dragging_control.as_deref(), Some(control));
+    assert_eq!(slider_mask_preview(&h.app, &h.view.ctx), if alt { Overlay::for_control(control) } else { None });
     assert_eq!(h.app.session.undo.len(), history, "diagnostic adds no history");
     (h, to, history)
 }
@@ -157,4 +161,23 @@ fn sharpen_mask_preview_can_start_mid_drag_and_replaces_actual_loupe_pixels() {
     h.events.push(Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: modifiers(true) });
     assert!(h.settle(settle));
     assert!(colored(&h) > 100, "release immediately retires diagnostic and restores normal pixels");
+}
+
+/// All new upstream preview kinds use the fork's same gesture/photo/focus lifetime.
+#[test]
+fn generic_alt_previews_retire_on_focus_loss_and_restore_persistent_clipping() {
+    for control in ["light.exposure", "light.blacks", "detail.sharpenAmount", "detail.sharpenRadius", "detail.nrLuminance"] {
+        let (mut h, _, history) = start_control_drag(true, control);
+        h.app.ui.show_clipping = true;
+        assert_eq!(slider_mask_preview(&h.app, &h.view.ctx), Overlay::for_control(control));
+        h.view.ctx.input_mut(|i| i.raw.focused = false);
+        h.app.logic(&h.view.ctx);
+        assert!(h.app.ui.dragging_control.is_none(), "{control}");
+        let d = h.app.session.develop_of(h.app.session.active().unwrap()).unwrap();
+        assert_eq!(crate::panels::detail::view_overlay(&h.app, &d), Overlay::Clipping);
+        h.view.ctx.input_mut(|i| i.raw.focused = true);
+        h.app.logic(&h.view.ctx);
+        assert_eq!(slider_mask_preview(&h.app, &h.view.ctx), None, "{control}: focus cannot revive the owner");
+        assert_eq!(h.app.session.undo.len(), history, "diagnostic retirement adds no history");
+    }
 }

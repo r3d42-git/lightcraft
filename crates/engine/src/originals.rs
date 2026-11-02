@@ -127,7 +127,8 @@ impl OriginalGuard {
         put(format!("{name}.xmp"), PathBuf::from(format!("{}.xmp", path.to_string_lossy())), format!("the XMP sidecar of {label}"));
     }
 
-    /// `Err` (a message for the user) when writing `target` would replace a protected file.
+    /// `Err` (a message for the user) when writing `target` would replace a protected file, or
+    /// create a protected sidecar that isn't there yet.
     pub fn check(&self, target: &Path) -> Result<(), String> {
         self.check_target(target, false)
     }
@@ -239,8 +240,9 @@ impl crate::Session {
         OriginalGuard::new(&self.catalog)
     }
 
-    /// `Err` when writing `path` would replace a catalogued photo's original or sidecar. A free
-    /// path (the usual case) is answered without building the guard over the whole library.
+    /// `Err` when writing `path` would replace a catalogued photo's original or sidecar, or
+    /// create one of its sidecars. A free path that isn't an `.xmp` (the usual case) is answered
+    /// without building the guard over the whole library.
     pub fn check_write_target(&self, path: &str) -> Result<(), String> {
         let path = Path::new(path);
         if std::fs::symlink_metadata(path).is_err() && !is_xmp(path) {
@@ -341,6 +343,32 @@ mod tests {
     }
 
     #[test]
+    fn a_sidecar_that_isnt_there_yet_is_protected_too() {
+        let d = std::env::temp_dir().join(format!("lc-originals-new-sidecar-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("sub")).unwrap();
+        let orig = d.join("IMG_1.jpg");
+        std::fs::write(&orig, b"original").unwrap();
+        let mut c = Catalog::default();
+        let p = Photo::new(PhotoId(1), Source::File { path: orig.to_string_lossy().to_string() }, "IMG_1.jpg", "JPEG", 10, 10, "2026-01-01");
+        c.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        let g = OriginalGuard::new(&c);
+        assert!(g.check(&d.join("IMG_1.xmp")).unwrap_err().contains("XMP sidecar of IMG_1.jpg"));
+        assert!(g.check(&d.join("IMG_1.jpg.xmp")).is_err(), "the appended spelling");
+        assert!(g.check(&d.join("sub/../IMG_1.xmp")).is_err(), "another spelling of the folder");
+        assert!(g.check(&d.join("sub/IMG_1.xmp")).is_ok(), "the same name in another folder");
+        assert!(g.check(&d.join("other.xmp")).is_ok(), "no photo of that name");
+        assert!(g.check(&d.join("missing/IMG_1.xmp")).is_ok(), "a folder that isn't there");
+        // a write pinned ahead of time (a queued screenshot) is refused the same way
+        let mut s = crate::Session::new();
+        s.catalog = c;
+        let pinned = s.pin_write_target(&d.join("IMG_1.xmp").to_string_lossy());
+        assert!(pinned.unwrap_err().contains("XMP sidecar of IMG_1.jpg"));
+        assert!(s.pin_write_target(&d.join("sub/IMG_1.xmp").to_string_lossy()).is_ok(), "the same name in another folder");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn write_targets_pin_absent_paths_and_recheck_the_current_library() {
         let d = std::env::temp_dir().join(format!("lc-write-targets-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -416,36 +444,26 @@ mod tests {
         // identity of either name cannot be read while it is held.
         let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(&original).unwrap();
         let refused = s.pin_write_target(&linked.to_string_lossy()).unwrap_err();
-        assert!(refused.contains("cannot tell whether"), "{refused}");
+        // Except with SeBackupPrivilege enabled (an admin's Git Bash, so every Windows CI gate leg):
+        // a backup-semantics open of both names, as the guard's identity read uses, gets past the
+        // held handle. The guard then sees the link and refuses it as the original instead (#3228).
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        let backup_open = |p: &std::path::Path| std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(p).is_ok();
+        if backup_open(&original) && backup_open(&linked) {
+            assert!(refused.contains("is the original"), "{refused}");
+            assert!(!refused.contains("cannot tell whether"), "{refused}");
+            lightcraft_testkit::skip!(
+                System,
+                "a backup-semantics open gets past share_mode(0) here (SeBackupPrivilege is enabled), so the \"cannot tell whether\" refusal can't be tested"
+            );
+        } else {
+            assert!(refused.contains("cannot tell whether"), "{refused}");
+        }
         drop(held);
 
         let refused = s.pin_write_target(&linked.to_string_lossy()).unwrap_err();
         assert!(refused.contains("original"), "{refused}");
         assert!(!refused.contains("cannot tell whether"), "{refused}");
-        let _ = std::fs::remove_dir_all(&d);
-    }
-    #[test]
-    fn a_sidecar_that_isnt_there_yet_is_protected_too() {
-        let d = std::env::temp_dir().join(format!("lc-originals-new-sidecar-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(d.join("sub")).unwrap();
-        let orig = d.join("IMG_1.jpg");
-        std::fs::write(&orig, b"original").unwrap();
-        let mut c = Catalog::default();
-        let p = Photo::new(PhotoId(1), Source::File { path: orig.to_string_lossy().to_string() }, "IMG_1.jpg", "JPEG", 10, 10, "2026-01-01");
-        c.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
-        let g = OriginalGuard::new(&c);
-        assert!(g.check(&d.join("IMG_1.xmp")).unwrap_err().contains("XMP sidecar of IMG_1.jpg"));
-        assert!(g.check(&d.join("IMG_1.jpg.xmp")).is_err(), "the appended spelling");
-        assert!(g.check(&d.join("sub/../IMG_1.xmp")).is_err(), "another spelling of the folder");
-        assert!(g.check(&d.join("sub/IMG_1.xmp")).is_ok(), "the same name in another folder");
-        assert!(g.check(&d.join("other.xmp")).is_ok(), "no photo of that name");
-        assert!(g.check(&d.join("missing/IMG_1.xmp")).is_ok(), "a folder that isn't there");
-        let mut session = crate::Session::new();
-        let late_sidecar = session.pin_write_target(&d.join("IMG_1.xmp").to_string_lossy()).unwrap();
-        session.catalog = c;
-        assert!(session.revalidate_write_target(&late_sidecar).is_err(), "a new import protects its absent sidecar before publication");
-        assert!(session.pin_write_target(&d.join("IMG_1.xmp").to_string_lossy()).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

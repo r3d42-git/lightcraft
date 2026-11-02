@@ -165,11 +165,10 @@ impl AiEdit {
             return Err(bad);
         }
         let mut out = Vec::with_capacity(count);
-        for pixel in raw.chunks_exact(16) {
+        for pixel in raw.as_chunks::<16>().0.iter() {
             let mut rgba = [0.0; 4];
-            for (v, bytes) in rgba.iter_mut().zip(pixel.chunks_exact(4)) {
-                let bytes: [u8; 4] = bytes.try_into().map_err(|_| bad)?;
-                *v = f32::from_le_bytes(bytes);
+            for (v, bytes) in rgba.iter_mut().zip(pixel.as_chunks::<4>().0.iter()) {
+                *v = f32::from_le_bytes(*bytes);
             }
             out.push(rgba);
         }

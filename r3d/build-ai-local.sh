@@ -8,7 +8,7 @@ R3D_AI_STAGING="${R3D_AI_STAGING:-$R3D_SCRATCH_ROOT/lightcraft/packaging-$R3D_IN
 R3D_AI_APP="${R3D_AI_APP:-$R3D_SCRATCH_ROOT/lightcraft/apps-$R3D_INSTANCE/LightCraft R3D.app}"
 R3D_AI_DIST="${R3D_AI_DIST:-$R3D_SCRATCH_ROOT/lightcraft/dist-$R3D_INSTANCE}"
 r3d_validate_scratch_paths "$R3D_AI_STAGING" "$R3D_AI_APP" "$R3D_AI_DIST"
-export LIGHTCRAFT_VERSION="${LIGHTCRAFT_VERSION:-0.16.0-r3d-ai-all-native}"
+export LIGHTCRAFT_VERSION="${LIGHTCRAFT_VERSION:-0.17.0-r3d-ai-all-native}"
 export LIGHTCRAFT_BUILD_SHA="$(git -C "$R3D_SOURCE" rev-parse HEAD)"
 export LIGHTCRAFT_BUILD_DATE="$(date -u +%Y-%m-%d)"
 export MACOSX_DEPLOYMENT_TARGET=11.0

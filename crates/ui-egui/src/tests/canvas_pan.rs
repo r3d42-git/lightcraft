@@ -131,8 +131,10 @@ fn releasing_space_mid_drag_does_not_resume_a_brush_or_commit_an_interrupted_str
         h.step();
         assert!(h.app.gesture.is_some(), "brush started");
         space(&mut h, true);
+        let pan = h.app.ui.pan;
         h.app.synthetic.push(Event::PointerMoved(at + vec2(-50.0, -20.0)));
         h.step();
+        assert_ne!(h.app.ui.pan, pan, "the hand pans an inherited tool press");
         space(&mut h, false);
         let end = at + vec2(-100.0, -40.0);
         h.app.synthetic.push(Event::PointerMoved(end));

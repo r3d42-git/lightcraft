@@ -163,17 +163,32 @@ mod tests {
         let plain = plain_job.clone().run().rendered.unwrap();
         let mask_job = plain_job.with_overlay(Overlay::SharpenMask);
         assert!(mask_job.view_cache.is_none(), "the diagnostic must not replace the ordinary view preview");
-        let source = mask_job.source.load_source().unwrap();
-        let request = lightcraft_pipeline::RenderRequest { display: None, overlay: Overlay::None, ..mask_job.request };
-        let expected = lightcraft_pipeline::render(
-            &source.image_for(mask_job.settings.denoise_amount()),
-            &source.info_or(mask_job.info.clone()),
-            &mask_job.settings,
-            &request,
-        );
+        // The upstream diagnostic path can now run on Metal as well. Compare the same job's
+        // sRGB photo, retaining its backend/source/quality instead of forcing a CPU reference
+        // with slightly different float-to-bin rounding. Both jobs bypass the view cache.
+        let expected = mask_job.clone().with_overlay(Overlay::None).with_display(None).run().rendered.unwrap();
         let mask = mask_job.run().rendered.unwrap();
         assert_eq!(mask.histogram, expected.histogram, "all channels must retain the sRGB photo histogram");
         assert_ne!(plain.image.data, mask.image.data);
+    }
+
+    /// Alt-drag previews on a profiled display (issue #937): the histogram stays the photo's (not
+    /// the preview's), and the clipping view is tested and drawn in sRGB, so it stays black and white.
+    #[test]
+    fn diagnostic_views_keep_the_photos_histogram() {
+        use lightcraft_pipeline::Overlay;
+        let mut session = crate::Session::with_demo();
+        let id = session.visible_cloned()[0];
+        let d = std::sync::Arc::new(p3());
+        let mut run = |o| session.loupe_job(id, 320, 240, true).unwrap().with_display(Some(d.clone())).with_overlay(o).run().rendered.unwrap();
+        let plain = run(Overlay::None);
+        let clip = run(Overlay::ClipShadows);
+        let (a, b) = (plain.histogram.mean_luma(), clip.histogram.mean_luma());
+        assert!((a - b).abs() < 0.02, "the photo's histogram: {a} vs {b}");
+        let px = &clip.image.data;
+        // (the profile may round white to 254)
+        let binary = px.iter().filter(|p| p[..3].iter().all(|v| *v <= 2 || *v >= 253)).count();
+        assert!(binary as f64 > 0.99 * px.len() as f64, "{binary} of {}", px.len());
     }
 
     #[test]

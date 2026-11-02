@@ -939,3 +939,19 @@ fn sharpen_mask_window_matches_full_frame() {
     let max_error = tile.data.iter().zip(&cut.data).map(|(a, b)| a[0].abs_diff(b[0])).max().unwrap();
     assert!(max_error <= 1, "window weight differs by {max_error}");
 }
+
+/// A crop of no width used to give grain NaN coordinates (and NaN pixels); the render stays finite.
+#[test]
+fn zero_width_crop_with_grain_renders_finite_pixels() {
+    let mut s = DevelopSettings::default();
+    s.grain.amount = 60.0;
+    s.crop.geometry.rect = lightcraft_geom::Rect::new(0.5, 0.1, 0.5, 0.9);
+    let mut req = RenderRequest::fit(240, 240);
+    req.depth = crate::OutputDepth::F32Linear;
+    let r = render(&scene(), &SourceInfo::default(), &s, &req);
+    if let Some(d) = r.deep
+        && let crate::DeepSamples::F32(v) = d.samples
+    {
+        assert!(v.iter().all(|x| x.is_finite()), "non-finite sample in a zero-width crop with grain");
+    }
+}

@@ -244,8 +244,8 @@ impl ToneStats {
             return None;
         };
         let (mut values, mut log_sum, mut chroma_sum) = (Vec::with_capacity(samples.len() / 3), 0.0, 0.0);
-        for p in samples.chunks_exact(3) {
-            let [r, g, b] = <[f32; 3]>::try_from(p).ok()?;
+        for p in samples.as_chunks::<3>().0.iter() {
+            let [r, g, b] = *p;
             let y = (0.2126 * r + 0.7152 * g + 0.0722 * b).max(0.0) as f64;
             log_sum += y.max(1e-6).log2();
             let hi = r.max(g).max(b) as f64;
@@ -561,7 +561,7 @@ mod adaptive_tests {
         let crate::DeepSamples::F32(samples) = &image.deep.as_ref().unwrap().samples else {
             panic!("float render");
         };
-        samples.chunks_exact(3).map(|p| (p[0] * 0.2126 + p[1] * 0.7152 + p[2] * 0.0722) as f64).sum::<f64>() / (samples.len() / 3) as f64
+        samples.as_chunks::<3>().0.iter().map(|p| (p[0] * 0.2126 + p[1] * 0.7152 + p[2] * 0.0722) as f64).sum::<f64>() / (samples.len() / 3) as f64
     }
 
     #[test]

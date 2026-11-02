@@ -188,9 +188,40 @@ fn a_render_that_panics_fails_instead_of_never_answering() {
         embedded: Some(("x.arw".into(), Arc::new(|_: &str, _: usize| -> Option<Rgba8> { panic!("preview reader bug") }), 256)),
         embedded_cache: None,
         embedded_on_disk: false,
+        minimum_embedded_edge: None,
         small: None,
     };
     let r = quick.run();
     assert_eq!((r.request_id, r.key), (7, 9));
     assert_eq!(r.rendered.err().as_deref(), Some("the render failed unexpectedly: preview reader bug"));
+}
+
+/// Import's minimum JPEG size still applies to a R3D cached camera preview; culling can reuse that
+/// same small JPEG later, without decoding the file again.
+#[test]
+fn cached_small_camera_preview_does_not_bypass_import_render_size() {
+    let mut session = crate::Session::with_demo();
+    let id = session.visible_cloned()[0];
+    let small = session.render_job(id, 96, 96, false, true).unwrap();
+    let cache = Arc::new(PreviewCache::memory(1 << 20));
+    let key = Hasher128::new().str("cached-import-camera").finish();
+    cache.put_memory(key, Arc::new(Rgba8 { width: 4, height: 3, data: vec![[9, 8, 7, 255]; 12] }));
+    let job = QuickJob {
+        request_id: 0,
+        photo: id,
+        key: 1,
+        cached: Vec::new(),
+        embedded: Some(("cached.cr3".into(), Arc::new(|_: &str, _: usize| -> Option<Rgba8> { panic!("cached preview should avoid decoding") }), 96)),
+        embedded_cache: Some((cache, key)),
+        embedded_on_disk: false,
+        minimum_embedded_edge: Some(96),
+        small: Some(Box::new(small)),
+    };
+    let imported = job.clone().run();
+    assert_eq!(imported.quick, Some(QuickSource::Small));
+    let rendered = imported.rendered.unwrap();
+    assert_eq!(rendered.image.width.max(rendered.image.height), 96);
+    let culling = QuickJob { minimum_embedded_edge: None, small: None, ..job }.run();
+    assert_eq!(culling.quick, Some(QuickSource::Embedded));
+    assert_eq!(culling.rendered.unwrap().image.width, 4);
 }

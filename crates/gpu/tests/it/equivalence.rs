@@ -774,6 +774,34 @@ fn overlays_match() {
         let req = RenderRequest { overlay: Overlay::Mask { id, view, color: [230, 30, 40], opacity: 50 }, ..RenderRequest::fit(640, 640) };
         check(&format!("mask {id} overlay {}", view.name()), &src, &raw, &s, &req);
     }
+    // Alt-drag previews: clipping and greyscale on the finished image; the sharpening views from
+    // each renderer's own detail planes (with sharpening on, and off: no texture plane then).
+    let mut s = DevelopSettings::default();
+    (s.light.whites, s.light.blacks, s.detail.sharpen_masking) = (80.0, -80.0, 40.0);
+    for amount in [50.0, 0.0] {
+        s.detail.sharpen_amount = amount;
+        for o in [Overlay::ClipHighlights, Overlay::ClipShadows, Overlay::Grayscale, Overlay::SharpenDetail, Overlay::SharpenMask] {
+            let req = RenderRequest { overlay: o, ..RenderRequest::fit(640, 640) };
+            if matches!(o, Overlay::ClipHighlights | Overlay::ClipShadows) {
+                // a binary view: a 1-LSB difference at 0 / 255 flips a channel, so compare shares
+                let cpu = render(&src, &raw, &s, &req).image;
+                let gpu = lightcraft_gpu::render(&src, &raw, &s, &req, None).expect("gpu").image;
+                let differ = cpu.data.iter().zip(&gpu.data).filter(|(a, b)| a != b).count() as f64 / cpu.data.len() as f64;
+                assert!(differ < 0.002, "{o:?} sharpen {amount}: {differ}");
+            } else if o == Overlay::Grayscale {
+                check(&format!("{o:?} preview"), &src, &raw, &s, &req);
+            } else {
+                // the sharpening views amplify the detail planes (the mask through a steep
+                // smoothstep): allow a few larger differences where the planes differ slightly
+                let cpu = render(&src, &raw, &s, &req).image;
+                let gpu = lightcraft_gpu::render(&src, &raw, &s, &req, None).expect("gpu").image;
+                let (mean, max, _) = diff(&cpu, &gpu);
+                let far = cpu.data.iter().zip(&gpu.data).filter(|(a, b)| a[0].abs_diff(b[0]) > 8).count() as f64 / cpu.data.len() as f64;
+                eprintln!("{o:?} sharpen {amount:<4}  mean {mean:.4}  max {max}  >8: {:.4}%", far * 100.0);
+                assert!(mean < 1.0 && far < 0.005, "{o:?} sharpen {amount}: mean {mean:.4}, >8 LSB {far}");
+            }
+        }
+    }
 }
 
 #[test]

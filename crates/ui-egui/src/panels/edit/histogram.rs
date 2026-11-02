@@ -163,8 +163,8 @@ pub fn histogram(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         }
     }
     let mut clicked = resp.clicked();
-    // the panel's floating scroll bar widens over the right edge when hovered: both buttons keep
-    // clear of it, the left one too so they stay symmetric (#1640)
+    // both buttons keep clear of the panel's right edge, where its floating scroll bar widens when
+    // hovered beside the sliders, the left one too so they stay symmetric (#1640)
     let [shadow_rect, highlight_rect] = crate::panels::histogram::clipping_rects(ui, plot);
     for (name, rect, label, clipped) in [
         ("shadows", shadow_rect, "Shadow clipping", clipping.map(|(lo, _)| lo > 0.003)),
@@ -345,52 +345,6 @@ mod tests {
         }
     }
 
-    /// The Edit header's buttons never cover each other or run past the panel, in any language: a button that doesn't
-    /// fit starts the next row, and Reset stays right-aligned. Before, Reset covered HDR in 11 of the 18 languages at
-    /// the default 222 pt (German *Zurücksetzen* among them) and in all but the two Chinese ones at some width. 200 pt
-    /// is about the narrowest panel (`RIGHT_WIDTH.min` less the margins).
-    #[test]
-    fn edit_header_buttons_do_not_overlap_in_any_language() {
-        use crate::i18n::Locale;
-        let ctx = egui::Context::default();
-        crate::theme::install_fonts(&ctx);
-        crate::theme::apply(&ctx);
-        let mut wrapped = Vec::new();
-        for &locale in Locale::ALL {
-            crate::i18n::set_language(locale);
-            for width in [200.0, 222.0, 260.0, 400.0] {
-                let mut rects = Vec::new();
-                for frame in 0..2 {
-                    let raw = crate::headless::HeadlessView::raw_input(vec2(width, 200.0), 1.0, frame as f64 / 60.0, vec![]);
-                    let mut out = ctx.run_ui(raw, |ui| {
-                        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-                            header_buttons(ui, false, false, false, "");
-                        });
-                    });
-                    out.textures_delta.clear();
-                    rects = crate::widgets::take_registry(&ctx);
-                }
-                let get = |id: &str| rects.iter().find(|(i, _)| i == id).map(|(_, r)| *r).unwrap();
-                let buttons = ["button:auto", "button:bw", "button:hdr", "button:reset"].map(get);
-                for (i, a) in buttons.iter().enumerate() {
-                    assert!(a.right() <= width + 0.5, "{locale:?} {width}: button {i} past the edge: {a:?}");
-                    for b in &buttons[i + 1..] {
-                        assert!(!a.intersects(b.shrink(0.5)), "{locale:?} {width}: {a:?} overlaps {b:?}");
-                    }
-                }
-                let [_, _, hdr, reset] = buttons;
-                assert!((reset.right() - width).abs() < 0.5, "{locale:?} {width}: Reset stays right-aligned: {reset:?}");
-                if reset.top() > hdr.top() {
-                    wrapped.push((locale, width));
-                }
-            }
-        }
-        crate::i18n::set_language(Locale::En);
-        assert!(wrapped.contains(&(Locale::De, 222.0)), "German wraps in the default panel: {wrapped:?}");
-        // English keeps its single row from the default width up
-        assert!(!wrapped.iter().any(|&(l, w)| l == Locale::En && w >= 222.0), "{wrapped:?}");
-    }
-
     #[test]
     fn edit_header_selected_buttons_have_solid_fills() {
         let language = crate::i18n::language();
@@ -472,7 +426,7 @@ mod tests {
     fn reset_tooltip_names_the_shortcut_of_this_platform() {
         let keymap = crate::shortcuts::Keymap::new();
         assert_eq!(reset_tip(&keymap, false), "Reset all edits (Ctrl+Shift+R)");
-        assert_eq!(reset_tip(&keymap, true), "Reset all edits (⌘⇧R)");
+        assert_eq!(reset_tip(&keymap, true), "Reset all edits (⇧⌘R)");
         let rebound: crate::shortcuts::Keymap = [("develop.reset".to_string(), "Cmd+Alt+R".to_string())].into();
         assert_eq!(reset_tip(&rebound, false), "Reset all edits (Ctrl+Alt+R)");
         let unbound: crate::shortcuts::Keymap = [("develop.reset".to_string(), String::new())].into();

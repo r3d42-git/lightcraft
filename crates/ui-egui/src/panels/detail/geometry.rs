@@ -125,31 +125,9 @@ pub(super) fn middle_pan(app: &mut LightcraftApp, ui: &egui::Ui, resp: &egui::Re
     true
 }
 
-/// Space temporarily lends canvas input to the hand. Keep ownership through release even
-/// if Space is released first: a tool must never see the tail of a navigation drag.
-pub(super) fn temporary_hand(app: &mut LightcraftApp, ui: &egui::Ui, resp: &egui::Response) -> bool {
-    let id = egui::Id::unique("loupe-temporary-hand-drag");
-    let latched = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
-    let space = space_navigation_allowed(app, ui.ctx()) && ui.input(|i| i.key_down(egui::Key::Space));
-    let over = resp.contains_pointer() || resp.dragged();
-    let hand = space && over;
-    let primary = ui.input(|i| i.pointer.primary_down());
-    if hand && primary && !latched {
-        cancel_canvas_gesture(app);
-        ui.data_mut(|d| d.insert_temp(id, true));
-    } else if latched && !primary {
-        ui.data_mut(|d| d.remove_temp::<bool>(id));
-    }
-    let owns = hand || latched;
-    if owns {
-        ui.ctx().set_cursor_icon(if primary { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
-    }
-    owns
-}
-
 /// Navigation interrupts a tool stroke; restore any silent drag edits instead of committing
 /// a line across the newly positioned image on release.
-pub(super) fn cancel_canvas_gesture(app: &mut LightcraftApp) {
+pub(crate) fn cancel_canvas_gesture(app: &mut LightcraftApp) {
     if app.gesture.take().is_some() {
         let _ = app.session.cancel_interaction();
     }
@@ -169,15 +147,6 @@ pub(crate) fn canvas_tool_active(app: &LightcraftApp) -> bool {
         app.ui.right,
         crate::state::RightPanel::Crop | crate::state::RightPanel::Masking | crate::state::RightPanel::Remove | crate::state::RightPanel::RedEye
     ) || !app.ui.tool.is_empty()
-}
-
-pub(super) fn hand_pan(app: &mut LightcraftApp, ui: &egui::Ui, area: Rect, img: Rect) {
-    if ui.input(|i| i.pointer.primary_down() && !i.pointer.button_pressed(egui::PointerButton::Primary)) {
-        let delta = ui.input(|i| i.pointer.delta());
-        if delta != egui::Vec2::ZERO {
-            pan_image(app, area, img, delta);
-        }
-    }
 }
 
 /// Net vertical notches (up is positive) of unmodified line/page-unit wheel events: a real mouse wheel, not a trackpad.

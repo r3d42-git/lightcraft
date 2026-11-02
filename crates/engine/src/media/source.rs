@@ -6,7 +6,8 @@ use super::{Arc, Deserialize, DevelopSettings, MediaKind, Photo, Rgb32f, Rgba8, 
 // 78: automatic optical-edge crop; above combined source/product protection cache 77.
 // 79: apply validated embedded distortion for newly decoded Sony ILCE-7M3 sources.
 // 80: v0.16.0 grayscale JPEG XL LinearRaw decoding; invalidate previous R3D output.
-pub const RENDER_CACHE_VERSION: u64 = 80;
+// 81: upstream 0.17.0 color/geometry/grain and merged R3D diagnostic views.
+pub const RENDER_CACHE_VERSION: u64 = 81;
 
 /// Thumbnails render at one of these long edges (so window/cell size changes reuse the cache).
 pub const THUMB_SIZES: [usize; 4] = [128, 256, 384, 512];
@@ -76,10 +77,14 @@ impl SourceLevel {
 /// Pixels along the source's long edge that an output `out_long` pixels long needs: a crop shows
 /// only part of the photo, so its pixels come from a source that many times larger (the source
 /// level is chosen from this, or a tight crop shown at its own pixels would be a stretched preview).
+/// The crop is bounded as the render bounds it (issue #2555), so one reaching far past the photo
+/// doesn't pick a source too small for the frame it renders. Its rect is in the photo as shown
+/// (turned by its orientation), so it is measured with the turned size.
 pub(super) fn source_edge_needed(p: &Photo, settings: &DevelopSettings, apply_crop: bool, out_long: usize) -> usize {
     let (w, h) = (f64::from(p.width.max(1)), f64::from(p.height.max(1)));
-    let r = settings.crop.geometry.rect;
-    let shown = if apply_crop { (r.width() * w).max(r.height() * h) } else { w.max(h) };
+    let (ow, oh) = if settings.orientation.swaps_axes() { (h, w) } else { (w, h) };
+    let r = settings.crop.geometry.bounded(ow, oh).rect;
+    let shown = if apply_crop { (r.width() * ow).max(r.height() * oh) } else { w.max(h) };
     if !shown.is_finite() || shown < 1.0 {
         return out_long;
     }

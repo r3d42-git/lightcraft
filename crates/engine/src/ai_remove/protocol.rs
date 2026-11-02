@@ -149,11 +149,13 @@ fn encode_rgb(rgb: &[[f32; 3]]) -> Vec<u8> {
 }
 
 fn decode_rgb(raw: &[u8]) -> std::result::Result<Vec<[f32; 3]>, String> {
-    raw.chunks_exact(16)
+    raw.as_chunks::<16>()
+        .0
+        .iter()
         .map(|chunk| {
             let mut rgb = [0.0; 3];
-            for (v, bytes) in rgb.iter_mut().zip(chunk.chunks_exact(4)) {
-                *v = f32::from_le_bytes(<[u8; 4]>::try_from(bytes).map_err(|e| e.to_string())?);
+            for (v, bytes) in rgb.iter_mut().zip(chunk.as_chunks::<4>().0.iter()) {
+                *v = f32::from_le_bytes(*bytes);
             }
             Ok(rgb)
         })

@@ -1,14 +1,35 @@
 # R3D optics integration
 
-This fork integrates the unchanged LightCraft `v0.16.0` release,
-`cdf00cc84bf87f544d6dbc40e3bc0456641661a9`, into its tested R3D feature line. The machine-readable base is
+This fork integrates the unchanged LightCraft `v0.17.0` release,
+`5a09d075306291a1522d5e8bb0710774f3733594`, into its tested R3D feature line. The machine-readable base is
 `r3d/upstream-base.json`. This is a local development implementation, not a released
 replacement for the official application.
 
-The active local checkout is `update-0.16.0/` on the fork's default branch
-`r3d/update-0.16.0`. The former 0.15.0 names were renamed after the 0.16.0
-installation was accepted. Historical evidence paths below retain their original
-names. The checkout's existing `target` symlink keeps using the shared build cache.
+The 0.17 candidate checkout is `update-0.17.0/` on `r3d/update-0.17.0`.
+The accepted installed app/default branch remain 0.16 until personal acceptance.
+Both checkouts reuse the shared excluded buildvolume cache.
+
+## v0.17.0 compatibility integration (2026-11-02)
+
+Merge the exact upstream tag into the existing R3D history. Upstream now owns
+AHD blending, neutral GPU hue, fixed/HDR-aware histogram, low-latency surface,
+white-balance translation and the core generic Alt-preview implementations.
+Retain native AI raster retouches, geometry-aware optics and camera provenance,
+per-photo denoiser pins/RawNIND default, BM3D, adaptive Auto, culling/background
+preparation, sharp exports/protected writes, pixel zoom and async field pickers.
+Combine upstream source-position vignetting and tone limits with the resolved
+profile geometry; do not apply shading twice. Generic Alt previews retain the
+fork's gesture/photo/focus/cancellation and stale-result ownership safeguards.
+Persistent spatial clipping remains separate. Existing overlay wire IDs 6/7
+remain Clipping/SharpenMask; new variants use 8–11. Export source oversampling
+coexists with crop safety, denoise product binding and Lanczos downscaling.
+
+Render cache81 and camera look14 invalidate the older semantic versions; catalog
+format12 is retained. Rust1.99.1 is pinned locally and in the Ubuntu gate.
+External native AI packages, model revisions and trust pins are unchanged.
+No new release, public tag, upstream PR or production installation is implied.
+Actual validation and pending personal acceptance live outside Git under
+`../evidence/update-0.17.0-20261102/`.
 
 ## v0.16.0 compatibility integration (2026-10-31)
 

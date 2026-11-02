@@ -57,6 +57,17 @@ struct Pipes {
     built: Vec<(String, f64)>,
 }
 
+fn collaborative_source() -> String {
+    let transform = include_str!("wgsl/bm3d_transform.wgsl");
+    // the group's transforms, for the noisy blocks (`buf`) and for the pilot's (`pb`)
+    format!(
+        "{}\n{}\n{}",
+        transform.replace("{{A}}", "buf").replace("{{S}}", ""),
+        transform.replace("{{A}}", "pb").replace("{{S}}", "_p"),
+        include_str!("wgsl/bm3d_collab.wgsl")
+    )
+}
+
 /// Compile the three kernels (match, filter, put back) and make their bind-group layouts, timing each build.
 fn build_pipes(d: &Dev) -> Pipes {
     use wgpu::BufferBindingType::{Storage, Uniform};
@@ -67,14 +78,7 @@ fn build_pipes(d: &Dev) -> Pipes {
     let collab_layout = layout(&[entry(0, Uniform), entry(1, ro), entry(2, ro), entry(3, ro), entry(4, ro), entry(5, rw), entry(6, rw)]);
     let agg_layout = layout(&[entry(0, Uniform), entry(1, ro), entry(2, ro), entry(3, ro), entry(4, ro), entry(5, ro), entry(6, rw)]);
     let common = include_str!("wgsl/bm3d_common.wgsl");
-    let transform = include_str!("wgsl/bm3d_transform.wgsl");
-    // the group's transforms, for the noisy blocks (`buf`) and for the pilot's (`pb`)
-    let collab_source = format!(
-        "{}\n{}\n{}",
-        transform.replace("{{A}}", "buf").replace("{{S}}", ""),
-        transform.replace("{{A}}", "pb").replace("{{S}}", "_p"),
-        include_str!("wgsl/bm3d_collab.wgsl")
-    );
+    let collab_source = collaborative_source();
     let mut built = Vec::new();
     let mut make = |name: &str, kernel: &str, layout: &wgpu::BindGroupLayout| {
         let started = std::time::Instant::now();
@@ -463,6 +467,19 @@ impl TileRunner for BuiltinRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Validate the exact assembled fork kernels even on the Ubuntu gate without Metal.
+    #[test]
+    fn bm3d_kernels_parse_and_validate_without_a_gpu() {
+        let common = include_str!("wgsl/bm3d_common.wgsl");
+        for (name, kernel) in [
+            ("bm3d match", include_str!("wgsl/bm3d_match.wgsl").to_string()),
+            ("bm3d filter", collaborative_source()),
+            ("bm3d aggregate", include_str!("wgsl/bm3d_agg.wgsl").to_string()),
+        ] {
+            assert_eq!(crate::validate_wgsl(name, &format!("{common}\n{kernel}")), Ok(()), "{name}");
+        }
+    }
 
     /// Four planes of `t × t` cells: edges, a ramp and some texture, plus unit noise (an LCG and Box-Muller).
     fn scene(t: usize, seed: u64) -> Vec<Vec<f32>> {

@@ -35,9 +35,10 @@ pub(crate) use filmstrip::film_spoken;
 pub(crate) use filmstrip::filmstrip;
 use filmstrip::navigator;
 pub use geometry::CanvasMap;
+pub(crate) use geometry::cancel_canvas_gesture;
 #[cfg(test)]
 pub(crate) use geometry::focus_box;
-use geometry::{animated_rect, cancel_canvas_gesture, hand_pan, middle_pan, temporary_hand};
+use geometry::{animated_rect, middle_pan};
 pub(crate) use geometry::{canvas_tool_active, space_navigation_allowed};
 pub(crate) use geometry::{fit_rect, fit_texture_rect, focus_pan, navigate_gesture, output_px, pan_image, snap_fit_rect, texture_side};
 #[cfg(test)]
@@ -170,18 +171,15 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     // tool's overlays need the frame's own geometry.
     let display_aspect = visible_texture_aspect.filter(|a| !crop_tool && (a / aspect - 1.0).abs() > 0.02).unwrap_or(aspect);
     let resp = ui.interact(canvas, egui::Id::unique("loupe"), Sense::click_and_drag());
-    crate::widgets::announce(&resp, crate::i18n::tr("Photo"));
+    announce_photo(app, &resp, &photo);
     let mut target_rect = fit_rect(main_area, display_aspect, app.ui.zoom, native, ppp, app.ui.pan);
     let mut img_rect = animated_rect(ui.ctx(), &mut app.ui.zoom_anim, target_rect);
     let in_pane = |pane: Rect, image: Rect| image.translate(pane.center() - main_area.center());
-    let hand = temporary_hand(app, ui, &resp);
+    let hand = app.space_hand.is_some();
     let navigating = areas.iter().any(|&view_area| {
         let view_img = in_pane(view_area, img_rect);
         let over = ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| view_area.contains(p));
         let gesture = navigate_gesture(app, ui, &resp, view_area, view_img, native);
-        if hand && over {
-            hand_pan(app, ui, view_area, view_img);
-        }
         gesture || (hand && over) || (over && middle_pan(app, ui, &resp, view_area, view_img))
     }) || hand;
     if navigating {
@@ -354,6 +352,8 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         let tv = ToolView { right, map: &map, frame: &frame, d: &d, id, split, native, aspect };
         tool_interaction(app, ui, &resp, &tv, &Views { img_rect, target_rect, before_img, before_target, areas: &areas, main_area, canvas });
     }
+    // Space held over a tool: the view's hand takes the pointer from it (#1895)
+    crate::space_hand::interact(app, ui, canvas, (main_area, img_rect), split.then(|| (areas[0], before_img)));
     // drawn and hit-tested above the loupe and its tools: clicks on it pan
     let nav = navigator(app, ui, canvas, img_rect, id);
     // what is on screen isn't the render on its way (a stand-in, the last render after an edit,
@@ -386,6 +386,12 @@ fn draw_camera_full(app: &LightcraftApp, p: &egui::Painter, id: PhotoId, rect: R
         return true;
     }
     false
+}
+
+/// Names the loupe for screen readers as the grid names the same photo (file, rating, flag, label), not
+/// just "Photo".
+fn announce_photo(app: &LightcraftApp, resp: &egui::Response, photo: &lightcraft_catalog::Photo) {
+    crate::widgets::announce(resp, crate::i18n::tr_format!("Photo: {name}", name = super::grid::cell_description(app, photo)));
 }
 
 /// The loupe's right-click menu: zoom commands and the grid's photo menu.
@@ -1001,18 +1007,24 @@ fn targeted_drag(app: &mut LightcraftApp, resp: &egui::Response, map: &CanvasMap
 
 /// A transient slider gesture, gated by live input and the interaction's photo. No persisted state.
 pub(crate) fn slider_mask_preview(app: &LightcraftApp, ctx: &egui::Context) -> Option<lightcraft_pipeline::Overlay> {
-    (sharpen_mask_gesture_live(app, ctx) && ctx.input(|i| i.modifiers.alt)).then_some(lightcraft_pipeline::Overlay::SharpenMask)
+    if slider_preview_gesture_live(app, ctx) && ctx.input(|i| i.modifiers.alt) {
+        app.ui.dragging_control.as_deref().and_then(lightcraft_pipeline::Overlay::for_control)
+    } else {
+        None
+    }
 }
 
 /// Losing the gesture owner must prevent a held modifier from reviving an old preview.
-pub(crate) fn sharpen_mask_gesture_live(app: &LightcraftApp, ctx: &egui::Context) -> bool {
+pub(crate) fn slider_preview_gesture_live(app: &LightcraftApp, ctx: &egui::Context) -> bool {
     !app.ui.fullscreen
         && app.ui.view == crate::state::ViewMode::Detail
         && app.ui.dialog.is_none()
         && !crate::panels::notices::blocks_input(app)
         && app.ui.right == RightPanel::Edit
-        && app.ui.open_sections.iter().any(|s| s == "detail")
-        && app.ui.dragging_control.as_deref() == Some("detail.sharpenMasking")
+        && app.ui.dragging_control.as_deref().is_some_and(|id| {
+            lightcraft_pipeline::Overlay::for_control(id).is_some()
+                && id.split_once('.').is_some_and(|(section, _)| app.ui.open_sections.iter().any(|s| s == section))
+        })
         && app.session.interaction.as_ref().is_some_and(|i| Some(i.photo) == app.session.active())
         && ctx.input(|i| i.focused && i.pointer.primary_down() && i.pointer.latest_pos().is_some() && !i.key_down(egui::Key::Escape))
 }
@@ -1124,8 +1136,19 @@ fn general_interaction(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::
         }
         return;
     }
-    // click toggles Fit ↔ the chosen click-zoom ratio at the clicked point; drag pans when zoomed
-    let zoomed = img.width() > canvas.width() + 1.0 || img.height() > canvas.height() + 1.0;
+    click_zoom_and_pan(app, resp, img, canvas);
+    let _ = (native, aspect);
+}
+
+/// The photo `img` reaches past its pane `canvas`: a drag pans it.
+pub(crate) fn zoomed(img: Rect, canvas: Rect) -> bool {
+    img.width() > canvas.width() + 1.0 || img.height() > canvas.height() + 1.0
+}
+
+/// The loupe's own click and drag (also Space's hand over a tool, `space_hand`): a click toggles
+/// Fit ↔ the chosen click-zoom ratio at the clicked point, a drag pans when zoomed.
+pub(crate) fn click_zoom_and_pan(app: &mut LightcraftApp, resp: &egui::Response, img: Rect, canvas: Rect) {
+    let zoomed = zoomed(img, canvas);
     if resp.double_clicked() || (resp.clicked() && !zoomed) {
         if let Some(q) = resp.interact_pointer_pos() {
             let u = ((q.x - img.left()) / img.width()).clamp(0.0, 1.0);
@@ -1141,7 +1164,6 @@ fn general_interaction(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::
     if zoomed && resp.dragged() {
         pan_image(app, canvas, img, resp.drag_delta());
     }
-    let _ = (native, aspect);
 }
 
 /// Defer expensive RAW work during a rapid sequence of photo steps.
