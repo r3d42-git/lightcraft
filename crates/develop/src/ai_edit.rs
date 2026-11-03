@@ -94,6 +94,54 @@ pub fn brush_distance(points: &[[f64; 2]], point: [f64; 2], continuous: bool) ->
         .fold(f64::INFINITY, f64::min)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AiStageRole {
+    Effects,
+    Reconstruction,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AiEffectsContract {
+    #[serde(rename = "object-effects-v1")]
+    ObjectEffectsV1,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AiEditStage {
+    pub role: AiStageRole,
+    pub backend: String,
+    pub model_id: String,
+    pub model_revision: String,
+    pub runtime_id: String,
+    pub binary_sha256: String,
+    pub model_manifest_sha256: String,
+    pub mask_sha256: String,
+    pub seed: u64,
+    pub steps: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects: Option<AiEffectsContract>,
+}
+fn deserialize_stages<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<AiEditStage>, D::Error> {
+    struct Stages;
+    impl<'de> serde::de::Visitor<'de> for Stages {
+        type Value = Vec<AiEditStage>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("at most two AI stages")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut stages = Vec::with_capacity(2);
+            while let Some(stage) = seq.next_element()? {
+                if stages.len() == 2 {
+                    return Err(serde::de::Error::custom("AI retouch allows at most two stages"));
+                }
+                stages.push(stage);
+            }
+            Ok(stages)
+        }
+    }
+    d.deserialize_seq(Stages)
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AiEdit {
     pub id: u32,
@@ -110,6 +158,8 @@ pub struct AiEdit {
     pub model: String,
     pub model_version: String,
     pub seed: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "deserialize_stages")]
+    pub stages: Vec<AiEditStage>,
 }
 
 impl AiEdit {
@@ -141,6 +191,37 @@ impl AiEdit {
                 || !(0.0..=1.0).contains(&support.feather))
         {
             return Err(AiEditError("invalid AI retouch brush support"));
+        }
+        let valid_text = |v: &str| !v.trim().is_empty() && v.len() <= 256 && !v.contains('/') && !v.contains('\\');
+        let hash = |v: &str| v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit());
+        if self.stages.len() > 2
+            || self.stages.iter().any(|s| {
+                !valid_text(&s.backend)
+                    || !valid_text(&s.model_id)
+                    || !valid_text(&s.model_revision)
+                    || !valid_text(&s.runtime_id)
+                    || !hash(&s.binary_sha256)
+                    || !hash(&s.model_manifest_sha256)
+                    || !hash(&s.mask_sha256)
+                    || !(1..=1000).contains(&s.steps)
+            })
+        {
+            return Err(AiEditError("invalid AI retouch stage provenance"));
+        }
+        if !self.stages.is_empty()
+            && (self.stages.len() != 2
+                || self.stages.first().is_none_or(|s| {
+                    s.role != AiStageRole::Effects || s.backend != "objectclear" || s.effects != Some(AiEffectsContract::ObjectEffectsV1)
+                })
+                || self.stages.last().is_none_or(|s| {
+                    s.role != AiStageRole::Reconstruction
+                        || s.backend != "rorem"
+                        || s.effects.is_some()
+                        || s.seed != self.seed
+                        || s.model_revision != self.model_version
+                }))
+        {
+            return Err(AiEditError("invalid AI retouch stage sequence"));
         }
         let r = self.rect;
         if !r.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) || r[0] >= r[2] || r[1] >= r[3] {
@@ -260,10 +341,52 @@ mod tests {
                 model: "test-model".into(),
                 model_version: "sha256:test".into(),
                 seed: 42,
+                stages: Vec::new(),
             },
             &[[0.4, 0.3, 0.2, 0.0], [0.4, 0.3, 0.2, 0.5], [0.4, 0.3, 0.2, 1.0], [0.4, 0.3, 0.2, 0.0]],
         )
         .unwrap()
+    }
+    #[test]
+    fn bounded_stage_provenance_is_optional_and_survives_raster_roundtrip() {
+        let legacy = edit();
+        let old = serde_json::to_value(&legacy).unwrap();
+        assert!(old.get("stages").is_none());
+        let restored: AiEdit = serde_json::from_value(old).unwrap();
+        assert!(restored.stages.is_empty());
+        let mut chain = legacy.clone();
+        chain.stages = [true, false]
+            .map(|effects| AiEditStage {
+                role: if effects { AiStageRole::Effects } else { AiStageRole::Reconstruction },
+                backend: if effects { "objectclear" } else { "rorem" }.into(),
+                model_id: if effects { "first-model" } else { "second-model" }.into(),
+                model_revision: chain.model_version.clone(),
+                runtime_id: "native-runtime".into(),
+                binary_sha256: "a".repeat(64),
+                model_manifest_sha256: "b".repeat(64),
+                mask_sha256: "c".repeat(64),
+                seed: chain.seed,
+                steps: 20,
+                effects: effects.then_some(AiEffectsContract::ObjectEffectsV1),
+            })
+            .into();
+        assert_eq!(chain.decode_pixels().unwrap(), legacy.decode_pixels().unwrap(), "metadata never rerenders the raster");
+        let saved = serde_json::to_value(&chain).unwrap();
+        assert_eq!(serde_json::from_value::<AiEdit>(saved.clone()).unwrap(), chain);
+        for mutation in 0..5 {
+            let mut bad = chain.clone();
+            match mutation {
+                0 => bad.stages.push(bad.stages[0].clone()),
+                1 => bad.stages[0].binary_sha256 = "invalid".into(),
+                2 => bad.stages[1].effects = Some(AiEffectsContract::ObjectEffectsV1),
+                3 => bad.stages[1].model_id = "/private/path".into(),
+                _ => bad.stages[1].steps = 0,
+            }
+            assert!(bad.decode_pixels().is_err());
+        }
+        let mut oversized = saved;
+        oversized["stages"].as_array_mut().unwrap().push(serde_json::to_value(&chain.stages[0]).unwrap());
+        assert!(serde_json::from_value::<AiEdit>(oversized).is_err(), "deserialization caps stage count");
     }
     #[test]
     fn old_settings_keep_json_and_edits_roundtrip_with_provenance() {

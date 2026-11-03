@@ -3607,5 +3607,16 @@
   "Include shadows and reflections": "Schatten und Spiegelungen einbeziehen",
   "Shadows and reflections require a supported native ObjectClear runtime.": "Schatten und Spiegelungen erfordern eine unterstützte native ObjectClear-Laufzeit.",
   "Result ready. Shadows and reflections may extend beyond the object. Review before accepting.": "Ergebnis bereit. Schatten und Spiegelungen können über das Objekt hinausreichen. Vor dem Übernehmen prüfen.",
-  "Shadows and reflections need a supported trusted native ObjectClear runtime.": "Schatten und Spiegelungen benötigen eine unterstützte vertrauenswürdige native ObjectClear-Laufzeit."
+  "Shadows and reflections need a supported trusted native ObjectClear runtime.": "Schatten und Spiegelungen benötigen eine unterstützte vertrauenswürdige native ObjectClear-Laufzeit.",
+  "Detailed background reconstruction": "Untergrund detailliert rekonstruieren",
+  "Reconstructs background texture and transitions; takes longer.": "Rekonstruiert Untergrundstruktur und Übergänge; benötigt mehr Zeit.",
+  "Detailed reconstruction needs both local models and enabled shadow and reflection removal.": "Die detaillierte Rekonstruktion benötigt beide lokalen Modelle und das Einbeziehen von Schatten und Spiegelungen.",
+  "Stage 1/2: Finding shadows and reflections…": "Schritt 1/2: Schatten und Spiegelungen ermitteln…",
+  "Stage 2/2: Reconstructing background details…": "Schritt 2/2: Untergrunddetails rekonstruieren…",
+  "Result ready. Review shadows, texture and transitions before accepting.": "Ergebnis bereit. Schatten, Struktur und Übergänge vor dem Übernehmen prüfen.",
+  "Two-stage reconstruction needs the trusted native ObjectClear effects model.": "Die zweistufige Rekonstruktion benötigt das vertrauenswürdige native ObjectClear-Effektmodell.",
+  "Two-stage reconstruction needs the trusted native RORem model.": "Die zweistufige Rekonstruktion benötigt das vertrauenswürdige native RORem-Modell.",
+  "Two-stage reconstruction requires supported ObjectClear effects.": "Die zweistufige Rekonstruktion benötigt unterstützte ObjectClear-Effekte.",
+  "Wait for AI Remove and object selection to finish.": "Auf den Abschluss von KI-Entfernung und Objektauswahl warten.",
+  "Two local stages with ObjectClear and RORem; takes longer.": "Zwei lokale Schritte mit ObjectClear und RORem; benötigt mehr Zeit."
 }

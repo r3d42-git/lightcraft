@@ -268,7 +268,7 @@ differences and missing bindings are in [ui-parity.md](ui-parity.md#shortcuts).
 | LR-REM-HEAL | Heal | P0 | ✅ | `cmd:spot.add` (`mode: heal`), `crates/pipeline/src/spots.rs` | Zero-feather edges use a hard step; zero-opacity spots preserve all pixels, including exact-radius pixels and image corners |
 | LR-REM-CLONE | Clone | P0 | ✅ | `cmd:spot.add` (`mode: clone`), `crates/pipeline/src/spots.rs` | Hard-edge source copying and unchanged radius pixels regression-tested at two output sizes |
 | LR-REM-GEN | Generative remove | OOS | 🚫 | | |
-| LR-REM-DETECT | Object detection for remove | P2 | 🟡 | `cmd:aiRemove.objectPoint`, `cmd:aiRemove.refineBrush`, `cmd:aiRemove.objectMargin`, `cmd:aiRemove.clearSelection`, `crates/engine/src/ai_remove/object.rs` | R3D: local SAM 3 click selection with include/exclude prompts, temporary overlay, automatic detail analysis for small objects, a visible adjustable margin and additive/subtractive brush corrections before explicit removal. Resolved lens geometry maps the selection to a stored source-space raster patch. Optional weights; app-pinned native ObjectClear can include model-derived shadows/reflections within the context crop (`cmd:aiRemove.effects`), with subtractive corrections protected. Fine-edge/effect quality and manual acceptance remain; no automatic distraction detection. |
+| LR-REM-DETECT | Object detection for remove | P2 | 🟡 | `cmd:aiRemove.objectPoint`, `cmd:aiRemove.refineBrush`, `cmd:aiRemove.objectMargin`, `cmd:aiRemove.clearSelection`, `crates/engine/src/ai_remove/object.rs` | R3D: local SAM 3 click selection with include/exclude prompts, temporary overlay, automatic detail analysis for small objects, a visible adjustable margin and additive/subtractive brush corrections before explicit removal. Resolved lens geometry maps the selection to a stored source-space raster patch. Optional weights; app-pinned native ObjectClear can include model-derived shadows/reflections within the context crop (`cmd:aiRemove.effects`), with subtractive corrections protected. An optional trusted native ObjectClear → RORem chain reconstructs original RGB inside unprotected effect coverage (`cmd:aiRemove.reconstruction`), with one final draft and bounded two-stage provenance. Fine-edge/effect quality and manual acceptance remain; no automatic distraction detection. |
 | LR-REM-BRUSH-PARAMS | Brush size / feather / opacity | P0 | ✅ | `cmd:spot.add` (`size`, `feather`, `opacity`), `cmd:brush.smaller`, `cmd:brush.larger`, `cmd:brush.featherLess`, `cmd:brush.featherMore`, `crates/ui-egui/src/panels/right.rs` | Size / Feather / Opacity sliders (for new spots and the selected one); `[` `]` size, ⇧`[` ⇧`]` feather (also the Masking brush) |
 | LR-REM-SPOT-EDIT | Edit existing spots | P0 | ✅ | `cmd:spot.select`, `cmd:spot.update`, `cmd:spot.refreshSource`, `cmd:spot.delete`, `cmd:view.toolOverlay` | click a pin to select, drag target or source, ⌫ deletes the selected spot, `/` picks another source; automatic sources are resolved when the spot is added; Tool Overlay (Remove panel, View menu, ⇧H) shows the spots' pins Auto (pointer over the photo, hidden while painting) / Always / Selected / Never, and a hidden spot can't be grabbed (#224) |
 | LR-REM-VISUALIZE | Visualize spots | P1 | ✅ | `cmd:view.visualizeSpots` | |
@@ -1072,3 +1072,14 @@ These targeted upstream fixes preserve existing feature status and counts; separ
 - Resolved-lens synthetic tests exercise effects outside the object, exact source
   preservation outside coverage and protected corrections. Real-image quality and
   user acceptance remain separate; no parity status or count is upgraded.
+
+## R3D two-stage native reconstruction candidate — 2026-11-03
+
+- `cmd:aiRemove.reconstruction` switches between selected-model removal and a
+  trusted native ObjectClear-effects → RORem-original-RGB reconstruction chain.
+  Both exact package identities are verified before inference. Only one final
+  draft is produced; stage failures/cancellation never expose intermediate RGB.
+- Subtractive corrections protect the second-stage input mask and final patch.
+  Optional bounded provenance preserves both stage identities while old patches
+  remain model-independent. Targeted orchestration, persistence and UI tests do
+  not establish real-image quality or user acceptance; counts/status unchanged.

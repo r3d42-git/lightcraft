@@ -156,7 +156,55 @@ pub struct Resolved {
     pub backend: String,
     pub manifest: Value,
 }
+pub const RECONSTRUCTION_MODEL_ID: &str = "rorem-22d02de974c8dc92c717cd3431f8b0fe0eeecc3b";
+pub const EFFECTS_MODEL_ID: &str = "objectclear-c73af80888dbd519819d0a521b5c8d0f3cda6859";
+pub const RECONSTRUCTION_RUNTIME_ID: &str = "rorem-native-e1518046d5f9";
+
+pub fn reconstruction_package(root: &Path, first: &Resolved) -> Result<Resolved> {
+    if first.id != EFFECTS_MODEL_ID || !first.supports_effects() {
+        return Err(err("Two-stage reconstruction needs the trusted native ObjectClear effects model."));
+    }
+    let second = resolve(root, Some(RECONSTRUCTION_MODEL_ID), Some("rorem"), false)?;
+    if second.id != RECONSTRUCTION_MODEL_ID || second.runtime_id != RECONSTRUCTION_RUNTIME_ID || second.execution != ExecutionKind::NativeProtocolV1 {
+        return Err(err("Two-stage reconstruction needs the trusted native RORem model."));
+    }
+    second.verify_execution()?;
+    Ok(second)
+}
 impl Resolved {
+    pub(crate) fn stage_record(
+        &self,
+        role: lightcraft_develop::ai_edit::AiStageRole,
+        seed: u32,
+        steps: u32,
+    ) -> Result<lightcraft_develop::ai_edit::AiEditStage> {
+        use lightcraft_develop::ai_edit::{AiEditStage, AiEffectsContract, AiStageRole};
+        if self.execution != ExecutionKind::NativeProtocolV1 {
+            return Err(err("Stage provenance requires a trusted native runtime."));
+        }
+        let trust = native_trust()?;
+        self.verify_execution_with_trust(&trust)?;
+        let hash = sha256(&self.worker)?;
+        let pin = trust
+            .runtimes
+            .iter()
+            .find(|p| p.id == self.runtime_id && p.model_id == self.id && p.binary_sha256 == hash)
+            .ok_or_else(|| err("Stage runtime is not approved."))?;
+        Ok(AiEditStage {
+            role,
+            backend: self.backend.clone(),
+            model_id: self.id.clone(),
+            model_revision: self.manifest["model_version"].as_str().ok_or_else(|| err("Missing model revision."))?.into(),
+            runtime_id: self.runtime_id.clone(),
+            binary_sha256: pin.binary_sha256.clone(),
+            model_manifest_sha256: pin.model_manifest_sha256.clone(),
+            mask_sha256: String::new(),
+            seed: u64::from(seed),
+            steps,
+            effects: (role == AiStageRole::Effects).then_some(AiEffectsContract::ObjectEffectsV1),
+        })
+    }
+
     /// Capability is owned by this app's exact executable/model trust pin.
     pub fn supports_effects(&self) -> bool {
         native_trust().is_ok_and(|trust| self.supports_effects_with_trust(&trust))
@@ -660,6 +708,12 @@ fn snapshot(root: &Path) -> Result<Value> {
 }
 fn snapshot_with_trust(root: &Path, trust: &NativeTrust) -> Result<Value> {
     let r = registry(root)?;
+    let reconstruction_ready = resolve_with_trust(root, Some(RECONSTRUCTION_MODEL_ID), Some("rorem"), false, trust).is_ok_and(|p| {
+        p.id == RECONSTRUCTION_MODEL_ID
+            && p.runtime_id == RECONSTRUCTION_RUNTIME_ID
+            && p.execution == ExecutionKind::NativeProtocolV1
+            && p.verify_execution_with_trust(trust).is_ok()
+    });
     let mut v = serde_json::to_value(&r).map_err(err)?;
     v["root"] = json!(root);
     for m in v["models"].as_array_mut().into_iter().flatten() {
@@ -667,6 +721,7 @@ fn snapshot_with_trust(root: &Path, trust: &NativeTrust) -> Result<Value> {
         let runtime_id = r.defaults.runtime_overrides.get(&model.id).unwrap_or(&model.runtime_id);
         m["selected_runtime_id"] = json!(runtime_id);
         m["supports_effects"] = json!(false);
+        m["supports_reconstruction"] = json!(false);
         let mut choices = Vec::new();
         for runtime in &r.runtimes {
             if let Ok(resolved) = resolve_runtime(root, &r, model, &runtime.id, false, trust) {
@@ -680,6 +735,8 @@ fn snapshot_with_trust(root: &Path, trust: &NativeTrust) -> Result<Value> {
             Ok(resolved) => {
                 m["execution"] = json!(resolved.execution.as_str());
                 m["supports_effects"] = json!(resolved.supports_effects_with_trust(trust));
+                m["supports_reconstruction"] =
+                    json!(reconstruction_ready && resolved.id == EFFECTS_MODEL_ID && resolved.supports_effects_with_trust(trust));
                 for (key, value) in display_metadata(&resolved.manifest).as_object().into_iter().flatten() {
                     m[key.as_str()] = value.clone();
                 }
@@ -1076,6 +1133,13 @@ mod tests {
         let legacy: NativePin =
             serde_json::from_value(json!({"id":"old","binary_sha256":"hash","model_id":"model","model_manifest_sha256":"hash"})).unwrap();
         assert!(!legacy.object_effects);
+    }
+    #[test]
+    fn explicit_unknown_model_never_falls_back_to_installed_backend() {
+        let (_fixture, root, _native, _trust) = native_fixture();
+        assert!(selected(&root, None, Some("lama")).is_ok());
+        assert!(selected(&root, Some("unknown-revision"), Some("lama")).is_err());
+        assert!(selected(&root, Some("lama-revision-1"), Some("rorem")).is_err());
     }
     #[test]
     fn native_dependency_is_rechecked_even_when_package_manifest_is_rewritten() {

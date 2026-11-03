@@ -5276,6 +5276,30 @@ fn ai_remove_effects_checkbox_requires_capability_and_changes_preference() {
     assert_eq!(h.app.session.ai_remove.include_effects, Some(true));
 }
 
+#[test]
+fn ai_remove_reconstruction_checkbox_defaults_on_only_for_verified_pair() {
+    let mut h = demo([1200.0, 1100.0]);
+    let t = Duration::from_secs(10);
+    h.app.session.ai_models.snapshot = json!({"models":[{"id":"synthetic","backend":"objectclear","name":"Test ObjectClear","supports_effects":true,"supports_reconstruction":true}],"defaults":{"selected_model_id":"synthetic"}});
+    h.request("ui.set", json!({"view":"detail","right":"remove"}), t);
+    h.settle(SETTLE);
+    let result = h.request("ui.clickWidget", json!({"id":"aiRemoveReconstruction"}), t);
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(h.app.session.ai_remove.reconstruct, Some(false));
+    h.request("ui.clickWidget", json!({"id":"aiRemoveReconstruction"}), t);
+    assert_eq!(h.app.session.ai_remove.reconstruct, Some(true));
+    h.app.session.ai_remove.selecting = true;
+    h.step();
+    h.request("ui.clickWidget", json!({"id":"aiRemoveReconstruction"}), t);
+    assert_eq!(h.app.session.ai_remove.reconstruct, Some(true));
+    assert!(h.app.session.ai_remove.selecting);
+    h.app.session.ai_remove.selecting = false;
+    h.app.session.ai_models.snapshot["models"][0]["supports_reconstruction"] = json!(false);
+    h.step();
+    h.request("ui.clickWidget", json!({"id":"aiRemoveReconstruction"}), t);
+    assert_eq!(h.app.session.ai_remove.reconstruct, Some(true), "unavailable pair cannot toggle preference");
+}
+
 /// An unaccepted AI patch uses the main developed photo and leaves the catalogue untouched.
 #[test]
 fn ai_remove_draft_previews_on_photo_and_preserves_before_view() {
@@ -5324,6 +5348,7 @@ fn check_ai_remove_draft_preview(profiled: bool) {
                 model: "test".into(),
                 model_version: "1".into(),
                 seed: 42,
+                stages: Vec::new(),
             },
             &[[0.2, 0.6, 0.1, 1.0]],
         )

@@ -7,12 +7,24 @@ pub(super) struct ProtocolRunner<'a> {
     pub runtime: &'a Path,
     pub backend: &'a str,
     pub package: Option<&'a crate::ai_models::Resolved>,
+    pub deadline: Option<std::time::Instant>,
 }
 impl ProtocolRunner<'_> {
     fn execution(&self) -> crate::ai_models::ExecutionKind {
         self.package.map_or(crate::ai_models::ExecutionKind::PythonProtocolV1, |p| p.execution)
     }
 
+    fn timeout(&self) -> Result<std::time::Duration, String> {
+        use std::time::{Duration, Instant};
+        match self.deadline {
+            Some(deadline) => deadline
+                .checked_duration_since(Instant::now())
+                .filter(|d| !d.is_zero())
+                .ok_or_else(|| "Two-stage AI Remove timed out.".to_string())
+                .map(|d| d.min(Duration::from_secs(600))),
+            None => Ok(Duration::from_secs(600)),
+        }
+    }
     fn command(&self) -> std::result::Result<std::process::Command, String> {
         if let Some(package) = self.package {
             if package.runtime != self.runtime || package.backend != self.backend {
@@ -53,7 +65,7 @@ impl RetouchRunner for ProtocolRunner<'_> {
             return Err("Shadows and reflections need a supported trusted native ObjectClear runtime.".into());
         }
         let (w, h, rect, seed, backend) = (input.width, input.height, input.rect, input.seed, self.backend);
-        use std::{fs, sync::atomic::Ordering, time::Duration};
+        use std::{fs, sync::atomic::Ordering};
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!("lightcraft-ai-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
         let mut builder = fs::DirBuilder::new();
@@ -84,6 +96,7 @@ impl RetouchRunner for ProtocolRunner<'_> {
         if cancel.load(Ordering::Relaxed) {
             return Err("Cancelled.".into());
         }
+        let timeout = self.timeout()?;
         let mut child = command
             .arg(dir.join("request.json"))
             .arg(dir.join("response.json"))
@@ -92,7 +105,7 @@ impl RetouchRunner for ProtocolRunner<'_> {
             .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|e| format!("Cannot start AI Remove: {e}"))?;
-        if let Err(failure) = wait_worker(&mut child, cancel, Duration::from_secs(600)) {
+        if let Err(failure) = wait_worker(&mut child, cancel, timeout) {
             if !cancel.load(Ordering::Relaxed) {
                 let response = dir.join("response.json");
                 if fs::metadata(&response).is_ok_and(|m| m.len() <= 65536)
@@ -220,7 +233,7 @@ pub(super) fn wait_worker(
         if cancel.load(Ordering::Relaxed) || started.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(if cancel.load(Ordering::Relaxed) { "Cancelled." } else { "AI Remove timed out after ten minutes." }.into());
+            return Err(if cancel.load(Ordering::Relaxed) { "Cancelled." } else { "AI Remove timed out." }.into());
         }
         match child.try_wait() {
             Ok(Some(status)) if status.success() => return Ok(()),
@@ -238,6 +251,19 @@ pub(super) fn wait_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn child_timeout_is_bounded_by_remaining_chain_budget() {
+        use std::time::{Duration, Instant};
+        let mut runner = ProtocolRunner { runtime: Path::new("/unused"), backend: "objectclear", package: None, deadline: None };
+        assert_eq!(runner.timeout().unwrap(), Duration::from_secs(600));
+        runner.deadline = Some(Instant::now() + Duration::from_secs(1200));
+        assert_eq!(runner.timeout().unwrap(), Duration::from_secs(600));
+        runner.deadline = Some(Instant::now() + Duration::from_secs(2));
+        let remaining = runner.timeout().unwrap();
+        assert!(remaining <= Duration::from_secs(2) && !remaining.is_zero());
+        runner.deadline = Some(Instant::now());
+        assert!(runner.timeout().is_err());
+    }
     #[test]
     fn protocol_v1_rgb_is_little_endian_and_legacy_alpha_is_discarded() {
         let rgb = [[0.25, -0.5, 4.0], [1.0, 0.0, -0.0]];
@@ -260,7 +286,7 @@ mod tests {
         }
         assert!(decode_coverage(&raw(1.0), &response, false).is_err());
         assert_eq!(decode_coverage(&raw(f32::NAN), &json!({}), false).unwrap(), None);
-        let runner = ProtocolRunner { runtime: Path::new("/unused"), backend: "objectclear", package: None };
+        let runner = ProtocolRunner { runtime: Path::new("/unused"), backend: "objectclear", package: None, deadline: None };
         let input = super::super::runner::RetouchInput {
             width: 1,
             height: 1,
@@ -283,7 +309,7 @@ mod tests {
     #[test]
     fn legacy_python_launch_keeps_isolation_and_worker_arguments() {
         let runtime = Path::new("/synthetic/runtime");
-        let runner = ProtocolRunner { runtime, backend: "objectclear", package: None };
+        let runner = ProtocolRunner { runtime, backend: "objectclear", package: None, deadline: None };
         let command = runner.command().unwrap();
         assert_eq!(command.get_program(), runtime.join("bin/python3"));
         assert_eq!(command.get_args().collect::<Vec<_>>(), ["-I", "-B", "/synthetic/runtime/worker.py"]);
@@ -320,10 +346,10 @@ mod tests {
             execution: crate::ai_models::ExecutionKind::NativeProtocolV1,
             manifest: json!({}),
         };
-        let runner = ProtocolRunner { runtime: &package.runtime, backend: "objectclear", package: Some(&package) };
+        let runner = ProtocolRunner { runtime: &package.runtime, backend: "objectclear", package: Some(&package), deadline: None };
         assert_eq!(runner.identity().adapter, "native-protocol-v1");
         assert!(runner.command().is_err());
-        let mismatched = ProtocolRunner { runtime: Path::new("/different"), backend: "objectclear", package: Some(&package) };
+        let mismatched = ProtocolRunner { runtime: Path::new("/different"), backend: "objectclear", package: Some(&package), deadline: None };
         assert!(mismatched.command().unwrap_err().contains("identity changed"));
     }
 }

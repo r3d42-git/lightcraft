@@ -27,6 +27,8 @@ pub enum Phase {
     Preparing,
     Loading,
     Running,
+    Effects,
+    Reconstruction,
     Finalizing,
     Ready,
     Failed,
@@ -37,6 +39,8 @@ pub enum Phase {
 #[derive(Default)]
 pub struct AiRemove {
     pub include_effects: Option<bool>,
+    pub reconstruct: Option<bool>,
+    reconstruction_active: bool,
     effects_active: bool,
     pub object_selection: Option<ObjectSelection>,
     pub selecting: bool,
@@ -112,6 +116,20 @@ fn error(s: impl ToString) -> EngineError {
     EngineError::Other(s.to_string())
 }
 impl Session {
+    fn ai_remove_reconstruction_available(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.ai_models.snapshot["models"].as_array().is_some_and(|models| {
+                models
+                    .iter()
+                    .any(|model| model["id"] == self.ai_models.snapshot["defaults"]["selected_model_id"] && model["supports_reconstruction"] == true)
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
+        }
+    }
     fn ai_remove_tag(&self) -> Option<(PhotoId, std::sync::Arc<DevelopSettings>, u64)> {
         let id = self.active()?;
         let d = self.develop_of(id)?;
@@ -152,6 +170,11 @@ impl Session {
                 self.ai_remove.message = self.ai_remove.cancel_reason.unwrap_or("Cancelling AI Remove…").into();
             } else if let Some(phase) = job.phases.try_iter().last() {
                 self.ai_remove.phase = phase;
+                self.ai_remove.message = match phase {
+                    Phase::Effects => "Stage 1/2: Finding shadows and reflections…".into(),
+                    Phase::Reconstruction => "Stage 2/2: Reconstructing background details…".into(),
+                    _ => self.ai_remove.message.clone(),
+                };
             }
             let result = match job.reply.try_recv() {
                 Ok(result) => Some(result),
@@ -169,7 +192,9 @@ impl Session {
                         Ok(edit) => {
                             self.ai_remove.draft = Some(edit);
                             self.ai_remove.phase = Phase::Ready;
-                            self.ai_remove.message = if self.ai_remove.effects_active {
+                            self.ai_remove.message = if self.ai_remove.reconstruction_active {
+                                "Result ready. Review shadows, texture and transitions before accepting."
+                            } else if self.ai_remove.effects_active {
                                 "Result ready. Shadows and reflections may extend beyond the object. Review before accepting."
                             } else {
                                 "Result ready. Review the patch before accepting."
@@ -219,6 +244,7 @@ impl Session {
 
     fn ai_remove_cancel(&mut self) {
         self.ai_remove.effects_active = false;
+        self.ai_remove.reconstruction_active = false;
         self.ai_remove.selection_revision = self.ai_remove.selection_revision.wrapping_add(1);
         self.ai_remove.selecting = false;
         self.ai_remove.cancel_reason = None;
@@ -234,7 +260,13 @@ impl Session {
         self.ai_remove.message = if self.ai_remove.busy() { "Cancelling AI Remove…" } else { "Cancelled." }.into();
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn ai_remove_start(&mut self, backend: Option<&'static str>, model_id: Option<String>, include_effects: Option<bool>) -> Result<Value> {
+    fn ai_remove_start(
+        &mut self,
+        backend: Option<&'static str>,
+        model_id: Option<String>,
+        include_effects: Option<bool>,
+        reconstruct: Option<bool>,
+    ) -> Result<Value> {
         self.ai_remove_poll();
         if self.ai_remove.busy() {
             return Err(error("AI Remove is already running."));
@@ -256,11 +288,32 @@ impl Session {
         }
         let ai_root = crate::ai_models::root()?;
         let selected = crate::ai_models::selected(&ai_root, model_id.as_deref(), backend)?;
-        let capable = crate::ai_models::resolve(&ai_root, Some(&selected.id), None, false)?.supports_effects();
+        if model_id.as_ref().is_some_and(|id| id != &selected.id) {
+            return Err(error("The requested AI model is unavailable; no replacement was selected."));
+        }
+        let resolved = crate::ai_models::resolve(&ai_root, Some(&selected.id), None, false)?;
+        if resolved.id != selected.id {
+            return Err(error("Selected AI model identity changed."));
+        }
+        let capable = resolved.supports_effects();
         let effects = include_effects.unwrap_or(self.ai_remove.include_effects.unwrap_or(true)) && capable;
         if include_effects == Some(true) && !capable {
             return Err(error("Shadows and reflections need a supported trusted native ObjectClear runtime."));
         }
+        let reconstruction = if effects && reconstruct.or(self.ai_remove.reconstruct) != Some(false) {
+            match crate::ai_models::reconstruction_package(&ai_root, &resolved) {
+                Ok(p) => Some((p.id, p.runtime_id)),
+                Err(e) if reconstruct == Some(true) || self.ai_remove.reconstruct == Some(true) => return Err(e),
+                Err(_) => None,
+            }
+        } else {
+            if reconstruct == Some(true) {
+                return Err(error("Two-stage reconstruction requires supported ObjectClear effects."));
+            }
+            None
+        };
+        let reconstruction_active = reconstruction.is_some();
+        let selected_runtime_id = resolved.runtime_id.clone();
         let refinements = self.ai_remove.object_selection.as_ref().map(|o| o.refinements.clone()).unwrap_or_default();
         let backend = selected.backend.clone();
         let selected_id = selected.id.clone();
@@ -291,11 +344,25 @@ impl Session {
                 return Err("Cancelled.".into());
             }
             let selected = crate::ai_models::resolve(&ai_root, Some(&selected_id), Some(&backend), false).map_err(|e| e.to_string())?;
+            if selected.id != selected_id || selected.runtime_id != selected_runtime_id {
+                return Err("Selected AI package identity changed.".into());
+            }
+            selected.verify_execution().map_err(|e| e.to_string())?;
+            let reconstruction = if let Some((model_id, runtime_id)) = reconstruction {
+                let second = crate::ai_models::reconstruction_package(&ai_root, &selected).map_err(|e| e.to_string())?;
+                if second.id != model_id || second.runtime_id != runtime_id {
+                    return Err("Reconstruction package identity changed.".into());
+                }
+                Some(second)
+            } else {
+                None
+            };
             match selected.adapter().map_err(|e| e.to_string())?.execution {
                 crate::ai_models::ExecutionKind::PythonProtocolV1 | crate::ai_models::ExecutionKind::NativeProtocolV1 => run_worker_with_progress(
                     &selected.runtime,
                     &backend,
                     Some(&selected),
+                    reconstruction.as_ref(),
                     source,
                     info,
                     settings,
@@ -313,6 +380,8 @@ impl Session {
         .map_err(error)?;
         self.ai_remove = AiRemove {
             include_effects: self.ai_remove.include_effects,
+            reconstruct: self.ai_remove.reconstruct,
+            reconstruction_active,
             effects_active: effects,
             object_selection: self.ai_remove.object_selection.clone(),
             selecting: false,
@@ -330,6 +399,15 @@ impl Session {
             job: Some(job),
         };
         Ok(json!({"running":true}))
+    }
+}
+
+fn reconstruction_param(p: &Value) -> Result<Option<bool>> {
+    match p.get("reconstruction").or_else(|| p.get("mode")) {
+        None => Ok(None),
+        Some(Value::String(s)) if s == "objectclear-rorem" => Ok(Some(true)),
+        Some(Value::String(s)) if s == "selected" => Ok(Some(false)),
+        _ => Err(error("Invalid reconstruction mode; use objectclear-rorem or selected.")),
     }
 }
 
@@ -357,6 +435,13 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             s.ai_remove.selection_tag = None;
             Ok(json!({}))
         }),
+        cmd!(query "aiRemove.reconstruction", "Two-stage Reconstruction", [], None, "{mode:objectclear-rorem|selected} — discard draft when changing reconstruction", always, |s, p| {
+            s.ai_remove_poll();
+            if s.ai_remove.busy() || s.ai_remove.selecting { return Err(error("Wait for AI Remove and object selection to finish.")); }
+            let enabled = reconstruction_param(p)?.ok_or_else(|| error("Give reconstruction mode."))?;
+            if s.ai_remove.reconstruct != Some(enabled) { s.ai_remove_cancel(); s.ai_remove.reconstruct = Some(enabled); }
+            Ok(json!({"reconstruction": if enabled { "objectclear-rorem" } else { "selected" }}))
+        }),
         cmd!(query "aiRemove.effects", "Include Shadows and Reflections", [], None, "{enabled:bool} — discard draft when changing effects preference", always, |s, p| {
             s.ai_remove_poll();
             if s.ai_remove.busy() { return Err(error("Wait for AI Remove to finish.")); }
@@ -368,17 +453,18 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             }
             Ok(json!({"enabled": enabled}))
         }),
-        cmd!(query "aiRemove.start", "AI Remove", [], None, "{modelId?:installed revision ID,backend?:objectclear|lama|rorem,includeEffects?:bool} — starts a local background draft from the painted selection", has_active, |s, p| {
+        cmd!(query "aiRemove.start", "AI Remove", [], None, "{modelId?:installed revision ID,backend?:objectclear|lama|rorem,includeEffects?:bool,reconstruction?:objectclear-rorem|selected} — starts a local background draft from the painted selection", has_active, |s, p| {
             let backend = if p.get("backend").is_some() { Some(backend_param(p)?) } else { None };
-            let model_id = p.get("modelId").and_then(Value::as_str).map(str::to_owned);
+            let model_id = match p.get("modelId") { None=>None,Some(Value::String(id)) if !id.is_empty() && id.len()<=256=>Some(id.clone()),_=>return Err(error("Give modelId as a nonempty installed model ID.")) };
             let include_effects = match p.get("includeEffects") {
                 Some(v) => Some(v.as_bool().ok_or_else(|| error("Give includeEffects as a boolean."))?),
                 None => None,
             };
-            #[cfg(not(target_arch = "wasm32"))] { s.ai_remove_start(backend, model_id, include_effects) }
-            #[cfg(target_arch = "wasm32")] { let _ = (s, backend, model_id, include_effects); Err(error("Local AI Remove is unavailable in the browser.")) }
+            let reconstruct = reconstruction_param(p)?;
+            #[cfg(not(target_arch = "wasm32"))] { s.ai_remove_start(backend, model_id, include_effects, reconstruct) }
+            #[cfg(target_arch = "wasm32")] { let _ = (s, backend, model_id, include_effects, reconstruct); Err(error("Local AI Remove is unavailable in the browser.")) }
         }),
-        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"includeEffects":s.ai_remove.include_effects.unwrap_or(true),"effectsActive":s.ai_remove.effects_active,"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some() || s.ai_remove.object_selection.as_ref().is_some_and(|o|o.seg.is_some()),"selecting":s.ai_remove.selecting,"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
+        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"reconstruction":if s.ai_remove.reconstruction_active { "objectclear-rorem" } else { "selected" },"reconstructionPreference":match s.ai_remove.reconstruct { Some(true)=>"objectclear-rorem",Some(false)=>"selected",None=>"auto" },"stage":match s.ai_remove.phase { Phase::Effects=>1,Phase::Reconstruction=>2,_=>0 },"draftStages":s.ai_remove.draft.as_ref().map(|e|&e.stages),"reconstructionAvailable":s.ai_remove_reconstruction_available(),"includeEffects":s.ai_remove.include_effects.unwrap_or(true),"effectsActive":s.ai_remove.effects_active,"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some() || s.ai_remove.object_selection.as_ref().is_some_and(|o|o.seg.is_some()),"selecting":s.ai_remove.selecting,"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
         cmd!(query "aiRemove.previewOriginal", "Show Photo Without AI Draft", [], None, "{enabled:bool} — compare the pending result without accepting it", has_active, |s, p| {
             s.ai_remove_poll();
             if s.ai_remove.draft.is_none() { return Err(error("No current AI result to preview.")); }
@@ -499,7 +585,7 @@ fn run_worker(
     seed: u32,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> std::result::Result<AiEdit, String> {
-    run_worker_with_progress(runtime, backend, package, source, info, d, spot, None, Vec::new(), false, continuous, seed, cancel, &|_| {})
+    run_worker_with_progress(runtime, backend, package, None, source, info, d, spot, None, Vec::new(), false, continuous, seed, cancel, &|_| {})
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -508,6 +594,7 @@ fn run_worker_with_progress(
     runtime: &std::path::Path,
     backend: &str,
     package: Option<&crate::ai_models::Resolved>,
+    reconstruction: Option<&crate::ai_models::Resolved>,
     source: crate::media::SourceRef,
     info: lightcraft_pipeline::SourceInfo,
     d: DevelopSettings,
@@ -520,13 +607,31 @@ fn run_worker_with_progress(
     cancel: &std::sync::atomic::AtomicBool,
     progress: &dyn Fn(Phase),
 ) -> std::result::Result<AiEdit, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1200);
     progress(Phase::Preparing);
     let mut prepared = match segmented {
         Some(seg) => input::prepare_segmented_protected(source, info, d, seg, &refinements, seed, cancel)?,
         None => input::prepare(source, info, d, spot, continuous, seed, cancel)?,
     };
     prepared.request.effects = effects;
-    runner::execute_with_progress(prepared, &protocol::ProtocolRunner { runtime, backend, package }, cancel, progress)
+    if let Some(second) = reconstruction {
+        let first = package.ok_or("Two-stage reconstruction requires verified packages.")?;
+        let stages = [
+            first.stage_record(lightcraft_develop::ai_edit::AiStageRole::Effects, seed, 20).map_err(|e| e.to_string())?,
+            second.stage_record(lightcraft_develop::ai_edit::AiStageRole::Reconstruction, seed, 20).map_err(|e| e.to_string())?,
+        ];
+        runner::execute_chain_with_progress(
+            prepared,
+            &protocol::ProtocolRunner { runtime, backend, package, deadline: Some(deadline) },
+            &protocol::ProtocolRunner { runtime: &second.runtime, backend: &second.backend, package: Some(second), deadline: Some(deadline) },
+            stages,
+            cancel,
+            deadline,
+            progress,
+        )
+    } else {
+        runner::execute_with_progress(prepared, &protocol::ProtocolRunner { runtime, backend, package, deadline: None }, cancel, progress)
+    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -548,6 +653,7 @@ mod tests {
                 model: "test".into(),
                 model_version: "1".into(),
                 seed: 0,
+                stages: Vec::new(),
             },
             &[[0.2, 0.3, 0.4, 1.0]],
         )
@@ -665,6 +771,46 @@ printf '%s' '{"version":1,"width":128,"height":96,"model":"test","model_version"
         assert!(result.data.iter().any(|p| p[0] > 0.5));
         assert_eq!(result.get(0, 0), src.get(0, 0));
         assert_eq!(settings, original);
+    }
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn reconstruction_status_uses_selected_cached_model_capability() {
+        let mut s = Session::with_demo();
+        assert_eq!(s.execute("aiRemove.status", &json!({})).unwrap()["reconstructionAvailable"], false);
+        s.ai_models.snapshot = json!({"defaults":{"selected_model_id":"capable"},"models":[{"id":"capable","supports_reconstruction":true},{"id":"other","supports_reconstruction":false}]});
+        assert_eq!(s.execute("aiRemove.status", &json!({})).unwrap()["reconstructionAvailable"], true);
+        s.ai_models.snapshot["defaults"]["selected_model_id"] = json!("other");
+        assert_eq!(s.execute("aiRemove.status", &json!({})).unwrap()["reconstructionAvailable"], false);
+    }
+    #[test]
+    #[cfg(target_arch = "wasm32")]
+    fn reconstruction_status_is_unavailable_in_browser() {
+        let mut s = Session::with_demo();
+        assert_eq!(s.execute("aiRemove.status", &json!({})).unwrap()["reconstructionAvailable"], false);
+    }
+    #[test]
+    fn reconstruction_controls_validate_preserve_selection_and_discard_only_draft() {
+        let mut s = Session::with_demo();
+        s.execute("aiRemove.select", &json!({"points":[[0.5,0.5]]})).unwrap();
+        draft(&mut s);
+        let selection = s.ai_remove.selection.clone();
+        let settings = s.develop_of(s.active().unwrap()).unwrap();
+        for mode in [json!("wrong"), json!(null), json!(42)] {
+            assert!(s.execute("aiRemove.reconstruction", &json!({"mode":mode})).is_err());
+            assert!(s.ai_remove.draft.is_some());
+        }
+        s.ai_remove.selecting = true;
+        assert!(s.execute("aiRemove.reconstruction", &json!({"mode":"selected"})).is_err());
+        assert!(s.ai_remove.selecting);
+        s.ai_remove.selecting = false;
+        s.execute("aiRemove.reconstruction", &json!({"mode":"selected"})).unwrap();
+        assert!(s.ai_remove.draft.is_none());
+        assert_eq!(s.ai_remove.selection, selection);
+        assert_eq!(s.execute("aiRemove.status", &json!({})).unwrap()["reconstructionPreference"], "selected");
+        s.execute("aiRemove.reconstruction", &json!({"mode":"objectclear-rorem"})).unwrap();
+        assert_eq!(s.ai_remove.reconstruct, Some(true));
+        assert!(std::sync::Arc::ptr_eq(&settings, &s.develop_of(s.active().unwrap()).unwrap()));
+        assert!(s.execute("aiRemove.start", &json!({"reconstruction":"wrong"})).is_err());
     }
     #[test]
     fn effects_preference_is_transient_discards_draft_and_validates_boolean() {

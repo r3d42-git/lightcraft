@@ -29,6 +29,7 @@ pub(super) fn construct(prepared: PreparedInput, output: RetouchOutput) -> Resul
             model: output.provenance.model,
             model_version: output.provenance.revision,
             seed: u64::from(input.seed),
+            stages: Vec::new(),
         },
         &pixels,
     )

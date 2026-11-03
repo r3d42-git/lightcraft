@@ -1109,6 +1109,7 @@ fn persisted_ai_raster_uses_cpu_sampling_and_invalidates_gpu_cache() {
             model: "test".into(),
             model_version: "1".into(),
             seed: 123,
+            stages: Vec::new(),
         },
         &[[0.9, 0.1, 0.2, 1.0]; 4],
     )

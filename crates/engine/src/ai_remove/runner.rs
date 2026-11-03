@@ -14,6 +14,7 @@ pub(super) struct RetouchIdentity {
     pub adapter: &'static str,
 }
 
+#[derive(Clone)]
 pub(super) struct RetouchInput {
     pub width: usize,
     pub height: usize,
@@ -102,22 +103,90 @@ pub(super) fn execute_with_progress(
     cancel: &AtomicBool,
     progress: &dyn Fn(super::Phase),
 ) -> Result<AiEdit, String> {
+    progress(super::Phase::Running);
+    let output = invoke_checked(&prepared.request, runner, cancel)?;
     if cancel.load(Ordering::Relaxed) {
         return Err("Cancelled.".into());
     }
-    prepared.request.validate()?;
+    progress(super::Phase::Finalizing);
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled.".into());
+    }
+    patch::construct(prepared, output)
+}
+
+fn invoke_checked(input: &RetouchInput, runner: &dyn RetouchRunner, cancel: &AtomicBool) -> Result<RetouchOutput, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled.".into());
+    }
+    input.validate()?;
     let identity = runner.identity();
-    progress(super::Phase::Running);
-    let output = runner.run(RetouchRequest { input: &prepared.request, identity: &identity }, cancel)?;
+    let output = runner.run(RetouchRequest { input, identity: &identity }, cancel)?;
     if cancel.load(Ordering::Relaxed) {
         return Err("Cancelled.".into());
     }
     if output.provenance.identity != identity {
         return Err("AI worker returned mismatched package provenance.".into());
     }
-    progress(super::Phase::Finalizing);
-    patch::construct(prepared, output)
+    output.validate(input)?;
+    Ok(output)
 }
+
+pub(super) fn execute_chain_with_progress(
+    prepared: PreparedInput,
+    first: &dyn RetouchRunner,
+    second: &dyn RetouchRunner,
+    mut stages: [lightcraft_develop::ai_edit::AiEditStage; 2],
+    cancel: &AtomicBool,
+    deadline: std::time::Instant,
+    progress: &dyn Fn(super::Phase),
+) -> Result<AiEdit, String> {
+    use sha2::{Digest, Sha256};
+    let budget = || if std::time::Instant::now() >= deadline { Err("Two-stage AI Remove timed out.".to_string()) } else { Ok(()) };
+    if !prepared.request.effects {
+        return Err("Two-stage reconstruction requires object effects.".into());
+    }
+    budget()?;
+    progress(super::Phase::Effects);
+    let mut effects = invoke_checked(&prepared.request, first, cancel).map_err(|e| format!("Effects stage 1/2: {e}"))?;
+    if effects.provenance.revision != stages[0].model_revision || effects.provenance.identity.model != stages[0].model_id {
+        return Err("Effects stage 1/2: mismatched trusted model provenance.".into());
+    }
+    let coverage = effects.coverage.take().ok_or("Effects stage 1/2: missing coverage.")?;
+    drop(effects); // Its RGB never enters reconstruction and no intermediate patch exists.
+    let mut reconstruction = prepared.request.clone();
+    reconstruction.mask = coverage.iter().zip(&prepared.request.protected).map(|(v, p)| if *p { 0 } else { *v }).collect();
+    reconstruction.effects = false;
+    if !reconstruction.mask.contains(&255) {
+        return Err("No unprotected pixels to reconstruct.".into());
+    }
+    stages[0].mask_sha256 = format!("{:x}", Sha256::digest(&coverage));
+    stages[1].mask_sha256 = format!("{:x}", Sha256::digest(&reconstruction.mask));
+    budget()?;
+    progress(super::Phase::Reconstruction);
+    let mut output = invoke_checked(&reconstruction, second, cancel).map_err(|e| format!("Reconstruction stage 2/2: {e}"))?;
+    if output.provenance.revision != stages[1].model_revision || output.provenance.identity.model != stages[1].model_id {
+        return Err("Reconstruction stage 2/2: mismatched trusted model provenance.".into());
+    }
+    budget()?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled.".into());
+    }
+    // C retains superset validation; protected cells are independently removed by patch construction.
+    output.coverage = Some(coverage);
+    progress(super::Phase::Finalizing);
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled.".into());
+    }
+    let mut edit = patch::construct(prepared, output)?;
+    edit.stages = stages.into();
+    edit.pixel_count().map_err(|e| e.to_string())?;
+    Ok(edit)
+}
+
+#[cfg(test)]
+#[path = "chain_tests.rs"]
+mod chain_tests;
 
 #[cfg(test)]
 mod tests {
@@ -170,6 +239,7 @@ mod tests {
                 model: "synthetic".into(),
                 model_version: "1".into(),
                 seed: 42,
+                stages: Vec::new(),
             },
             &[[0.125, 0.25, 0.5, 0.0], [0.75, 0.5, 0.25, 1.0]],
         )
@@ -284,6 +354,7 @@ mod tests {
                     model: "old".into(),
                     model_version: "1".into(),
                     seed: 1,
+                    stages: Vec::new(),
                 },
                 &[[0.5, 0.25, 0.125, 1.0]],
             )

@@ -273,3 +273,55 @@ Tests prüfen Protokoll, Manipulationsabwehr, gespeicherte Quellabdeckung und
 Subtraktionsschutz mit tatsächlich aufgelöster Objektivkorrektur. Reale Bildqualität
 und persönliche Abnahme müssen separat nachgewiesen werden; dieser Abschnitt
 behauptet keine allgemeine Modellqualität oder Parität.
+
+## Native zweistufige Rekonstruktion — Testkandidat 03.11.2026
+
+Bei aktiven Effekten und vollständig geprüften nativen Paketen ist „Untergrund detailliert
+rekonstruieren“ zunächst aktiv. ObjectClear ermittelt die
+Objekt-/Effektabdeckung; sein generiertes RGB wird verworfen. RORem erhält das
+Original-RGB desselben vorbereiteten Quellausschnitts und die Effektabdeckung
+abzüglich geschützter subtraktiver Korrekturen als normale Inpainting-Maske.
+Es erfolgt keine zusätzliche Aufmerksamkeits-, Farb- oder Helligkeitsfusion.
+Ein bereits gespeicherter Patch wird bei dieser Vorbereitung wie zuvor berücksichtigt.
+
+Es gibt einen Hintergrundauftrag, einen Abbruchschalter und ausschließlich einen
+finalen Entwurf. Beide Modell-/Laufzeitidentitäten werden vor dem ersten Modellstart
+und unmittelbar vor dem jeweiligen Prozessstart geprüft. Nur die exakt freigegebenen
+ObjectClear- und RORem-Modellrevisionen sind zulässig; fehlende oder veränderte Pakete
+werden nicht durch andere Revisionen ersetzt. Bei Fehler, ungültiger Abdeckung,
+Provenienzfehler, Timeout oder Abbruch wird kein Zwischenpatch bereitgestellt und
+nicht auf ObjectClear-RGB zurückgefallen. Pro Kindprozess höchstens600s, gesamte
+Kette höchstens1200s einschließlich Vorbereitung; Prozessende und Scratch-Cleanup
+bleiben Voraussetzung für das Ende des Busy-Zustands.
+
+Die Auswahl des Einzelmodells erfolgt durch Abschalten der detaillierten
+Rekonstruktion; Effekte können dabei weiter aktiv bleiben. Ohne beide geeigneten
+Pakete wird die Kettenoption mit Hinweis deaktiviert. Eine ausdrücklich erzwungene
+Kette schlägt bei fehlender Voraussetzung fehl. Andere ausgewählte Modelle behalten
+ihren bisherigen Einzelmodellpfad. Effekte auszuschalten deaktiviert die Kette.
+Präferenzwechsel verwerfen nur den Entwurf und sind während Retusche/SAM-Auswahl gesperrt.
+Modellstandard und bestehende Registry-Zuordnungen werden nicht geändert.
+
+Controls: `aiRemove.reconstruction {mode:"objectclear-rorem"|"selected"}`;
+`aiRemove.start` akzeptiert dieselbe optionale `reconstruction`-Angabe zum expliziten
+Testen. Status ergänzt `reconstruction`, `reconstructionPreference`,
+`reconstructionAvailable`, `stage` (0/1/2) und `draftStages`. Die Phasen `effects`
+und `reconstruction` bezeichnen Schritt1/2 und2/2; `ready` ist dem finalen Entwurf
+vorbehalten. Der Status des Modellstores bietet `supports_reconstruction`.
+
+Gespeicherte Pixel stammen ausschließlich von RORem. Die alten Felder `model`,
+`model_version` und `seed` benennen weiterhin den tatsächlichen finalen Generator.
+Optionale typisierte `stages` enthalten höchstens zwei Datensätze mit Rolle,
+Backend, Modell-/Laufzeit-ID, Revision, Binär-/Modellmanifesthash, Seed, Schritten,
+Effektvertrag und Hash der Abdeckung beziehungsweise zweiten Eingabemaske. Keine
+Laufzeitpfade oder Zwischenbilder werden als Provenienz persistiert. Alte Patches
+lesen sich ohne Stufenmetadaten identisch; Rendering/Export benötigen weiterhin
+keine verfügbaren Modelle. Katalogformat und Rastergrenzen bleiben unverändert.
+
+Gezielte Tests decken Original-RGB-Datenfluss, erweiterten Maskenscope,
+Subtraktionsschutz, Teilfehler/Cancellation, Deadlinegrenzen, genaue IDs, alte
+Patchformate, begrenzte Metadaten und UI-Bedienung ab. Reale RAW-/Objektiv-,
+Undo-/Neustart-/Exportprüfung des fertigen Appkandidaten sowie persönliche
+Qualitätsabnahme sind davon getrennt und noch zu bestätigen. Die Kette ist ein
+Qualitätskandidat; eine praktisch unsichtbare Rekonstruktion beliebiger Bilder
+oder automatische Parität wird hier nicht behauptet.

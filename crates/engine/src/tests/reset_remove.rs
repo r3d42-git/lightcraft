@@ -44,6 +44,7 @@ fn patch(id: u32) -> AiEdit {
             model: "stored-test-patch".into(),
             model_version: "1".into(),
             seed: u64::from(id),
+            stages: Vec::new(),
         },
         &[[0.123, 0.25, 1.75, 0.625]],
     )

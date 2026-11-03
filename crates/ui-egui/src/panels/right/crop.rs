@@ -458,9 +458,9 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             let selected =
                 app.session.ai_remove.selection.is_some() || app.session.ai_remove.object_selection.as_ref().is_some_and(|s| s.seg.is_some());
             #[cfg(target_arch = "wasm32")]
-            let (model_id, supports_effects) = (String::new(), false);
+            let (model_id, supports_effects, supports_reconstruction) = (String::new(), false, false);
             #[cfg(not(target_arch = "wasm32"))]
-            let (model_id, supports_effects) = {
+            let (model_id, supports_effects, supports_reconstruction) = {
                 let status = app.session.execute("aiModels.status", &json!({})).unwrap_or_default();
                 let store = &status["store"];
                 let models = store["models"].as_array().cloned().unwrap_or_default();
@@ -497,7 +497,8 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
                 }
                 let supports_effects = models.iter().find(|m| m["id"] == selected).is_some_and(|m| m["supports_effects"] == true);
-                (model_id, supports_effects)
+                let supports_reconstruction = models.iter().find(|m| m["id"] == selected).is_some_and(|m| m["supports_reconstruction"] == true);
+                (model_id, supports_effects, supports_reconstruction)
             };
             let mut include_effects = app.session.ai_remove.include_effects.unwrap_or(true) && supports_effects;
             let response = ui.add_enabled(
@@ -515,6 +516,25 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                         .color(t.text_dim),
                 );
             }
+            let mut reconstruct = app.session.ai_remove.reconstruct.unwrap_or(true) && supports_reconstruction && include_effects;
+            let response = ui.add_enabled(
+                !busy && !selecting && supports_reconstruction && include_effects,
+                egui::Checkbox::new(&mut reconstruct, crate::i18n::tr("Detailed background reconstruction")),
+            );
+            let response = response.on_hover_text(crate::i18n::tr("Two local stages with ObjectClear and RORem; takes longer."));
+            crate::widgets::register(ui, "aiRemoveReconstruction", response.rect);
+            if response.changed() {
+                let _ = app.run("aiRemove.reconstruction", json!({"mode":if reconstruct { "objectclear-rorem" } else { "selected" }}));
+            }
+            ui.label(
+                egui::RichText::new(crate::i18n::tr(if supports_reconstruction && include_effects {
+                    "Reconstructs background texture and transitions; takes longer."
+                } else {
+                    "Detailed reconstruction needs both local models and enabled shadow and reflection removal."
+                }))
+                .size(12.0)
+                .color(t.text_dim),
+            );
             ui.add_space(8.0);
             if ui
                 .add_enabled_ui((selected || sel.is_some()) && !busy && !selecting && !model_id.is_empty(), |ui| {

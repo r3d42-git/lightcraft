@@ -27,6 +27,8 @@ fn cancel_keeps_receiver_and_activity_until_ack_and_discards_late_success() {
     s.execute("aiRemove.cancel", &json!({})).unwrap();
     assert!(s.execute("aiRemove.effects", &json!({"enabled":false})).unwrap_err().to_string().contains("finish"));
     assert_eq!(s.ai_remove.include_effects, None);
+    assert!(s.execute("aiRemove.reconstruction", &json!({"mode":"selected"})).is_err());
+    assert_eq!(s.ai_remove.reconstruct, None);
     let status = s.execute("aiRemove.status", &json!({})).unwrap();
     assert_eq!(status["phase"], "cancelling");
     assert_eq!(status["running"], true);
@@ -63,11 +65,21 @@ fn phase_updates_ready_and_failure_are_additive_status_fields() {
     let mut s = Session::with_demo();
     assert_eq!(s.execute("aiRemove.status", &json!({})).unwrap()["phase"], "idle");
     let (tx, stages, task, edit) = pending(&mut s);
-    for phase in [Phase::Preparing, Phase::Running, Phase::Finalizing] {
+    for phase in [Phase::Preparing, Phase::Effects, Phase::Reconstruction, Phase::Running, Phase::Finalizing] {
         stages.send(phase).unwrap();
         s.ai_remove_poll();
         assert_eq!(s.ai_remove.phase, phase);
         assert!(s.ai_remove.busy());
+        assert!(s.ai_remove.draft.is_none());
+        let stage = s.execute("aiRemove.status", &json!({})).unwrap()["stage"].as_u64().unwrap();
+        assert_eq!(
+            stage,
+            match phase {
+                Phase::Effects => 1,
+                Phase::Reconstruction => 2,
+                _ => 0,
+            }
+        );
     }
     drop(task);
     tx.send(Ok(edit)).unwrap();
