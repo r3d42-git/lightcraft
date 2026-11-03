@@ -1,13 +1,29 @@
 # R3D optics integration
 
-This fork integrates the unchanged LightCraft `v0.17.0` release,
-`5a09d075306291a1522d5e8bb0710774f3733594`, into its tested R3D feature line. The machine-readable base is
-`r3d/upstream-base.json`. This is a local development implementation, not a released
-replacement for the official application.
+This fork integrates exact LightCraft `v0.18.0`,
+`32d569ad5d19a6b55cf8d5c077127faa0f44a83b`, into its accepted R3D history.
+The machine-readable base is `r3d/upstream-base.json`.
+The candidate checkout is `update-0.18.0/` on `r3d/update-0.18.0`.
+Installed 0.17 and the GitHub default branch remain unchanged during acceptance.
+Both update checkouts reuse the shared excluded buildvolume cache.
 
-The 0.17 candidate checkout is `update-0.17.0/` on `r3d/update-0.17.0`.
-The accepted installed app/default branch remain 0.16 until personal acceptance.
-Both checkouts reuse the shared excluded buildvolume cache.
+## v0.18.0 compatibility integration (2026-11-03)
+
+Merge the exact upstream tag into the accepted 0.17 fork. Retain the upstream
+histogram percentile, positive shutter fraction, case-insensitive date search,
+Survey Cmd/Ctrl removal, full-state linked margin and bounded GPU-limit fixes.
+Software GPU adapters remain opt-in; actual Metal verification stays local.
+The upstream GPU large-source test now fits 128 MiB device bindings and retains
+our independent neutral-colour regressions. No rendering pipeline, camera-fit,
+optics resolver, native retouch package, denoiser binding or persisted edit
+format is replaced. The histogram percentile helper now handles empty/small samples correctly;
+there are no production callers of that helper in this source tree. Existing
+fixed-setting renders retain the same pipeline.
+Render cache81, camera look14 and catalog12 remain unchanged.
+Rust1.99.1 remains pinned locally and in the Ubuntu gate. Only that fork CI
+workflow is enabled; no inherited packaging/release/platform jobs are restored.
+Validation, skips and personal acceptance are recorded outside Git in
+`../evidence/update-0.18.0-20261103/`. No release, tag or upstream PR is created.
 
 ## v0.17.0 compatibility integration (2026-11-02)
 
