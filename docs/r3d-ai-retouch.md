@@ -44,6 +44,20 @@ für getrennte, selbst geladene Modelle steht in [r3d-ai-install.md](r3d-ai-inst
 Die unten dokumentierten Python-Prototypen und offenen lokalen Abnahmen sind
 historisch. Der neue Installationskandidat ist noch kein öffentlicher Release.
 
+## Zurücksetzen im Bereich Bearbeiten (03.11.2026)
+
+Der Knopf **Zurücksetzen** unter **Bearbeiten** setzt nur die Einstellungen
+dieses Bereichs auf die Importvorgaben zurück: Profil, Licht/HDR, Farbe,
+Effekte, Details einschließlich Entrauschung, Optik und Kalibrierung.
+Beschnitt, Ausrichtung/Geometrie, Masken und Retuschen aus **Entfernen** bleiben
+erhalten, ebenso die getrennten Werkzeuge Rote Augen und Objektivunschärfe.
+Gespeicherte KI-Rasterpatches werden weder gelöscht noch neu berechnet.
+
+Der Menüpunkt **Bearbeitungen zurücksetzen** und **⇧⌘R** bleiben ein
+vollständiger Reset einschließlich dieser anderen Werkzeuge. Beide Aktionen
+lassen sich rückgängig machen. Steuerbefehle: `develop.resetPanel` für den
+Bereich, `develop.reset` für den vollständigen Reset.
+
 # Lokale KI-Retusche – privater Mac-Prototyp
 
 Stand 30.10.2026. Persönlicher Nutzerauftrag: lokale, non-destruktive

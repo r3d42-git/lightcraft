@@ -421,15 +421,8 @@ mod tests {
         assert_eq!(live_hdr_histogram(None, id, true), None);
     }
 
-    /// Issue #1751: Windows and Linux read Ctrl where macOS reads Cmd, and a rebound shortcut shows.
     #[test]
-    fn reset_tooltip_names_the_shortcut_of_this_platform() {
-        let keymap = crate::shortcuts::Keymap::new();
-        assert_eq!(reset_tip(&keymap, false), "Reset all edits (Ctrl+Shift+R)");
-        assert_eq!(reset_tip(&keymap, true), "Reset all edits (⇧⌘R)");
-        let rebound: crate::shortcuts::Keymap = [("develop.reset".to_string(), "Cmd+Alt+R".to_string())].into();
-        assert_eq!(reset_tip(&rebound, false), "Reset all edits (Ctrl+Alt+R)");
-        let unbound: crate::shortcuts::Keymap = [("develop.reset".to_string(), String::new())].into();
-        assert_eq!(reset_tip(&unbound, false), "Reset all edits");
+    fn reset_tooltip_describes_panel_scope_without_the_global_shortcut() {
+        assert_eq!(reset_tip(), "Reset Edit panel settings");
     }
 }

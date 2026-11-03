@@ -21,6 +21,77 @@ fn edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut DevelopSettin
     ok()
 }
 
+/// Reset the full photo, or only the controls owned by the Edit panel, in one undo step.
+fn reset(s: &mut Session, p: &Value, panel_only: bool) -> Result<Value> {
+    let label = if panel_only { "Reset Edit Panel" } else { "Reset" };
+    let ids = s.targets(p)?;
+    let ops = ids
+        .iter()
+        .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
+        .filter_map(|(id, d)| {
+            // back to the photo's import defaults when a default preset gave it its look
+            let look = s.catalog.photo(id).and_then(|p| p.import_look.clone());
+            let fresh = match look {
+                Some(l) => (*l).clone(),
+                None => {
+                    // the photo's built-in defaults (raws: capture sharpening and colour noise
+                    // reduction, embedded lens corrections), as at import, with the white balance
+                    // of its current as-shot reference
+                    let info = s.source_info(id);
+                    let defaults = s.catalog.photo(id).map(|p| p.camera_defaults()).unwrap_or_default();
+                    let mut fresh = DevelopSettings {
+                        wb: lightcraft_develop::WhiteBalance {
+                            mode: WbMode::AsShot,
+                            temp: info.as_shot_temp,
+                            tint: info.as_shot_tint,
+                            ..Default::default()
+                        },
+                        ..defaults
+                    };
+                    lightcraft_pipeline::local::normalize_wb(&mut fresh, &info);
+                    fresh
+                }
+            };
+            let settings = if panel_only {
+                // Only controls shown in Edit belong to this reset. Other tools, their
+                // section eyes, and the rendering process retain their current state.
+                let mut reset = (*d).clone();
+                reset.profile = fresh.profile;
+                reset.treatment = fresh.treatment;
+                reset.wb = fresh.wb;
+                reset.light = fresh.light;
+                reset.auto_tone = None;
+                reset.hdr = fresh.hdr;
+                reset.curve = fresh.curve;
+                reset.color = fresh.color;
+                reset.mixer = fresh.mixer;
+                reset.point_colors = fresh.point_colors;
+                reset.bw_mix = fresh.bw_mix;
+                reset.grading = fresh.grading;
+                reset.effects = fresh.effects;
+                reset.vignette = fresh.vignette;
+                reset.grain = fresh.grain;
+                reset.detail = fresh.detail;
+                reset.optics = fresh.optics;
+                reset.calibration = fresh.calibration;
+                reset.enhance.denoise = fresh.enhance.denoise;
+                reset.enhance.denoise_on = fresh.enhance.denoise_on;
+                reset.denoise_model = fresh.denoise_model;
+                let in_panel = |section: &str| matches!(section, "light" | "color" | "effects" | "detail" | "optics" | "calibration");
+                reset.disabled_sections.retain(|section| !in_panel(section));
+                reset.disabled_sections.extend(fresh.disabled_sections.into_iter().filter(|section| in_panel(section)));
+                reset
+            } else {
+                // Global Reset Edits remains a full reset on the current process.
+                DevelopSettings { process: ProcessVersion::LATEST, auto_tone: None, ..fresh }
+            };
+            s.develop_op(id, settings, label)
+        })
+        .collect();
+    s.commit(label, Op::Batch { ops })?;
+    ok()
+}
+
 fn section_param(p: &Value, c: &str) -> Result<Section> {
     let v = p.get("section").cloned().ok_or_else(|| bad(c, "missing `section`"))?;
     serde_json::from_value(v).map_err(|e| bad(c, e.to_string()))
@@ -337,42 +408,16 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(())
             })
         }),
-        cmd!("develop.reset", "Reset Edits", ["Photo"], Some("Cmd+Shift+R"), "{ids?}", has_selection, |s, p| {
-            let ids = s.targets(p)?;
-            let ops = ids
-                .iter()
-                .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                .filter_map(|(id, _d)| {
-                    // back to the photo's import defaults when a default preset gave it its look
-                    let look = s.catalog.photo(id).and_then(|p| p.import_look.clone());
-                    let fresh = match look {
-                        Some(l) => (*l).clone(),
-                        None => {
-                            // the photo's built-in defaults (raws: capture sharpening and colour noise
-                            // reduction, embedded lens corrections), as at import, with the white balance
-                            // of its current as-shot reference
-                            let info = s.source_info(id);
-                            let defaults = s.catalog.photo(id).map(|p| p.camera_defaults()).unwrap_or_default();
-                            let mut fresh = DevelopSettings {
-                                wb: lightcraft_develop::WhiteBalance {
-                                    mode: WbMode::AsShot,
-                                    temp: info.as_shot_temp,
-                                    tint: info.as_shot_tint,
-                                    ..Default::default()
-                                },
-                                ..defaults
-                            };
-                            lightcraft_pipeline::local::normalize_wb(&mut fresh, &info);
-                            fresh
-                        }
-                    };
-                    // a fresh start renders with the current process (a section or slider reset doesn't change it)
-                    s.develop_op(id, DevelopSettings { process: ProcessVersion::LATEST, auto_tone: None, ..fresh }, "Reset")
-                })
-                .collect();
-            s.commit("Reset", Op::Batch { ops })?;
-            ok()
-        }),
+        cmd!("develop.reset", "Reset Edits", ["Photo"], Some("Cmd+Shift+R"), "{ids?}", has_selection, |s, p| { reset(s, p, false) }),
+        cmd!(
+            "develop.resetPanel",
+            "Reset Edit Panel",
+            [],
+            None,
+            "{ids?}: reset only Edit panel settings, preserving other tools",
+            has_selection,
+            |s, p| { reset(s, p, true) }
+        ),
         CommandSpec {
             explicit_targets: true,
             ..cmd!(

@@ -1285,6 +1285,8 @@
   "Reset Section": "Bereich zurücksetzen",
   "Reset Tone Curve": "Gradationskurve zurücksetzen",
   "Reset all curves: point curves (all channels) and parametric (double-click a channel to reset only that one)": "Alle Kurven zurücksetzen: Punktkurven (alle Kanäle) und parametrische Kurve (Doppelklick auf einen Kanal setzt nur diesen zurück)",
+  "Reset Edit Panel": "Bearbeiten zurücksetzen",
+  "Reset Edit panel settings": "Einstellungen im Bereich Bearbeiten zurücksetzen",
   "Reset all edits": "Alle Bearbeitungen zurücksetzen",
   "Reshuffle": "Neu mischen",
   "Resize Face Box": "Gesichtsrahmengröße ändern",

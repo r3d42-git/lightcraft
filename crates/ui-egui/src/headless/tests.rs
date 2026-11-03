@@ -3217,6 +3217,11 @@ fn reset_button_wins_over_an_active_numeric_draft() {
         json!({"view": "detail", "right": "edit", "leftPanel": false, "rightWidth": 330, "openSections": ["light"], "histogram": false}),
     );
     let active = h.app.session.active().unwrap();
+    // This button belongs to Edit; the global full-reset command must not be routed here.
+    ask(&mut h, "engine.execute", json!({"command": "spot.add", "params": {"points": [[0.5, 0.5]], "source": [0.1, 0.0]}}));
+    ask(&mut h, "engine.execute", json!({"command": "develop.merge", "params": {"settings": {"crop": {"geometry": {"angle": 5.0}}}}}));
+    let before_reset = h.app.session.develop_of(active).unwrap();
+
     for (text, terminal) in [("0.75", "Enter"), ("-1,5", "Escape")] {
         ask(&mut h, "ui.clickWidget", json!({"id": "sliderValue:light.exposure"}));
         ask(&mut h, "ui.text", json!({"text": text}));
@@ -3231,6 +3236,9 @@ fn reset_button_wins_over_an_active_numeric_draft() {
     assert!(h.painted_text().iter().any(|text| text == "2.0"), "the replacement draft must be visible before Reset");
     assert_eq!(h.app.session.develop_of(active).unwrap().light.exposure, 0.75, "the draft is not committed yet");
     ask(&mut h, "ui.clickWidget", json!({"id": "button:reset"}));
+    let panel_reset = h.app.session.develop_of(active).unwrap();
+    assert_eq!(panel_reset.spots, before_reset.spots, "Edit reset preserves Remove work");
+    assert_eq!(panel_reset.crop, before_reset.crop, "Edit reset preserves Crop work");
     let reset = ask(&mut h, "engine.execute", json!({"command": "develop.get", "params": {}}));
     assert_eq!(
         reset["light"]["exposure"].as_f64(),

@@ -365,13 +365,9 @@ pub(super) fn header_buttons(ui: &mut egui::Ui, auto: bool, bw: bool, hdr: bool,
     clicks
 }
 
-/// The Reset button's tooltip with the reset shortcut as this platform writes it (issue #1751).
-pub(super) fn reset_tip(keymap: &crate::shortcuts::Keymap, mac: bool) -> String {
-    let base = crate::i18n::tr("Reset all edits");
-    match crate::shortcuts::shortcut_of(keymap, "develop.reset") {
-        Some(sc) => format!("{base} ({})", crate::menubar::shortcut_text(sc, mac)),
-        None => base.to_string(),
-    }
+/// Panel reset has no shortcut; Cmd/Ctrl+Shift+R belongs to the global full reset.
+pub(super) fn reset_tip() -> &'static str {
+    crate::i18n::tr("Reset Edit panel settings")
 }
 
 #[cfg(test)]

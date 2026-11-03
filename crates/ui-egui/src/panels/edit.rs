@@ -65,8 +65,8 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::hover());
     ui.painter().text(pos2(hr.left() + 24.0, hr.bottom() - 10.0), Align2::LEFT_CENTER, crate::i18n::tr("Edit"), t.semibold(15.0), t.text);
     egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 8, bottom: 14 }).show(ui, |ui| {
-        let tip = reset_tip(&app.ui.settings.keymap, ui.ctx().os() == egui::os::OperatingSystem::Mac);
-        let clicks = header_buttons(ui, d.auto_tone_active(), crate::is_bw(&d), d.hdr.enabled, &tip);
+        let tip = reset_tip();
+        let clicks = header_buttons(ui, d.auto_tone_active(), crate::is_bw(&d), d.hdr.enabled, tip);
         if clicks.auto {
             let _ = app.run("develop.auto", json!({}));
             app.toast(ui.ctx(), crate::i18n::tr("Auto settings applied"));
@@ -392,6 +392,6 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     ui.add_space(40.0);
     // A pending numeric edit commits on blur before the explicit Reset takes precedence.
     if reset_clicked {
-        let _ = app.run("develop.reset", json!({}));
+        let _ = app.run("develop.resetPanel", json!({}));
     }
 }
