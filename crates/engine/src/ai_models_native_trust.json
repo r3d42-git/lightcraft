@@ -21,6 +21,13 @@
       "binary_sha256": "e1518046d5f913a5e1bd3dc3c90b489e0cc30a1794161a2e57efe72617dc869f",
       "model_id": "rorem-22d02de974c8dc92c717cd3431f8b0fe0eeecc3b",
       "model_manifest_sha256": "eab1b9eea7ce889aad317aa632f8dd8fc85c91caede9c2ec344396f23811d470"
+    },
+    {
+      "id": "objectclear-effects-native-bfe8fb8f0a94",
+      "binary_sha256": "bfe8fb8f0a942dad89b25aeddc59245aadc8106f8a211658da398952d451f1cf",
+      "model_id": "objectclear-c73af80888dbd519819d0a521b5c8d0f3cda6859",
+      "model_manifest_sha256": "648b4cf99273df09b0bae5c484a4169fe87d789cbfcafe3cc10f9dc95a7e5fdc",
+      "object_effects": true
     }
   ]
 }

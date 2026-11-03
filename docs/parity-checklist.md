@@ -268,7 +268,7 @@ differences and missing bindings are in [ui-parity.md](ui-parity.md#shortcuts).
 | LR-REM-HEAL | Heal | P0 | ✅ | `cmd:spot.add` (`mode: heal`), `crates/pipeline/src/spots.rs` | Zero-feather edges use a hard step; zero-opacity spots preserve all pixels, including exact-radius pixels and image corners |
 | LR-REM-CLONE | Clone | P0 | ✅ | `cmd:spot.add` (`mode: clone`), `crates/pipeline/src/spots.rs` | Hard-edge source copying and unchanged radius pixels regression-tested at two output sizes |
 | LR-REM-GEN | Generative remove | OOS | 🚫 | | |
-| LR-REM-DETECT | Object detection for remove | P2 | 🟡 | `cmd:aiRemove.objectPoint`, `cmd:aiRemove.refineBrush`, `cmd:aiRemove.objectMargin`, `cmd:aiRemove.clearSelection`, `crates/engine/src/ai_remove/object.rs` | R3D: local SAM 3 click selection with include/exclude prompts, temporary overlay, automatic detail analysis for small objects, a visible adjustable margin and additive/subtractive brush corrections before explicit removal. Resolved lens geometry maps the selection to a stored source-space raster patch. Optional weights; fine-edge quality and manual acceptance remain, no automatic distraction detection. |
+| LR-REM-DETECT | Object detection for remove | P2 | 🟡 | `cmd:aiRemove.objectPoint`, `cmd:aiRemove.refineBrush`, `cmd:aiRemove.objectMargin`, `cmd:aiRemove.clearSelection`, `crates/engine/src/ai_remove/object.rs` | R3D: local SAM 3 click selection with include/exclude prompts, temporary overlay, automatic detail analysis for small objects, a visible adjustable margin and additive/subtractive brush corrections before explicit removal. Resolved lens geometry maps the selection to a stored source-space raster patch. Optional weights; app-pinned native ObjectClear can include model-derived shadows/reflections within the context crop (`cmd:aiRemove.effects`), with subtractive corrections protected. Fine-edge/effect quality and manual acceptance remain; no automatic distraction detection. |
 | LR-REM-BRUSH-PARAMS | Brush size / feather / opacity | P0 | ✅ | `cmd:spot.add` (`size`, `feather`, `opacity`), `cmd:brush.smaller`, `cmd:brush.larger`, `cmd:brush.featherLess`, `cmd:brush.featherMore`, `crates/ui-egui/src/panels/right.rs` | Size / Feather / Opacity sliders (for new spots and the selected one); `[` `]` size, ⇧`[` ⇧`]` feather (also the Masking brush) |
 | LR-REM-SPOT-EDIT | Edit existing spots | P0 | ✅ | `cmd:spot.select`, `cmd:spot.update`, `cmd:spot.refreshSource`, `cmd:spot.delete`, `cmd:view.toolOverlay` | click a pin to select, drag target or source, ⌫ deletes the selected spot, `/` picks another source; automatic sources are resolved when the spot is added; Tool Overlay (Remove panel, View menu, ⇧H) shows the spots' pins Auto (pointer over the photo, hidden while painting) / Always / Selected / Never, and a hidden spot can't be grabbed (#224) |
 | LR-REM-VISUALIZE | Visualize spots | P1 | ✅ | `cmd:view.visualizeSpots` | |
@@ -1060,3 +1060,15 @@ These targeted upstream fixes preserve existing feature status and counts; separ
 - CPU diagnostic with padded zoom regions; the normal GPU path resumes afterward. The sharpening formula stays unchanged and the histogram stays the photo's. Headless captures preserve the held gesture without replaying input.
 - The owner accepted holding Option and releasing Option/mouse separately on 2026-10-30. Personal RAW latency, crop/rotation, and a physical profiled/HDR display are not separately confirmed.
 - Usage and limits: `docs/sharpen-mask-preview.md`. No headline parity percentages are changed by this diagnostic preview.
+
+## R3D object-effects candidate — 2026-11-03
+
+- `cmd:aiRemove.effects` and the `aiRemoveEffects` checkbox opt a trusted native ObjectClear
+  runtime into model-derived shadow/reflection coverage inside the existing context
+  crop. Exact app pins gate this capability; legacy models retain mask-only behavior.
+  Subtractive correction strokes protect source-space samples from effects, with
+  ordered additions releasing protection. Binary response coverage and explicit
+  effects provenance are validated; drafts still require review and accept.
+- Resolved-lens synthetic tests exercise effects outside the object, exact source
+  preservation outside coverage and protected corrections. Real-image quality and
+  user acceptance remain separate; no parity status or count is upgraded.

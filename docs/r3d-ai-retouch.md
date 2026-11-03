@@ -243,3 +243,33 @@ Auswahlen führt das trotz korrekter Inferenz zum Provenienzfehler. Die korrigie
 Laufzeitrevisionen erhalten die Koordinaten bitgenau. Regressionsfälle prüfen die
 wirkliche Anfrage-/Antwortdateigrenze mit verschiedenen Rechtecken; die App verwirft
 weiterhin auch um ein Bit veränderte Rechtecke und andere Auftragsidentitäten.
+
+## Schatten und Spiegelungen — isolierter Kandidat 03.11.2026
+
+„Schatten und Spiegelungen einbeziehen“ ist für eine ausdrücklich von der App
+freigegebene native ObjectClear-Laufzeit standardmäßig an. Die Freigabe bindet
+Binärhash, Modellmanifest und `object_effects` im App-Trust; Paketmetadaten allein
+aktivieren die Funktion nicht. Andere Laufzeiten und Modelle behalten den
+bisherigen Auswahlmodus und zeigen einen Verfügbarkeitshinweis. Registry und
+Modellstandard bleiben unverändert. `aiRemove.effects {enabled:bool}` verwirft
+einen vorhandenen Entwurf und ist während eines Retusche- oder Objektauswahljobs gesperrt. Ein explizites
+`aiRemove.start {includeEffects:true}` mit ungeeigneter Laufzeit schlägt fehl.
+
+Nur ein angeforderter `object-effects-v1`-Auftrag darf zusätzliche Modellabdeckung
+liefern. Die Antwort muss den Modus bestätigen, endliche binäre Alphaabdeckung
+mit korrekter Größe liefern und die komplette Objektmaske enthalten. Die App
+behält Quellgeometrie und Kontextausschnitt unter Kontrolle; außerhalb der
+Abdeckung bleiben Quellpixel exakt erhalten. Modell-RGB enthält bereits die
+interne Aufmerksamkeitsfusion und wird nicht nochmals damit überblendet.
+Subtraktive Korrekturstriche schützen ihre aufgelöste Quellabbildung auch vor
+zusätzlichen Effekten; spätere additive Striche heben diesen Schutz lokal auf.
+Der Replay-Aufwand ist begrenzt. Diese Abdeckung liegt im bestehenden maximal
+1024-Pixel-Patchraster, dessen Skalierungsgrenzen weiterhin gelten.
+
+Automatische Abdeckung kann über das Objekt hinausreichen. Sie ist auf den
+bisherigen Kontextausschnitt begrenzt und garantiert weder alle Schatten noch
+alle Spiegelungen. Der Entwurf bleibt vor Übernahme sichtbar prüfbar. Synthetische
+Tests prüfen Protokoll, Manipulationsabwehr, gespeicherte Quellabdeckung und
+Subtraktionsschutz mit tatsächlich aufgelöster Objektivkorrektur. Reale Bildqualität
+und persönliche Abnahme müssen separat nachgewiesen werden; dieser Abschnitt
+behauptet keine allgemeine Modellqualität oder Parität.

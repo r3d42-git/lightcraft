@@ -157,6 +157,22 @@ pub struct Resolved {
     pub manifest: Value,
 }
 impl Resolved {
+    /// Capability is owned by this app's exact executable/model trust pin.
+    pub fn supports_effects(&self) -> bool {
+        native_trust().is_ok_and(|trust| self.supports_effects_with_trust(&trust))
+    }
+    fn supports_effects_with_trust(&self, trust: &NativeTrust) -> bool {
+        self.backend == "objectclear"
+            && self.execution == ExecutionKind::NativeProtocolV1
+            && self.verify_execution_with_trust(trust).is_ok()
+            && sha256(&self.worker).is_ok_and(|hash| {
+                trust
+                    .runtimes
+                    .iter()
+                    .any(|pin| pin.id == self.runtime_id && pin.binary_sha256 == hash && pin.model_id == self.id && pin.object_effects)
+            })
+    }
+
     /// Recheck executable identity immediately before launch, without rehashing weights.
     pub fn verify_execution(&self) -> Result<()> {
         if self.execution == ExecutionKind::PythonProtocolV1 {
@@ -366,6 +382,8 @@ struct NativeTrust {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NativePin {
+    #[serde(default)]
+    object_effects: bool,
     id: String,
     binary_sha256: String,
     model_id: String,
@@ -648,6 +666,7 @@ fn snapshot_with_trust(root: &Path, trust: &NativeTrust) -> Result<Value> {
         let model = r.models.iter().find(|model| Some(model.id.as_str()) == m["id"].as_str()).ok_or_else(|| err("Unknown snapshot model."))?;
         let runtime_id = r.defaults.runtime_overrides.get(&model.id).unwrap_or(&model.runtime_id);
         m["selected_runtime_id"] = json!(runtime_id);
+        m["supports_effects"] = json!(false);
         let mut choices = Vec::new();
         for runtime in &r.runtimes {
             if let Ok(resolved) = resolve_runtime(root, &r, model, &runtime.id, false, trust) {
@@ -660,6 +679,7 @@ fn snapshot_with_trust(root: &Path, trust: &NativeTrust) -> Result<Value> {
         m["status"] = json!(match resolve_with_trust(root, m["id"].as_str(), None, false, trust) {
             Ok(resolved) => {
                 m["execution"] = json!(resolved.execution.as_str());
+                m["supports_effects"] = json!(resolved.supports_effects_with_trust(trust));
                 for (key, value) in display_metadata(&resolved.manifest).as_object().into_iter().flatten() {
                     m[key.as_str()] = value.clone();
                 }
@@ -1025,6 +1045,7 @@ mod tests {
         let trust = NativeTrust {
             version: 1,
             runtimes: vec![NativePin {
+                object_effects: false,
                 id: "native-1".into(),
                 binary_sha256: sha256(&native.join("bin/lightcraft-ai-native")).unwrap(),
                 dependency_sha256: BTreeMap::new(),
@@ -1033,6 +1054,28 @@ mod tests {
             }],
         };
         (fixture, root, native, trust)
+    }
+    #[test]
+    fn effects_capability_is_opt_in_exact_pin_and_native_objectclear_only() {
+        let (_fixture, root, native, mut trust) = native_fixture();
+        operate_with_trust(&root, "import", &json!({"path":native}), &trust).unwrap();
+        let r = registry(&root).unwrap();
+        let mut selected = resolve_runtime(&root, &r, &r.models[0], "native-1", false, &trust).unwrap();
+        selected.backend = "objectclear".into(); // Synthetic fixture tests application capability independently of model weights.
+        assert!(!selected.supports_effects_with_trust(&trust));
+        trust.runtimes[0].object_effects = true;
+        assert!(selected.supports_effects_with_trust(&trust));
+        selected.backend = "lama".into();
+        assert!(!selected.supports_effects_with_trust(&trust));
+        selected.backend = "objectclear".into();
+        selected.execution = ExecutionKind::PythonProtocolV1;
+        assert!(!selected.supports_effects_with_trust(&trust));
+        selected.execution = ExecutionKind::NativeProtocolV1;
+        std::fs::write(&selected.worker, b"changed binary").unwrap();
+        assert!(!selected.supports_effects_with_trust(&trust));
+        let legacy: NativePin =
+            serde_json::from_value(json!({"id":"old","binary_sha256":"hash","model_id":"model","model_manifest_sha256":"hash"})).unwrap();
+        assert!(!legacy.object_effects);
     }
     #[test]
     fn native_dependency_is_rechecked_even_when_package_manifest_is_rewritten() {

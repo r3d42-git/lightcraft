@@ -17,9 +17,10 @@ pub(super) fn prepare(
     seed: u32,
     cancel: &AtomicBool,
 ) -> std::result::Result<PreparedInput, String> {
-    prepare_inner(source, info, d, spot, None, continuous, seed, cancel)
+    prepare_inner(source, info, d, spot, None, &[], continuous, seed, cancel)
 }
 
+#[cfg(test)]
 pub(super) fn prepare_segmented(
     source: crate::media::SourceRef,
     info: lightcraft_pipeline::SourceInfo,
@@ -28,11 +29,24 @@ pub(super) fn prepare_segmented(
     seed: u32,
     cancel: &AtomicBool,
 ) -> Result<PreparedInput, String> {
+    prepare_segmented_protected(source, info, d, seg, &[], seed, cancel)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_segmented_protected(
+    source: crate::media::SourceRef,
+    info: lightcraft_pipeline::SourceInfo,
+    d: DevelopSettings,
+    seg: lightcraft_develop::SegMask,
+    refinements: &[(Spot, bool)],
+    seed: u32,
+    cancel: &AtomicBool,
+) -> Result<PreparedInput, String> {
     let mask = super::SelectionMask::new(&seg)?;
     if mask.is_empty() {
         return Err("The selected mask is empty.".into());
     }
-    prepare_inner(source, info, d, Spot::default(), Some(mask), true, seed, cancel)
+    prepare_inner(source, info, d, Spot::default(), Some(mask), refinements, true, seed, cancel)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -42,6 +56,7 @@ fn prepare_inner(
     d: DevelopSettings,
     spot: Spot,
     segmented: Option<super::SelectionMask>,
+    refinements: &[(Spot, bool)],
     continuous: bool,
     seed: u32,
     cancel: &AtomicBool,
@@ -117,11 +132,34 @@ fn prepare_inner(
             *m = 255;
         }
     }
+    let mut protected = vec![false; mask.len()];
+    let protection_segments = refinements.iter().fold(0usize, |n, (spot, _)| n.saturating_add(spot.points.len().max(1)));
+    if protection_segments.saturating_mul(mask.len()) > 64_000_000 {
+        return Err("Selection protection is too complex. Try fewer correction strokes.".into());
+    }
+    // Replay ordered corrections with the same frozen lens/orientation mapping.
+    // Addition strokes deliberately release protection established by earlier subtraction.
+    for (spot, subtract) in refinements {
+        let support = lightcraft_pipeline::ai_edits::brush_support(&frame, spot, true);
+        let brush = lightcraft_pipeline::ai_edits::BrushSupport::new(&support, full.width, full.height);
+        for (i, protected) in protected.iter_mut().enumerate() {
+            if i % 1024 == 0 && cancel.load(Ordering::Relaxed) {
+                return Err("Cancelled.".into());
+            }
+            let point = [
+                (x0 + ((i % w) as f64 + 0.5) * (x1 - x0) / w as f64) / full.width as f64,
+                (y0 + ((i / w) as f64 + 0.5) * (y1 - y0) / h as f64) / full.height as f64,
+            ];
+            if brush.alpha(point, full.width, full.height) > 0.0 {
+                *protected = *subtract;
+            }
+        }
+    }
     if !mask.contains(&255) {
         return Err("The selected mask is empty.".into());
     }
     Ok(PreparedInput {
-        request: runner::RetouchInput { width: w, height: h, rgb: src.data, mask, rect, seed, steps: 20 },
+        request: runner::RetouchInput { width: w, height: h, rgb: src.data, mask, rect, seed, steps: 20, effects: false, protected },
         support: segmented.is_none().then_some(support),
     })
 }
@@ -183,7 +221,7 @@ mod tests {
         let logits: Vec<f32> = (0..64 * 64).map(|i| if (20..38).contains(&(i % 64)) && (14..45).contains(&(i / 64)) { 8. } else { -8. }).collect();
         let seg = SegMask::from_logits(64, &logits);
         let mask = super::super::SelectionMask::new(&seg).unwrap();
-        let prepared = prepare_segmented(source(info.clone()), info, d.clone(), seg, 7, &AtomicBool::new(false)).unwrap();
+        let prepared = prepare_segmented(source(info.clone()), info.clone(), d.clone(), seg.clone(), 7, &AtomicBool::new(false)).unwrap();
         assert!(prepared.support.is_none());
         assert_eq!(prepared.request.rect, [0., 0., 1., 1.]);
         let support = lightcraft_pipeline::ai_edits::brush_support(&frame, &Spot::default(), true);
@@ -200,6 +238,7 @@ mod tests {
         assert!(different_from_unwarped > 100);
         let authorization = prepared.request.mask.clone();
         let output = super::super::runner::RetouchOutput {
+            coverage: None,
             width: 128,
             height: 96,
             rgb: vec![[0.8, 0.7, 0.6]; 128 * 96],
@@ -211,11 +250,89 @@ mod tests {
         };
         let edit = super::super::patch::construct(prepared, output).unwrap();
         let saved: lightcraft_develop::AiEdit = serde_json::from_value(serde_json::to_value(edit).unwrap()).unwrap();
+        let clean_settings = d.clone();
         d.ai_edits.push(saved);
         let result = lightcraft_pipeline::ai_edits::source_with_edits(&image, &d);
         for (i, p) in result.data.iter().enumerate() {
             assert_eq!(*p, if authorization[i] == 0 { [0.1, 0.2, 0.3] } else { [0.8, 0.7, 0.6] });
         }
+        // Real lens mapping also governs subtractive protection outside the object.
+        let subtract = Spot { points: vec![Point::new(0.7, 0.5)], size: 0.08, ..Default::default() };
+        let refinements = vec![(subtract.clone(), true)];
+        let mut prepared = prepare_segmented_protected(
+            source(info.clone()),
+            info.clone(),
+            clean_settings.clone(),
+            seg.clone(),
+            &refinements,
+            7,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        prepared.request.effects = true;
+        let support = lightcraft_pipeline::ai_edits::brush_support(&frame, &subtract, true);
+        let protection = lightcraft_pipeline::ai_edits::BrushSupport::new(&support, 128, 96);
+        for (i, protected) in prepared.request.protected.iter().enumerate() {
+            let p = [((i % 128) as f64 + 0.5) / 128., ((i / 128) as f64 + 0.5) / 96.];
+            assert_eq!(*protected, protection.alpha(p, 128, 96) > 0.0);
+        }
+        assert!(prepared.request.protected.iter().any(|v| *v));
+        let mut coverage = authorization.clone();
+        // Synthetic model identifies effects in a known source-space strip outside object.
+        for (i, alpha) in coverage.iter_mut().enumerate() {
+            if (70..105).contains(&(i % 128)) {
+                *alpha = 255;
+            }
+        }
+        assert!(coverage.iter().zip(&authorization).any(|(a, b)| *a == 255 && *b == 0));
+        let protected = prepared.request.protected.clone();
+        let output = super::super::runner::RetouchOutput {
+            width: 128,
+            height: 96,
+            rgb: vec![[0.8, 0.7, 0.6]; 128 * 96],
+            coverage: Some(coverage.clone()),
+            provenance: super::super::runner::RetouchProvenance {
+                model: "test".into(),
+                revision: "1".into(),
+                identity: super::super::runner::RetouchIdentity { model: "test".into(), runtime: Default::default(), adapter: "test" },
+            },
+        };
+        let edit = super::super::patch::construct(prepared, output).unwrap();
+        let saved = serde_json::from_value(serde_json::to_value(edit).unwrap()).unwrap();
+        let mut settings = clean_settings.clone();
+        settings.ai_edits.push(saved);
+        let result = lightcraft_pipeline::ai_edits::source_with_edits(&image, &settings);
+        for (i, p) in result.data.iter().enumerate() {
+            assert_eq!(*p, if coverage[i] == 0 || protected[i] { [0.1, 0.2, 0.3] } else { [0.8, 0.7, 0.6] });
+        }
+        // Later additions explicitly release earlier protection.
+        let restored = prepare_segmented_protected(
+            source(info.clone()),
+            info,
+            clean_settings,
+            seg,
+            &[(subtract.clone(), true), (subtract, false)],
+            7,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(restored.request.protected.iter().all(|v| !v));
+    }
+    #[test]
+    fn protection_work_budget_counts_segments_not_only_strokes() {
+        let stroke = Spot { points: vec![Point::new(0.5, 0.5); 4096], size: 0.04, ..Default::default() };
+        let error = prepare_segmented_protected(
+            source(Default::default()),
+            Default::default(),
+            Default::default(),
+            SegMask::from_logits(1, &[8.]),
+            &[(stroke.clone(), true), (stroke, false)],
+            0,
+            &AtomicBool::new(false),
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("protection is too complex"));
     }
     #[test]
     fn empty_or_corrupt_segment_masks_are_rejected() {

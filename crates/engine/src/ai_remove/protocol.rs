@@ -49,6 +49,9 @@ impl RetouchRunner for ProtocolRunner<'_> {
             return Err("AI request package identity changed.".into());
         }
         let input = request.input;
+        if input.effects && !self.package.is_some_and(|p| p.supports_effects()) {
+            return Err("Shadows and reflections need a supported trusted native ObjectClear runtime.".into());
+        }
         let (w, h, rect, seed, backend) = (input.width, input.height, input.rect, input.seed, self.backend);
         use std::{fs, sync::atomic::Ordering, time::Duration};
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -69,7 +72,10 @@ impl RetouchRunner for ProtocolRunner<'_> {
         let _scratch = Scratch(dir.clone());
         fs::write(dir.join("input.rgb"), encode_rgb(&input.rgb)).map_err(|e| e.to_string())?;
         fs::write(dir.join("mask.u8"), &input.mask).map_err(|e| e.to_string())?;
-        let request_json = json!({"version":1,"input":dir.join("input.rgb"),"mask":dir.join("mask.u8"),"output":dir.join("output.rgba"),"width":w,"height":h,"rect":rect,"backend":backend,"model_dir":self.package.map(|p| p.model.clone()).unwrap_or_else(|| self.runtime.join(backend_directory(backend).unwrap_or(""))),"model_package":self.package.map(|p|json!({"path":p.model,"manifest":p.manifest})),"seed":seed,"steps":input.steps});
+        let mut request_json = json!({"version":1,"input":dir.join("input.rgb"),"mask":dir.join("mask.u8"),"output":dir.join("output.rgba"),"width":w,"height":h,"rect":rect,"backend":backend,"model_dir":self.package.map(|p| p.model.clone()).unwrap_or_else(|| self.runtime.join(backend_directory(backend).unwrap_or(""))),"model_package":self.package.map(|p|json!({"path":p.model,"manifest":p.manifest})),"seed":seed,"steps":input.steps});
+        if input.effects {
+            request_json["effects"] = json!("object-effects-v1");
+        }
         fs::write(dir.join("request.json"), serde_json::to_vec(&request_json).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         if cancel.load(Ordering::Relaxed) {
             return Err("Cancelled.".into());
@@ -126,10 +132,12 @@ impl RetouchRunner for ProtocolRunner<'_> {
         }
         let raw = fs::read(output).map_err(|e| e.to_string())?;
         let rgb = decode_rgb(&raw)?;
+        let coverage = decode_coverage(&raw, &response, input.effects)?;
         Ok(RetouchOutput {
             width: w,
             height: h,
             rgb,
+            coverage,
             provenance: RetouchProvenance {
                 model: response.get("model").and_then(Value::as_str).ok_or("Worker omitted model provenance.")?.into(),
                 revision: response
@@ -142,6 +150,27 @@ impl RetouchRunner for ProtocolRunner<'_> {
             },
         })
     }
+}
+
+fn decode_coverage(raw: &[u8], response: &Value, requested: bool) -> Result<Option<Vec<u8>>, String> {
+    if !requested {
+        if response.get("effects").is_some() {
+            return Err("AI worker returned unrequested effects provenance.".into());
+        }
+        return Ok(None);
+    }
+    if response.get("effects").and_then(Value::as_str) != Some("object-effects-v1") {
+        return Err("AI worker omitted effects provenance.".into());
+    }
+    let mut coverage = Vec::with_capacity(raw.len() / 16);
+    for chunk in raw.as_chunks::<16>().0 {
+        let alpha = f32::from_le_bytes([chunk[12], chunk[13], chunk[14], chunk[15]]);
+        if alpha != 0.0 && alpha != 1.0 {
+            return Err("AI worker returned non-binary effects coverage.".into());
+        }
+        coverage.push(if alpha == 1.0 { 255 } else { 0 });
+    }
+    Ok(Some(coverage))
 }
 
 fn encode_rgb(rgb: &[[f32; 3]]) -> Vec<u8> {
@@ -216,6 +245,40 @@ mod tests {
         assert_eq!(encode_rgb(&rgb), expected);
         let rgba: Vec<u8> = [0.25f32, -0.5, 4.0, f32::NAN, 1.0, 0.0, -0.0, -100.0].into_iter().flat_map(f32::to_le_bytes).collect();
         assert_eq!(decode_rgb(&rgba).unwrap(), rgb);
+    }
+    #[test]
+    fn effects_wire_requires_exact_echo_and_finite_binary_alpha() {
+        let response = json!({"effects":"object-effects-v1"});
+        let raw = |a: f32| [0.2f32, 0.3, 0.4, a].into_iter().flat_map(f32::to_le_bytes).collect::<Vec<_>>();
+        assert_eq!(decode_coverage(&raw(1.0), &response, true).unwrap(), Some(vec![255]));
+        assert_eq!(decode_coverage(&raw(0.0), &response, true).unwrap(), Some(vec![0]));
+        for alpha in [f32::NAN, f32::INFINITY, -1.0, 0.5, 2.0] {
+            assert!(decode_coverage(&raw(alpha), &response, true).is_err());
+        }
+        for missing in [json!({}), json!({"effects":null}), json!({"effects":"other"})] {
+            assert!(decode_coverage(&raw(1.0), &missing, true).is_err());
+        }
+        assert!(decode_coverage(&raw(1.0), &response, false).is_err());
+        assert_eq!(decode_coverage(&raw(f32::NAN), &json!({}), false).unwrap(), None);
+        let runner = ProtocolRunner { runtime: Path::new("/unused"), backend: "objectclear", package: None };
+        let input = super::super::runner::RetouchInput {
+            width: 1,
+            height: 1,
+            rgb: vec![[0.0; 3]],
+            mask: vec![255],
+            rect: [0.0, 0.0, 1.0, 1.0],
+            seed: 0,
+            steps: 20,
+            effects: true,
+            protected: vec![false],
+        };
+        assert!(
+            runner
+                .run(RetouchRequest { input: &input, identity: &runner.identity() }, &std::sync::atomic::AtomicBool::new(false))
+                .err()
+                .unwrap()
+                .contains("trusted native ObjectClear")
+        );
     }
     #[test]
     fn legacy_python_launch_keeps_isolation_and_worker_arguments() {

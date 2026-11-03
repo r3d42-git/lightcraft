@@ -5251,6 +5251,31 @@ fn the_loupe_prepares_the_photos_ahead_the_settings_ask_for() {
     assert_eq!(h.app.renderer.prefetch_slots_asked(), 0, "off: nothing prepared ahead");
 }
 
+/// The capability notice and effects preference must agree for each selected runtime.
+#[test]
+fn ai_remove_effects_checkbox_requires_capability_and_changes_preference() {
+    let mut h = demo([1200.0, 900.0]);
+    let t = Duration::from_secs(10);
+    h.app.session.ai_models.snapshot = json!({"models":[{"id":"synthetic","backend":"objectclear","name":"Test ObjectClear","supports_effects":false}],"defaults":{"selected_model_id":"synthetic"}});
+    h.request("ui.set", json!({"view":"detail", "right":"remove"}), t);
+    h.settle(SETTLE);
+    h.request("ui.clickWidget", json!({"id":"aiRemoveEffects"}), t);
+    assert_eq!(h.app.session.ai_remove.include_effects, None, "unsupported runtime leaves preference unchanged");
+    h.app.session.ai_models.snapshot["models"][0]["supports_effects"] = json!(true);
+    h.app.session.ai_remove.selecting = true;
+    h.step();
+    h.request("ui.clickWidget", json!({"id":"aiRemoveEffects"}), t);
+    assert_eq!(h.app.session.ai_remove.include_effects, None);
+    assert!(h.app.session.ai_remove.selecting, "effects control cannot cancel SAM selection");
+    h.app.session.ai_remove.selecting = false;
+    h.step();
+    let r = h.request("ui.clickWidget", json!({"id":"aiRemoveEffects"}), t);
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(h.app.session.ai_remove.include_effects, Some(false), "capable runtime starts enabled");
+    h.request("ui.clickWidget", json!({"id":"aiRemoveEffects"}), t);
+    assert_eq!(h.app.session.ai_remove.include_effects, Some(true));
+}
+
 /// An unaccepted AI patch uses the main developed photo and leaves the catalogue untouched.
 #[test]
 fn ai_remove_draft_previews_on_photo_and_preserves_before_view() {

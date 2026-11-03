@@ -36,6 +36,8 @@ pub enum Phase {
 
 #[derive(Default)]
 pub struct AiRemove {
+    pub include_effects: Option<bool>,
+    effects_active: bool,
     pub object_selection: Option<ObjectSelection>,
     pub selecting: bool,
     selection_revision: u64,
@@ -167,7 +169,12 @@ impl Session {
                         Ok(edit) => {
                             self.ai_remove.draft = Some(edit);
                             self.ai_remove.phase = Phase::Ready;
-                            self.ai_remove.message = "Result ready. Review the patch before accepting.".into();
+                            self.ai_remove.message = if self.ai_remove.effects_active {
+                                "Result ready. Shadows and reflections may extend beyond the object. Review before accepting."
+                            } else {
+                                "Result ready. Review the patch before accepting."
+                            }
+                            .into();
                         }
                         Err(e) => {
                             self.ai_remove.phase = Phase::Failed;
@@ -211,6 +218,7 @@ impl Session {
     }
 
     fn ai_remove_cancel(&mut self) {
+        self.ai_remove.effects_active = false;
         self.ai_remove.selection_revision = self.ai_remove.selection_revision.wrapping_add(1);
         self.ai_remove.selecting = false;
         self.ai_remove.cancel_reason = None;
@@ -226,7 +234,7 @@ impl Session {
         self.ai_remove.message = if self.ai_remove.busy() { "Cancelling AI Remove…" } else { "Cancelled." }.into();
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn ai_remove_start(&mut self, backend: Option<&'static str>, model_id: Option<String>) -> Result<Value> {
+    fn ai_remove_start(&mut self, backend: Option<&'static str>, model_id: Option<String>, include_effects: Option<bool>) -> Result<Value> {
         self.ai_remove_poll();
         if self.ai_remove.busy() {
             return Err(error("AI Remove is already running."));
@@ -248,6 +256,12 @@ impl Session {
         }
         let ai_root = crate::ai_models::root()?;
         let selected = crate::ai_models::selected(&ai_root, model_id.as_deref(), backend)?;
+        let capable = crate::ai_models::resolve(&ai_root, Some(&selected.id), None, false)?.supports_effects();
+        let effects = include_effects.unwrap_or(self.ai_remove.include_effects.unwrap_or(true)) && capable;
+        if include_effects == Some(true) && !capable {
+            return Err(error("Shadows and reflections need a supported trusted native ObjectClear runtime."));
+        }
+        let refinements = self.ai_remove.object_selection.as_ref().map(|o| o.refinements.clone()).unwrap_or_default();
         let backend = selected.backend.clone();
         let selected_id = selected.id.clone();
         let id = self.active().ok_or_else(|| error("Select a photo."))?;
@@ -287,6 +301,8 @@ impl Session {
                     settings,
                     spot,
                     segmented,
+                    refinements,
+                    effects,
                     index.is_none(),
                     seed,
                     stopped,
@@ -296,6 +312,8 @@ impl Session {
         })
         .map_err(error)?;
         self.ai_remove = AiRemove {
+            include_effects: self.ai_remove.include_effects,
+            effects_active: effects,
             object_selection: self.ai_remove.object_selection.clone(),
             selecting: false,
             selection_revision: self.ai_remove.selection_revision,
@@ -339,13 +357,28 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             s.ai_remove.selection_tag = None;
             Ok(json!({}))
         }),
-        cmd!(query "aiRemove.start", "AI Remove", [], None, "{modelId?:installed revision ID,backend?:objectclear|lama|rorem} — starts a local background draft from the painted selection", has_active, |s, p| {
+        cmd!(query "aiRemove.effects", "Include Shadows and Reflections", [], None, "{enabled:bool} — discard draft when changing effects preference", always, |s, p| {
+            s.ai_remove_poll();
+            if s.ai_remove.busy() { return Err(error("Wait for AI Remove to finish.")); }
+            if s.ai_remove.selecting { return Err(error("Wait for the object selection.")); }
+            let enabled = p.get("enabled").and_then(Value::as_bool).ok_or_else(|| error("Give enabled as a boolean."))?;
+            if s.ai_remove.include_effects != Some(enabled) {
+                s.ai_remove_cancel();
+                s.ai_remove.include_effects = Some(enabled);
+            }
+            Ok(json!({"enabled": enabled}))
+        }),
+        cmd!(query "aiRemove.start", "AI Remove", [], None, "{modelId?:installed revision ID,backend?:objectclear|lama|rorem,includeEffects?:bool} — starts a local background draft from the painted selection", has_active, |s, p| {
             let backend = if p.get("backend").is_some() { Some(backend_param(p)?) } else { None };
             let model_id = p.get("modelId").and_then(Value::as_str).map(str::to_owned);
-            #[cfg(not(target_arch = "wasm32"))] { s.ai_remove_start(backend, model_id) }
-            #[cfg(target_arch = "wasm32")] { let _ = (s, backend, model_id); Err(error("Local AI Remove is unavailable in the browser.")) }
+            let include_effects = match p.get("includeEffects") {
+                Some(v) => Some(v.as_bool().ok_or_else(|| error("Give includeEffects as a boolean."))?),
+                None => None,
+            };
+            #[cfg(not(target_arch = "wasm32"))] { s.ai_remove_start(backend, model_id, include_effects) }
+            #[cfg(target_arch = "wasm32")] { let _ = (s, backend, model_id, include_effects); Err(error("Local AI Remove is unavailable in the browser.")) }
         }),
-        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some() || s.ai_remove.object_selection.as_ref().is_some_and(|o|o.seg.is_some()),"selecting":s.ai_remove.selecting,"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
+        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"includeEffects":s.ai_remove.include_effects.unwrap_or(true),"effectsActive":s.ai_remove.effects_active,"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some() || s.ai_remove.object_selection.as_ref().is_some_and(|o|o.seg.is_some()),"selecting":s.ai_remove.selecting,"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
         cmd!(query "aiRemove.previewOriginal", "Show Photo Without AI Draft", [], None, "{enabled:bool} — compare the pending result without accepting it", has_active, |s, p| {
             s.ai_remove_poll();
             if s.ai_remove.draft.is_none() { return Err(error("No current AI result to preview.")); }
@@ -466,7 +499,7 @@ fn run_worker(
     seed: u32,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> std::result::Result<AiEdit, String> {
-    run_worker_with_progress(runtime, backend, package, source, info, d, spot, None, continuous, seed, cancel, &|_| {})
+    run_worker_with_progress(runtime, backend, package, source, info, d, spot, None, Vec::new(), false, continuous, seed, cancel, &|_| {})
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -480,16 +513,19 @@ fn run_worker_with_progress(
     d: DevelopSettings,
     spot: Spot,
     segmented: Option<lightcraft_develop::SegMask>,
+    refinements: Vec<(Spot, bool)>,
+    effects: bool,
     continuous: bool,
     seed: u32,
     cancel: &std::sync::atomic::AtomicBool,
     progress: &dyn Fn(Phase),
 ) -> std::result::Result<AiEdit, String> {
     progress(Phase::Preparing);
-    let prepared = match segmented {
-        Some(seg) => input::prepare_segmented(source, info, d, seg, seed, cancel)?,
+    let mut prepared = match segmented {
+        Some(seg) => input::prepare_segmented_protected(source, info, d, seg, &refinements, seed, cancel)?,
         None => input::prepare(source, info, d, spot, continuous, seed, cancel)?,
     };
+    prepared.request.effects = effects;
     runner::execute_with_progress(prepared, &protocol::ProtocolRunner { runtime, backend, package }, cancel, progress)
 }
 
@@ -629,6 +665,26 @@ printf '%s' '{"version":1,"width":128,"height":96,"model":"test","model_version"
         assert!(result.data.iter().any(|p| p[0] > 0.5));
         assert_eq!(result.get(0, 0), src.get(0, 0));
         assert_eq!(settings, original);
+    }
+    #[test]
+    fn effects_preference_is_transient_discards_draft_and_validates_boolean() {
+        let mut s = Session::with_demo();
+        draft(&mut s);
+        let id = s.active().unwrap();
+        let settings = s.develop_of(id).unwrap();
+        assert_eq!(s.execute("aiRemove.status", &json!({})).unwrap()["includeEffects"], true);
+        assert!(s.execute("aiRemove.effects", &json!({"enabled":"yes"})).is_err());
+        assert!(s.ai_remove.draft.is_some());
+        s.ai_remove.selecting = true;
+        assert!(s.execute("aiRemove.effects", &json!({"enabled":false})).unwrap_err().to_string().contains("object selection"));
+        assert!(s.ai_remove.draft.is_some());
+        assert!(s.ai_remove.selecting);
+        s.ai_remove.selecting = false;
+        s.execute("aiRemove.effects", &json!({"enabled":false})).unwrap();
+        assert!(s.ai_remove.draft.is_none());
+        assert_eq!(s.execute("aiRemove.status", &json!({})).unwrap()["includeEffects"], false);
+        assert!(std::sync::Arc::ptr_eq(&settings, &s.develop_of(id).unwrap()));
+        assert!(s.execute("aiRemove.start", &json!({"includeEffects":42})).is_err());
     }
     #[test]
     fn invalid_backend_preserves_current_draft_and_edits() {

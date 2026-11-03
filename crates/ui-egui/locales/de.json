@@ -3603,5 +3603,9 @@
   "Select an object first.": "Zuerst ein Objekt auswählen.",
   "Click an object to include first.": "Zuerst das gewünschte Objekt anklicken.",
   "Wait for the object selection.": "Bitte warten, bis die Objektauswahl fertig ist.",
-  "The selected mask is empty.": "Die Auswahl ist leer."
+  "The selected mask is empty.": "Die Auswahl ist leer.",
+  "Include shadows and reflections": "Schatten und Spiegelungen einbeziehen",
+  "Shadows and reflections require a supported native ObjectClear runtime.": "Schatten und Spiegelungen erfordern eine unterstützte native ObjectClear-Laufzeit.",
+  "Result ready. Shadows and reflections may extend beyond the object. Review before accepting.": "Ergebnis bereit. Schatten und Spiegelungen können über das Objekt hinausreichen. Vor dem Übernehmen prüfen.",
+  "Shadows and reflections need a supported trusted native ObjectClear runtime.": "Schatten und Spiegelungen benötigen eine unterstützte vertrauenswürdige native ObjectClear-Laufzeit."
 }

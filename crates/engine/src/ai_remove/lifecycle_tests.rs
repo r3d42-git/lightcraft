@@ -25,6 +25,8 @@ fn cancel_keeps_receiver_and_activity_until_ack_and_discards_late_success() {
     let (tx, _, task, edit) = pending(&mut s);
     s.execute("aiRemove.cancel", &json!({})).unwrap();
     s.execute("aiRemove.cancel", &json!({})).unwrap();
+    assert!(s.execute("aiRemove.effects", &json!({"enabled":false})).unwrap_err().to_string().contains("finish"));
+    assert_eq!(s.ai_remove.include_effects, None);
     let status = s.execute("aiRemove.status", &json!({})).unwrap();
     assert_eq!(status["phase"], "cancelling");
     assert_eq!(status["running"], true);

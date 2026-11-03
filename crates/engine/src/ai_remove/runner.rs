@@ -1,5 +1,5 @@
 //! Injectable inference boundary: scene-linear Rec.2020 RGB and binary mask only.
-//! Geometry and persisted alpha are intentionally absent from runner output.
+//! Effects coverage is accepted only for an explicitly authorized invocation.
 use super::{input::PreparedInput, patch};
 use lightcraft_develop::AiEdit;
 use std::{
@@ -23,6 +23,8 @@ pub(super) struct RetouchInput {
     pub rect: [f64; 4],
     pub seed: u32,
     pub steps: u32,
+    pub effects: bool,
+    pub protected: Vec<bool>,
 }
 
 /// Frozen resolved execution identity travels with each invocation, without changing registry v1.
@@ -41,6 +43,9 @@ impl RetouchInput {
         if self.rgb.len() != count || self.mask.len() != count || !self.mask.iter().all(|v| *v == 0 || *v == 255) {
             return Err("Invalid AI inference input or binary mask.".into());
         }
+        if self.protected.len() != count {
+            return Err("Invalid AI protection mask.".into());
+        }
         Ok(())
     }
 }
@@ -56,11 +61,19 @@ pub(super) struct RetouchOutput {
     pub height: usize,
     pub rgb: Vec<[f32; 3]>,
     pub provenance: RetouchProvenance,
+    pub coverage: Option<Vec<u8>>,
 }
 impl RetouchOutput {
     pub fn validate(&self, input: &RetouchInput) -> Result<(), String> {
         if self.width != input.width || self.height != input.height || self.rgb.len() != input.rgb.len() {
             return Err("AI worker returned mismatched dimensions.".into());
+        }
+        match (&self.coverage, input.effects) {
+            (Some(coverage), true)
+                if coverage.len() == input.mask.len()
+                    && coverage.iter().zip(&input.mask).all(|(a, mask)| (*a == 0 || *a == 255) && (*mask == 0 || *a == 255)) => {}
+            (None, false) => {}
+            _ => return Err("AI worker returned invalid or unrequested effects coverage.".into()),
         }
         if self.provenance.model.trim().is_empty() || self.provenance.revision.trim().is_empty() {
             return Err("Worker omitted model provenance or revision.".into());
@@ -121,6 +134,7 @@ mod tests {
                 width: input.width,
                 height: input.height,
                 rgb: vec![[0.75, 0.5, 0.25]; input.rgb.len()],
+                coverage: None,
                 provenance: RetouchProvenance { model: "synthetic".into(), revision: "1".into(), identity: request.identity.clone() },
             })
         }
@@ -135,6 +149,8 @@ mod tests {
                 rect: [0.0, 0.0, 1.0, 1.0],
                 seed: 42,
                 steps: 20,
+                effects: false,
+                protected: vec![false; 2],
             },
             support: Some(AiBrushSupport { geometry: None, continuous: true, points: vec![[0.75, 0.5]], radius: 0.1, feather: 0.0 }),
         }
@@ -161,6 +177,51 @@ mod tests {
         let actual = execute(input, &SyntheticRunner, &AtomicBool::new(false)).unwrap();
         assert_eq!(actual, expected);
         assert_eq!(actual.decode_pixels().unwrap()[0], [0.125, 0.25, 0.5, 0.0]);
+    }
+    #[test]
+    fn effects_coverage_requires_opt_in_contains_selection_and_respects_protection() {
+        let mut input = prepared();
+        let mut output =
+            SyntheticRunner.run(RetouchRequest { input: &input.request, identity: &SyntheticRunner.identity() }, &AtomicBool::new(false)).unwrap();
+        output.coverage = Some(vec![255, 255]);
+        assert!(output.validate(&input.request).is_err(), "unrequested model alpha never authorizes effects");
+        input.request.effects = true;
+        output.coverage = None;
+        assert!(output.validate(&input.request).is_err(), "effects cannot fall back silently to object-only");
+        for invalid in [vec![255], vec![255, 0], vec![128, 255]] {
+            output.coverage = Some(invalid);
+            assert!(output.validate(&input.request).is_err());
+        }
+        output.coverage = Some(vec![255, 255]);
+        input.request.protected[0] = true;
+        let edit = patch::construct(input, output).unwrap();
+        assert_eq!(edit.decode_pixels().unwrap(), vec![[0.125, 0.25, 0.5, 0.0], [0.75, 0.5, 0.25, 1.0]]);
+    }
+    #[test]
+    fn effects_patch_keeps_fused_replacement_rgb_without_second_attention_blend() {
+        let mut input = prepared();
+        input.request.effects = true;
+        let mut output =
+            SyntheticRunner.run(RetouchRequest { input: &input.request, identity: &SyntheticRunner.identity() }, &AtomicBool::new(false)).unwrap();
+        output.coverage = Some(vec![255, 255]);
+        let edit = patch::construct(input, output).unwrap();
+        assert_eq!(edit.decode_pixels().unwrap(), vec![[0.75, 0.5, 0.25, 1.0]; 2]);
+        assert!(edit.support.is_none(), "brush support must not clip extended effects");
+    }
+    #[test]
+    fn mismatched_execution_identity_cannot_authorize_any_patch() {
+        struct WrongIdentity;
+        impl RetouchRunner for WrongIdentity {
+            fn identity(&self) -> RetouchIdentity {
+                SyntheticRunner.identity()
+            }
+            fn run(&self, request: RetouchRequest<'_>, cancel: &AtomicBool) -> Result<RetouchOutput, String> {
+                let mut output = SyntheticRunner.run(request, cancel)?;
+                output.provenance.identity.runtime = "another-runtime".into();
+                Ok(output)
+            }
+        }
+        assert!(execute(prepared(), &WrongIdentity, &AtomicBool::new(false)).unwrap_err().contains("package provenance"));
     }
     #[test]
     fn invalid_runner_dimensions_and_nonfinite_rgb_cannot_construct_patch() {

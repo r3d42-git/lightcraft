@@ -11,7 +11,7 @@ pub struct ObjectSelection {
     pub exclude: Vec<Point>,
     pub margin: f64,
     raw_seg: Option<SegMask>,
-    refinements: Vec<(Spot, bool)>,
+    pub(super) refinements: Vec<(Spot, bool)>,
 }
 
 impl Default for ObjectSelection {
