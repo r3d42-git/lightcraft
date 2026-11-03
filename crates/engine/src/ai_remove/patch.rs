@@ -20,7 +20,7 @@ pub(super) fn construct(prepared: PreparedInput, output: RetouchOutput) -> Resul
             id: 0,
             enabled: true,
             rect: input.rect,
-            support: Some(prepared.support),
+            support: prepared.support,
             width: input.width as u32,
             height: input.height as u32,
             pixels: String::new(),

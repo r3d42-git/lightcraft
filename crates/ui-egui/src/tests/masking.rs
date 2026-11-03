@@ -49,6 +49,61 @@ fn brush_at(h: &mut Headless, x: f64, y: f64) {
     pointer(h, json!([{"kind": "down", "x": x, "y": y}, {"kind": "up", "x": x, "y": y}]));
 }
 
+#[test]
+fn remove_object_mode_does_not_paint_a_brush_when_model_is_missing() {
+    let mut h = detail("panel.remove");
+    h.app.session.segmenter.dir = Some(std::path::PathBuf::from("/nonexistent-lightcraft-object-mask-test"));
+    let before = develop(&h);
+    brush_at(&mut h, 0.5, 0.5);
+    assert!(h.app.session.ai_remove.selection.is_none(), "a click is not silently converted into a painted spot");
+    assert_eq!(develop(&h), before, "selection does not edit the photo");
+    assert!(!h.app.session.segmenter.download_status().running, "no unsolicited model download");
+    if lightcraft_engine::segment::Segmenter::AVAILABLE {
+        assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::SamModel { .. })));
+    }
+}
+
+#[test]
+fn remove_brush_mode_remains_available_without_segmentation_model() {
+    let mut h = detail("panel.remove");
+    click(&mut h, "button:aiRemovePaintMode");
+    brush_at(&mut h, 0.5, 0.5);
+    assert!(h.app.session.ai_remove.selection.is_some());
+    assert!(develop(&h).ai_edits.is_empty(), "paint only selects; removal is explicit");
+}
+
+#[test]
+fn remove_object_brush_refinement_preserves_temporary_selection_and_photo() {
+    let mut h = detail("panel.remove");
+    let mut selection = lightcraft_engine::ai_remove::ObjectSelection::default();
+    let logits: Vec<f32> = (0..32 * 32).map(|i| if (10..22).contains(&(i % 32)) && (10..22).contains(&(i / 32)) { 8.0 } else { -8.0 }).collect();
+    selection.seg = Some(lightcraft_develop::SegMask::from_logits(32, &logits));
+    h.app.session.ai_remove.object_selection = Some(selection);
+    h.settle(SETTLE);
+    let ctx = h.view.ctx.clone();
+    assert!(ctx.data(|d| d.get_temp::<(u64, std::sync::Arc<egui::Mesh>)>(egui::Id::unique("ai-remove-object-mesh"))).is_some());
+    let center = h.app.image_rect.expect("photo").center();
+    let capture = h.app.headless_screenshot(&ctx, true).expect("shadow capture");
+    let pixel = capture.pixels[center.y as usize * capture.size[0] + center.x as usize];
+    assert_ne!(pixel, egui::Color32::WHITE, "shadow capture must not replace the photo with an unknown overlay texture");
+    let before = develop(&h);
+    click(&mut h, "button:aiRemoveSubtractMode");
+    brush_at(&mut h, 0.5, 0.5);
+    let object = h.app.session.ai_remove.object_selection.as_ref().expect("object remains");
+    let mask = object.decoded_mask().expect("mask");
+    assert!(!mask.contains(lightcraft_geom::Point::new(0.5, 0.5)), "subtract brush removes the clicked area");
+    assert!(mask.contains(lightcraft_geom::Point::new(0.4, 0.4)), "rest of object remains selected");
+    assert_eq!(develop(&h), before, "refinement has no develop side effects");
+    assert!(h.app.session.ai_remove.selection.is_none(), "correction did not replace mask with a spot");
+    let old_margin = h.app.session.ai_remove.object_selection.as_ref().unwrap().margin;
+    let response = h.request("ui.clickWidget", json!({"id":"slider:ui.objectMargin", "fx":0.7}), T);
+    assert_eq!(response["ok"], true, "{response}");
+    let selection = h.app.session.ai_remove.object_selection.as_ref().unwrap();
+    assert!(selection.margin > old_margin, "visible margin slider changes the selection");
+    assert!(!selection.decoded_mask().unwrap().contains(lightcraft_geom::Point::new(0.5, 0.5)), "manual subtraction survives margin changes");
+    assert_eq!(develop(&h), before);
+}
+
 /// Evaluate the real composite, with a deterministic embedded sky matte (no AI model required).
 fn mask_coverage(h: &Headless, mask: usize, x: usize, y: usize) -> f32 {
     use lightcraft_pipeline::{

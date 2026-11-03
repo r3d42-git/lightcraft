@@ -5348,6 +5348,7 @@ fn ai_remove_brush_paints_private_mask_without_healing_or_history() {
     let mut h = demo([1200.0, 800.0]);
     let t = Duration::from_secs(10);
     h.request("ui.set", json!({"view":"detail","right":"remove"}), t);
+    h.request("ui.clickWidget", json!({"id":"button:aiRemovePaintMode"}), t);
     h.app.session.execute("spot.add", &json!({"points":[[0.2,0.2]],"size":0.03})).unwrap();
     h.settle(SETTLE);
     let id = h.app.session.active().unwrap();

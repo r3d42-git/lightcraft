@@ -292,10 +292,27 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         if ai_mode {
             ui.add_space(6.0);
+            let mode_key = egui::Id::unique("ai-remove-selection-mode");
+            let mut mode = ui.data(|data| data.get_temp::<u8>(mode_key)).unwrap_or(0);
+            ui.horizontal_wrapped(|ui| {
+                for (value, widget, label) in
+                    [(0, "aiRemoveObjectMode", "Object"), (1, "aiRemovePaintMode", "Brush"), (2, "aiRemoveSubtractMode", "Subtract")]
+                {
+                    if text_button(ui, widget, crate::i18n::tr(label), mode == value).clicked() {
+                        mode = value;
+                        app.gesture = None;
+                        ui.data_mut(|data| data.insert_temp(mode_key, mode));
+                    }
+                }
+            });
             ui.label(
-                egui::RichText::new(crate::i18n::tr("Paint over an object, remove it, then review and accept the preview."))
-                    .size(12.0)
-                    .color(Tokens::get(ui.ctx()).text_dim),
+                egui::RichText::new(crate::i18n::tr(if mode == 0 {
+                    "Click an object. Click again to refine; Option-click to exclude. Then remove and review."
+                } else {
+                    "Paint to refine the selection. Option paints away. Clear the selection to start again."
+                }))
+                .size(12.0)
+                .color(Tokens::get(ui.ctx()).text_dim),
             );
         }
         ui.add_space(4.0);
@@ -361,13 +378,32 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         decimals: 0,
         track: lightcraft_develop::Track::Plain,
     };
+    if ai_mode && let Some(margin) = app.session.ai_remove.object_selection.as_ref().filter(|s| s.seg.is_some()).map(|s| s.margin) {
+        let editable = !app.session.ai_remove.selecting && !app.session.ai_remove.busy();
+        ui.add_enabled_ui(editable, |ui| {
+            let out = slider(ui, &plain("ui.objectMargin", "Selection margin", 0.0, 20.0, 3.0), margin * 1000.0, true, None);
+            if let Some(value) = out.value
+                && let Err(e) = app.run("aiRemove.objectMargin", json!({"size": value / 1000.0}))
+            {
+                app.toast(ui.ctx(), e);
+            }
+        });
+        padded(ui, |ui| {
+            ui.label(
+                egui::RichText::new(crate::i18n::tr("Extend the mask slightly to avoid leaving object edges behind."))
+                    .size(12.0)
+                    .color(Tokens::get(ui.ctx()).text_dim),
+            );
+        });
+    }
+    let object_mode = ai_mode && ui.data(|data| data.get_temp::<u8>(egui::Id::unique("ai-remove-selection-mode"))).unwrap_or(0) == 0;
     let sliders = [
         (plain("ui.removeSize", "Size", 1.0, 250.0, 20.0), "size", (app.ui.remove_size * 1000.0) as f64),
         (plain("ui.removeFeather", "Feather", 0.0, 100.0, 50.0), "feather", app.ui.remove_feather as f64),
         (plain("ui.removeOpacity", "Opacity", 0.0, 100.0, 100.0), "opacity", app.ui.remove_opacity as f64),
     ];
     for (spec, key, v) in sliders {
-        if ai_mode && key != "size" {
+        if ai_mode && (key != "size" || object_mode) {
             continue;
         }
         let out = slider(ui, &spec, v, true, None);
@@ -418,6 +454,9 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             ui.add_space(6.0);
             ui.label(egui::RichText::new(crate::i18n::tr("AI model")).font(t.semibold(13.0)).color(t.text_label));
             let busy = app.session.ai_remove.busy();
+            let selecting = app.session.ai_remove.selecting;
+            let selected =
+                app.session.ai_remove.selection.is_some() || app.session.ai_remove.object_selection.as_ref().is_some_and(|s| s.seg.is_some());
             #[cfg(target_arch = "wasm32")]
             let model_id = String::new();
             #[cfg(not(target_arch = "wasm32"))]
@@ -461,8 +500,10 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             };
             ui.add_space(8.0);
             if ui
-                .add_enabled_ui((app.session.ai_remove.selection.is_some() || sel.is_some()) && !busy && !model_id.is_empty(), |ui| {
-                    ui.add_sized([ui.available_width(), 34.0], egui::Button::new(crate::i18n::tr("Remove selected area")))
+                .add_enabled_ui((selected || sel.is_some()) && !busy && !selecting && !model_id.is_empty(), |ui| {
+                    let response = ui.add_sized([ui.available_width(), 34.0], egui::Button::new(crate::i18n::tr("Remove selected area")));
+                    crate::widgets::register(ui, "aiRemoveStart", response.rect);
+                    response
                 })
                 .inner
                 .clicked()
@@ -470,7 +511,7 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             {
                 app.toast(ui.ctx(), e);
             }
-            if app.session.ai_remove.selection.is_some()
+            if (selected || selecting || app.session.ai_remove.object_selection.is_some())
                 && ui.add_sized([ui.available_width(), 28.0], egui::Button::new(crate::i18n::tr("Clear AI selection"))).clicked()
             {
                 let _ = app.run("aiRemove.clearSelection", json!({}));
@@ -479,6 +520,11 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             if !message.is_empty() {
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new(crate::i18n::tr(&message)).size(12.0).color(t.text_dim));
+            }
+            if selecting {
+                ui.spinner();
+                ui.label(crate::i18n::tr("Selecting object…"));
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
             }
             if busy {
                 ui.spinner();

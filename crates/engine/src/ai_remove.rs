@@ -1,10 +1,12 @@
 //! Local AI Remove jobs. Results are drafts until an explicit accept command.
 use crate::{EngineError, PhotoId, Result, Session};
 use lightcraft_develop::{AiEdit, DevelopSettings, Spot};
+pub use object::{ObjectSelection, SelectionMask};
 use serde_json::{Value, json};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod input;
+mod object;
 #[cfg(not(target_arch = "wasm32"))]
 mod patch;
 #[cfg(not(target_arch = "wasm32"))]
@@ -34,6 +36,9 @@ pub enum Phase {
 
 #[derive(Default)]
 pub struct AiRemove {
+    pub object_selection: Option<ObjectSelection>,
+    pub selecting: bool,
+    selection_revision: u64,
     pub phase: Phase,
     cancel_reason: Option<&'static str>,
     pub message: String,
@@ -111,11 +116,13 @@ impl Session {
         Some((id, d, self.library_generation()))
     }
     pub fn ai_remove_poll(&mut self) {
+        self.segment_ai_remove_poll();
         if self.ai_remove.selection_tag.is_some()
             && !self.ai_remove.selection_tag.as_ref().zip(self.ai_remove_tag()).is_some_and(|((id, settings, generation), (now, current, g))| {
                 *id == now && *generation == g && std::sync::Arc::ptr_eq(settings, &current)
             })
         {
+            self.ai_remove_clear_object();
             self.ai_remove.selection = None;
             self.ai_remove.selection_tag = None;
         }
@@ -204,6 +211,8 @@ impl Session {
     }
 
     fn ai_remove_cancel(&mut self) {
+        self.ai_remove.selection_revision = self.ai_remove.selection_revision.wrapping_add(1);
+        self.ai_remove.selecting = false;
         self.ai_remove.cancel_reason = None;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(job) = &self.ai_remove.job {
@@ -225,13 +234,27 @@ impl Session {
         if self.ai_models.busy() {
             return Err(error("Wait for model management to finish."));
         }
+        if self.ai_remove.selecting {
+            return Err(error("Wait for the object selection."));
+        }
+        let segmented = self.ai_remove.object_selection.as_ref().and_then(|o| o.seg.clone());
+        if self.ai_remove.object_selection.is_some() && segmented.is_none() {
+            return Err(error("Select an object first."));
+        }
+        if let Some(seg) = &segmented
+            && SelectionMask::new(seg).map_err(error)?.is_empty()
+        {
+            return Err(error("The selected mask is empty."));
+        }
         let ai_root = crate::ai_models::root()?;
         let selected = crate::ai_models::selected(&ai_root, model_id.as_deref(), backend)?;
         let backend = selected.backend.clone();
         let selected_id = selected.id.clone();
         let id = self.active().ok_or_else(|| error("Select a photo."))?;
         let d = self.develop_of(id).unwrap_or_default();
-        let (spot, index) = if let Some(selection) = self.ai_remove.selection.clone() {
+        let (spot, index) = if segmented.is_some() {
+            (Spot::default(), None)
+        } else if let Some(selection) = self.ai_remove.selection.clone() {
             (selection, None)
         } else {
             let index = self.active_spot.ok_or_else(|| error("Paint an AI selection first."))?;
@@ -263,6 +286,7 @@ impl Session {
                     info,
                     settings,
                     spot,
+                    segmented,
                     index.is_none(),
                     seed,
                     stopped,
@@ -272,6 +296,9 @@ impl Session {
         })
         .map_err(error)?;
         self.ai_remove = AiRemove {
+            object_selection: self.ai_remove.object_selection.clone(),
+            selecting: false,
+            selection_revision: self.ai_remove.selection_revision,
             phase: Phase::Loading,
             cancel_reason: None,
             message: "AI Remove is working locally…".into(),
@@ -291,10 +318,14 @@ impl Session {
 pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
     use crate::cmd::{always, cmd, has_active};
     vec![
+        cmd!(query "aiRemove.objectPoint", "Select AI Object", [], None, "{x,y,exclude?:bool} — refine a temporary object selection", has_active, |s, p| s.ai_remove_object_point(p)),
+        cmd!(query "aiRemove.objectMargin", "Object Selection Margin", [], None, "{size:0..0.02} — visible margin as a fraction of the long edge", has_active, |s, p| s.ai_remove_object_margin(p)),
+        cmd!(query "aiRemove.refineBrush", "Refine AI Selection", [], None, "{points:[[x,y],…],size?,subtract?:bool}", has_active, |s, p| s.ai_remove_refine_brush(p)),
         cmd!(query "aiRemove.select", "Paint AI Selection", [], None, "{points:[[x,y],…],size?,feather?,opacity?} — temporary AI mask; no photo edit", has_active, |s, p| {
             let selection = selection_param(p)?;
             let tag = s.ai_remove_tag().ok_or_else(|| error("Select a photo."))?;
             s.ai_remove_cancel();
+            s.ai_remove_clear_object();
             s.ai_remove.selection = Some(selection);
             s.ai_remove.selection_tag = Some(tag);
             if !s.ai_remove.busy() { s.ai_remove.phase = Phase::Idle; }
@@ -303,6 +334,7 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
         }),
         cmd!(query "aiRemove.clearSelection", "Clear AI Selection", [], None, "{} — discard the temporary AI mask and draft", always, |s, _| {
             s.ai_remove_cancel();
+            s.ai_remove_clear_object();
             s.ai_remove.selection = None;
             s.ai_remove.selection_tag = None;
             Ok(json!({}))
@@ -313,7 +345,7 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             #[cfg(not(target_arch = "wasm32"))] { s.ai_remove_start(backend, model_id) }
             #[cfg(target_arch = "wasm32")] { let _ = (s, backend, model_id); Err(error("Local AI Remove is unavailable in the browser.")) }
         }),
-        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some(),"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
+        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some() || s.ai_remove.object_selection.as_ref().is_some_and(|o|o.seg.is_some()),"selecting":s.ai_remove.selecting,"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
         cmd!(query "aiRemove.previewOriginal", "Show Photo Without AI Draft", [], None, "{enabled:bool} — compare the pending result without accepting it", has_active, |s, p| {
             s.ai_remove_poll();
             if s.ai_remove.draft.is_none() { return Err(error("No current AI result to preview.")); }
@@ -336,6 +368,7 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             s.set_develop(id, d, "AI Remove")?;
             s.active_spot = None;
             s.ai_remove_cancel();
+            s.ai_remove_clear_object();
             s.ai_remove.selection = None;
             s.ai_remove.selection_tag = None;
             s.ai_remove.phase = Phase::Idle;
@@ -433,7 +466,7 @@ fn run_worker(
     seed: u32,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> std::result::Result<AiEdit, String> {
-    run_worker_with_progress(runtime, backend, package, source, info, d, spot, continuous, seed, cancel, &|_| {})
+    run_worker_with_progress(runtime, backend, package, source, info, d, spot, None, continuous, seed, cancel, &|_| {})
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -446,13 +479,17 @@ fn run_worker_with_progress(
     info: lightcraft_pipeline::SourceInfo,
     d: DevelopSettings,
     spot: Spot,
+    segmented: Option<lightcraft_develop::SegMask>,
     continuous: bool,
     seed: u32,
     cancel: &std::sync::atomic::AtomicBool,
     progress: &dyn Fn(Phase),
 ) -> std::result::Result<AiEdit, String> {
     progress(Phase::Preparing);
-    let prepared = input::prepare(source, info, d, spot, continuous, seed, cancel)?;
+    let prepared = match segmented {
+        Some(seg) => input::prepare_segmented(source, info, d, seg, seed, cancel)?,
+        None => input::prepare(source, info, d, spot, continuous, seed, cancel)?,
+    };
     runner::execute_with_progress(prepared, &protocol::ProtocolRunner { runtime, backend, package }, cancel, progress)
 }
 

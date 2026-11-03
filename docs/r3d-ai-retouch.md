@@ -1,5 +1,44 @@
 # Aktueller Einrichtungsweg
 
+## Objekte per Klick auswählen (Entwicklungsstand 03.11.2026)
+
+Im Entfernen-Werkzeug mit aktiver **KI-Entfernung** ist **Objekt** die
+Standardauswahl. Ein Klick startet die lokale SAM-3-Segmentierung; weitere Klicks
+verfeinern dasselbe Objekt, ⌥-Klicks schließen Bereiche aus. Die cyanfarbene
+Maske zeigt die Auswahl einschließlich eines kleinen Entfernungsrands.
+**Auswahlrand** vergrößert oder verkleinert diesen sichtbaren Rand; er verhindert,
+dass enge Objektkonturen bei der Entfernung stehen bleiben. **Pinsel** ergänzt sie, **Subtrahieren** oder ⌥ beim Malen
+nimmt Bereiche heraus. Pinselkorrekturen bleiben bei späteren Objektklicks
+erhalten. **KI-Auswahl löschen** beginnt eine neue Auswahl.
+
+Erst **Auswahl entfernen** startet das gewählte Retuschemodell;
+Vorschau, Verwerfen und Übernehmen bleiben der bestehende Ablauf. Die Auswahl
+selbst erzeugt weder eine lokale Entwicklungmaske noch einen Katalogeintrag.
+Foto-, Bibliotheks- und Einstellungswechsel verwerfen veraltete Auswahlaufträge.
+Leertaste für Verschieben/Zoom bleibt auch im Objektmodus verfügbar.
+
+SAM 3 läuft über die vorhandene Rust/Candle-Anbindung (Metal auf dem Mac).
+Modellinstallation und Lizenz: [ai-masks.md](ai-masks.md). Die Gewichte sind
+optional; ohne sie bleibt **Pinsel** nutzbar. Ein fehlendes Modell öffnet den
+vorhandenen Einrichtungsdialog und lädt nichts ungefragt herunter.
+
+Segmentierung sieht das entwickelte, objektivkorrigierte Foto einschließlich
+lokaler Anpassungen. Die Engine bildet die Auswahl mit der aufgelösten
+Objektiv-/Perspektivabbildung in den ursprünglichen Bildraum ab. Gespeichert wird
+wie bisher ein Rasterpatch ohne spätere Modellabhängigkeit; Katalogformat und
+bestehende Retuschen bleiben unverändert. Bei kleinen Objekten folgt auf die
+sofort sichtbare Grobmaske automatisch eine Detailanalyse des Objektausschnitts.
+Manuelle Korrekturen behalten diesen Ausschnitt mit einem Raster bis 1024² bei;
+Striche außerhalb erweitern ihn. Die gespeicherte Retusche bleibt auf maximal
+1024 Pixel Kantenlänge begrenzt. Feine Kanten und unterschiedliche Motive
+benötigen weiterhin eine praktische Qualitätsprüfung.
+
+Steuerbefehle: `aiRemove.objectPoint {x,y,exclude?}`,
+`aiRemove.refineBrush {points:[[x,y],…],size,subtract?}`,
+`aiRemove.objectMargin {size}` (0…0,02 der langen Bildkante, Standard 0,003),
+`aiRemove.clearSelection {}`. `aiRemove.status` meldet zusätzlich `selecting`;
+Entfernen ist während der Auswahlberechnung gesperrt.
+
 Alle drei Modelle laufen seit 31.10.2026 in der lokalen App nativ. Die Anleitung
 für getrennte, selbst geladene Modelle steht in [r3d-ai-install.md](r3d-ai-install.md).
 Die unten dokumentierten Python-Prototypen und offenen lokalen Abnahmen sind

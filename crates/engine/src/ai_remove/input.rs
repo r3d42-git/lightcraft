@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) struct PreparedInput {
     pub request: runner::RetouchInput,
-    pub support: AiBrushSupport,
+    pub support: Option<AiBrushSupport>,
 }
 
 pub(super) fn prepare(
@@ -17,6 +17,35 @@ pub(super) fn prepare(
     seed: u32,
     cancel: &AtomicBool,
 ) -> std::result::Result<PreparedInput, String> {
+    prepare_inner(source, info, d, spot, None, continuous, seed, cancel)
+}
+
+pub(super) fn prepare_segmented(
+    source: crate::media::SourceRef,
+    info: lightcraft_pipeline::SourceInfo,
+    d: DevelopSettings,
+    seg: lightcraft_develop::SegMask,
+    seed: u32,
+    cancel: &AtomicBool,
+) -> Result<PreparedInput, String> {
+    let mask = super::SelectionMask::new(&seg)?;
+    if mask.is_empty() {
+        return Err("The selected mask is empty.".into());
+    }
+    prepare_inner(source, info, d, Spot::default(), Some(mask), true, seed, cancel)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_inner(
+    source: crate::media::SourceRef,
+    info: lightcraft_pipeline::SourceInfo,
+    d: DevelopSettings,
+    spot: Spot,
+    segmented: Option<super::SelectionMask>,
+    continuous: bool,
+    seed: u32,
+    cancel: &AtomicBool,
+) -> Result<PreparedInput, String> {
     let decoded = source.load_source()?;
     if decoded.from_proxy {
         return Err("AI Remove needs the original photo online.".into());
@@ -25,7 +54,7 @@ pub(super) fn prepare(
     let full = edited.as_ref();
     let frame = lightcraft_pipeline::frame_for(full, decoded.info.as_ref().unwrap_or(&info), &d, false);
     let radius = spot.size * full.width.max(full.height) as f64;
-    if !radius.is_finite() || radius <= 0.0 || spot.points.is_empty() || spot.points.len() > 4096 {
+    if segmented.is_none() && (!radius.is_finite() || radius <= 0.0 || spot.points.is_empty() || spot.points.len() > 4096) {
         return Err("Invalid brush mask.".into());
     }
     let mut bounds = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
@@ -38,6 +67,10 @@ pub(super) fn prepare(
         bounds[1] = bounds[1].min(y - radius);
         bounds[2] = bounds[2].max(x + radius);
         bounds[3] = bounds[3].max(y + radius);
+    }
+    if let Some(mask) = &segmented {
+        let b = mask.selected_bounds();
+        bounds = [b[0] * frame.ow, b[1] * frame.oh, b[2] * frame.ow, b[3] * frame.oh];
     }
     // Bound the entire transformed brush rectangle through the nonlinear warp. Mapping
     // only centres (or a few boundary points) could clip curved capsule support.
@@ -73,14 +106,24 @@ pub(super) fn prepare(
             (x0 + ((i % w) as f64 + 0.5) * (x1 - x0) / w as f64) / full.width as f64,
             (y0 + ((i / w) as f64 + 0.5) * (y1 - y0) / h as f64) / full.height as f64,
         ];
-        if brush.alpha(point, full.width, full.height) > 0.0 {
+        if segmented.as_ref().map_or_else(
+            || brush.alpha(point, full.width, full.height) > 0.0,
+            |mask| {
+                brush
+                    .brush_point(point, full.width, full.height)
+                    .is_some_and(|p| mask.contains(lightcraft_geom::Point::new(p[0] / frame.ow, p[1] / frame.oh)))
+            },
+        ) {
             *m = 255;
         }
     }
     if !mask.contains(&255) {
         return Err("The selected mask is empty.".into());
     }
-    Ok(PreparedInput { request: runner::RetouchInput { width: w, height: h, rgb: src.data, mask, rect, seed, steps: 20 }, support })
+    Ok(PreparedInput {
+        request: runner::RetouchInput { width: w, height: h, rgb: src.data, mask, rect, seed, steps: 20 },
+        support: segmented.is_none().then_some(support),
+    })
 }
 
 /// Use equal context on both axes, shifting at edges instead of clipping it.
@@ -106,4 +149,82 @@ pub(super) fn context_rect(bounds: [f64; 4], width: usize, height: usize) -> Opt
     let x = (((left + right) * 0.5 - w * 0.5).floor()).clamp(0.0, width - w);
     let y = (((top + bottom) * 0.5 - h * 0.5).floor()).clamp(0.0, height - h);
     Some([x, y, x + w, y + h])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lightcraft_develop::{EmbeddedLens, EmbeddedWarp, SegMask};
+    use lightcraft_geom::Point;
+    fn source(info: lightcraft_pipeline::SourceInfo) -> crate::media::SourceRef {
+        crate::media::SourceRef::Loaded(Box::new(crate::media::DecodedSource::new(
+            std::sync::Arc::new(lightcraft_raster::Rgb32f::from_fn(128, 96, |_, _| [0.1, 0.2, 0.3])),
+            Some(info),
+        )))
+    }
+    #[test]
+    fn segmented_source_mask_uses_resolved_lens_and_persisted_alpha_preserves_outside_pixels() {
+        let info = lightcraft_pipeline::SourceInfo {
+            lens: Some(EmbeddedLens {
+                warp: Some(EmbeddedWarp { planes: [[1.0, 0.22, -0.015, 0.0, 0.0, 0.0]; 3], center: Point::new(0.5, 0.5), radius: 0.5 }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut d = DevelopSettings::default();
+        d.optics.lens_profile = true;
+        d.optics.remove_ca = true;
+        d.geometry.vertical = 12.;
+        d.geometry.horizontal = -8.;
+        d.orientation = lightcraft_geom::Orientation::Rotate90;
+        let image = lightcraft_raster::Rgb32f::from_fn(128, 96, |_, _| [0.1, 0.2, 0.3]);
+        let frame = lightcraft_pipeline::frame_for(&image, &info, &d, false);
+        assert!(frame.warp.as_ref().unwrap().lens.is_some());
+        let logits: Vec<f32> = (0..64 * 64).map(|i| if (20..38).contains(&(i % 64)) && (14..45).contains(&(i / 64)) { 8. } else { -8. }).collect();
+        let seg = SegMask::from_logits(64, &logits);
+        let mask = super::super::SelectionMask::new(&seg).unwrap();
+        let prepared = prepare_segmented(source(info.clone()), info, d.clone(), seg, 7, &AtomicBool::new(false)).unwrap();
+        assert!(prepared.support.is_none());
+        assert_eq!(prepared.request.rect, [0., 0., 1., 1.]);
+        let support = lightcraft_pipeline::ai_edits::brush_support(&frame, &Spot::default(), true);
+        let mapping = lightcraft_pipeline::ai_edits::BrushSupport::new(&support, 128, 96);
+        let mut different_from_unwarped = 0;
+        for (i, a) in prepared.request.mask.iter().enumerate() {
+            let source = [((i % 128) as f64 + 0.5) / 128., ((i / 128) as f64 + 0.5) / 96.];
+            let expected = mapping.brush_point(source, 128, 96).is_some_and(|p| mask.contains(Point::new(p[0] / frame.ow, p[1] / frame.oh)));
+            assert_eq!(*a == 255, expected);
+            if expected != mask.contains(Point::new(source[0], source[1])) {
+                different_from_unwarped += 1;
+            }
+        }
+        assert!(different_from_unwarped > 100);
+        let authorization = prepared.request.mask.clone();
+        let output = super::super::runner::RetouchOutput {
+            width: 128,
+            height: 96,
+            rgb: vec![[0.8, 0.7, 0.6]; 128 * 96],
+            provenance: super::super::runner::RetouchProvenance {
+                model: "test".into(),
+                revision: "1".into(),
+                identity: super::super::runner::RetouchIdentity { model: "test".into(), runtime: Default::default(), adapter: "lama" },
+            },
+        };
+        let edit = super::super::patch::construct(prepared, output).unwrap();
+        let saved: lightcraft_develop::AiEdit = serde_json::from_value(serde_json::to_value(edit).unwrap()).unwrap();
+        d.ai_edits.push(saved);
+        let result = lightcraft_pipeline::ai_edits::source_with_edits(&image, &d);
+        for (i, p) in result.data.iter().enumerate() {
+            assert_eq!(*p, if authorization[i] == 0 { [0.1, 0.2, 0.3] } else { [0.8, 0.7, 0.6] });
+        }
+    }
+    #[test]
+    fn empty_or_corrupt_segment_masks_are_rejected() {
+        for seg in [
+            SegMask::from_logits(1, &[-8.]),
+            SegMask { side: 1025, data: String::new(), rect: None },
+            SegMask { side: 1, data: "bad".into(), rect: None },
+        ] {
+            assert!(prepare_segmented(source(Default::default()), Default::default(), Default::default(), seg, 0, &AtomicBool::new(false)).is_err());
+        }
+    }
 }

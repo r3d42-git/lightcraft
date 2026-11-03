@@ -3587,5 +3587,19 @@
   "ObjectClear native runtime: S-Lab License 1.0, non-commercial use.": "Native ObjectClear-Laufzeit: S-Lab-Lizenz 1.0, nichtkommerzielle Nutzung.",
   "Runtime details": "Laufzeitdetails",
   "Native runtime (Rust)": "Native Laufzeit (Rust)",
-  "Reference runtime (Python)": "Referenzlaufzeit (Python)"
+  "Reference runtime (Python)": "Referenzlaufzeit (Python)",
+  "Click an object. Click again to refine; Option-click to exclude. Then remove and review.": "Objekt anklicken. Weitere Klicks verfeinern, ⌥-Klick zieht Bereiche ab. Danach entfernen und prüfen.",
+  "Paint to refine the selection. Option paints away. Clear the selection to start again.": "Auswahl mit dem Pinsel ergänzen. Mit ⌥ Bereiche abziehen. Für ein neues Objekt die Auswahl leeren.",
+  "Selecting object…": "Objekt wird ausgewählt …",
+  "Object selection margin updated.": "Auswahlrand angepasst.",
+  "Object margin must be between 0 and 0.02.": "Der Auswahlrand muss zwischen 0 und 20 liegen.",
+  "Selection margin": "Auswahlrand",
+  "Extend the mask slightly to avoid leaving object edges behind.": "Die Maske etwas erweitern, damit keine Objektränder zurückbleiben.",
+  "Object selected. Refining object detail…": "Objekt ausgewählt. Details werden verfeinert…",
+  "Object selected. Refine or run AI Remove.": "Objekt ausgewählt. Maske verfeinern oder KI-Entfernung starten.",
+  "Object selection refined.": "Objektauswahl angepasst.",
+  "Select an object first.": "Zuerst ein Objekt auswählen.",
+  "Click an object to include first.": "Zuerst das gewünschte Objekt anklicken.",
+  "Wait for the object selection.": "Bitte warten, bis die Objektauswahl fertig ist.",
+  "The selected mask is empty.": "Die Auswahl ist leer."
 }

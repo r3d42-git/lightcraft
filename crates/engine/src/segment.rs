@@ -56,6 +56,8 @@ pub struct Click {
 pub(crate) enum Tag {
     /// A command waiting for the result itself.
     Wait,
+    /// Transient Remove selection; never changes develop masks.
+    AiRemove { revision: u64, detail: bool },
     /// Load the model and encode the photo ahead of the first click.
     Prepare,
     /// Object clicks on component `comp` of mask `mask`.
@@ -134,6 +136,8 @@ pub struct Segmenter {
     download: download::Downloader,
     #[cfg(feature = "sam")]
     results: (std::sync::mpsc::Sender<worker::Outcome>, std::sync::mpsc::Receiver<worker::Outcome>),
+    #[cfg(feature = "sam")]
+    remove_results: (std::sync::mpsc::Sender<worker::Outcome>, std::sync::mpsc::Receiver<worker::Outcome>),
 }
 
 // (derivable only without the `sam` feature: the results channel has no Default)
@@ -152,6 +156,8 @@ impl Default for Segmenter {
             download: download::Downloader::default(),
             #[cfg(feature = "sam")]
             results: std::sync::mpsc::channel(),
+            #[cfg(feature = "sam")]
+            remove_results: std::sync::mpsc::channel(),
         }
     }
 }
@@ -410,7 +416,11 @@ impl Session {
         region: Option<[f64; 4]>,
     ) -> Result<worker::Job, String> {
         let dir = self.segmenter.model_dir()?;
-        let (key, mut d) = self.segment_key(id).ok_or("no such photo")?;
+        let (mut key, mut d) = self.segment_key(id).ok_or("no such photo")?;
+        if matches!(tag, Tag::AiRemove { .. }) {
+            d = (*self.develop_of(id).ok_or("no such photo")?).clone();
+            key = mix(key, d.hash64()); // Include normal local adjustments in the model input.
+        }
         let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
         let missing = match &p.source {
             lightcraft_catalog::Source::File { path } if !std::path::Path::new(path).exists() => Some(path.clone()),
@@ -456,6 +466,61 @@ impl Session {
         let reply = self.segmenter.results.0.clone();
         let job = self.segment_job(id, kind, tag, reply, region)?;
         self.segmenter.worker.submit(job)
+    }
+
+    /// Queue independent Remove clicks through the existing model/cache worker.
+    pub(crate) fn segment_ai_remove_later(&mut self, id: PhotoId, revision: u64, include: &[Point], exclude: &[Point]) -> Result<(), String> {
+        #[cfg(feature = "sam")]
+        {
+            let reply = self.segmenter.remove_results.0.clone();
+            let job = self.segment_job(
+                id,
+                worker::Kind::Clicks(Self::model_clicks(&clicks_of(include, exclude))),
+                Tag::AiRemove { revision, detail: false },
+                reply,
+                None,
+            )?;
+            self.segmenter.worker.submit(job)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, revision, include, exclude);
+            Err("AI masks are not available in this build".into())
+        }
+    }
+
+    #[cfg(feature = "sam")]
+    fn segment_ai_remove_detail(&mut self, revision: u64, region: [f64; 4]) -> Result<(), String> {
+        let photo = self.active().ok_or("No active photo.")?;
+        let selection = self.ai_remove.object_selection.as_ref().ok_or("Selection cleared.")?;
+        let prompt = Prompt::Clicks(clicks_of(&selection.include, &selection.exclude));
+        let reply = self.segmenter.remove_results.0.clone();
+        let job = self.segment_job(photo, worker::Kind::Detail { prompt, region }, Tag::AiRemove { revision, detail: true }, reply, Some(region))?;
+        self.segmenter.worker.submit(job)
+    }
+
+    /// Drain only Remove results: normal Masking notices/detail scheduling remain owned
+    /// by `segment_poll` and its UI caller.
+    pub(crate) fn segment_ai_remove_poll(&mut self) {
+        #[cfg(feature = "sam")]
+        {
+            let done: Vec<_> = self.segmenter.remove_results.1.try_iter().collect();
+            for outcome in done {
+                if outcome.superseded {
+                    continue;
+                }
+                if let Tag::AiRemove { revision, detail } = outcome.tag {
+                    if let Some(region) = self.ai_remove_apply_seg(revision, detail, outcome.result)
+                        && let Err(e) = self.segment_ai_remove_detail(revision, region)
+                    {
+                        let _ = self.ai_remove_apply_seg(revision, true, Err(e));
+                    }
+                    if let Some(notice) = outcome.notice {
+                        self.ai_remove.message.push_str(&format!(" {notice}"));
+                    }
+                }
+            }
+        }
     }
 
     /// Start preparing photo `id` for AI masks (load the model, encode the image), so the first
@@ -626,6 +691,9 @@ impl Session {
         polled.messages.extend(o.notice);
         match o.tag {
             Tag::Wait => {}
+            Tag::AiRemove { revision, detail } => {
+                let _ = self.ai_remove_apply_seg(revision, detail, o.result);
+            }
             Tag::Prepare => {
                 if let Err(e) = o.result {
                     polled.messages.push(e);
@@ -727,6 +795,24 @@ mod tests {
         let polled = s.segment_poll();
         assert_eq!(polled.messages, vec![worker::GPU_FAILED.to_string()]);
         assert!(s.segment_poll().messages.is_empty(), "once");
+    }
+
+    #[cfg(feature = "sam")]
+    #[test]
+    fn remove_poll_does_not_consume_normal_masking_results_or_notices() {
+        let mut s = Session::with_demo();
+        s.segmenter
+            .results
+            .0
+            .send(worker::Outcome {
+                tag: Tag::Prepare,
+                result: Err("normal masking error".into()),
+                superseded: false,
+                notice: Some("normal notice".into()),
+            })
+            .unwrap();
+        s.ai_remove_poll();
+        assert_eq!(s.segment_poll().messages, vec!["normal notice".to_string(), "normal masking error".to_string()]);
     }
 
     fn seg_box(side: usize, x0: usize, y0: usize, x1: usize, y1: usize) -> SegMask {

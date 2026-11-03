@@ -188,8 +188,18 @@ fn screen_reader_increment_moves_a_slider() {
 /// Tab alone, and the arrow keys then adjust them.
 #[test]
 fn canvas_tool_sliders_are_reachable_with_tab() {
-    for right in [RightPanel::Crop, RightPanel::Remove] {
+    for (right, object) in [(RightPanel::Crop, false), (RightPanel::Remove, false), (RightPanel::Remove, true)] {
         let mut h = harness(ViewMode::Detail, right);
+        if right == RightPanel::Remove {
+            if object {
+                let mut selection = lightcraft_engine::ai_remove::ObjectSelection::default();
+                selection.seg = Some(lightcraft_develop::SegMask::from_logits(2, &[8.0; 4]));
+                h.state_mut().session.ai_remove.object_selection = Some(selection);
+            } else {
+                h.get_by_label("Brush").click();
+            }
+            h.run_steps(4);
+        }
         let mut reached = None;
         for _ in 0..300 {
             h.key_press(egui::Key::Tab);
@@ -201,6 +211,9 @@ fn canvas_tool_sliders_are_reachable_with_tab() {
             }
         }
         let (name, before) = reached.unwrap_or_else(|| panic!("{right:?}: no slider takes the focus with Tab"));
+        if object {
+            assert_eq!(name, "Selection margin", "object mode exposes its actual selection control");
+        }
         h.key_press(egui::Key::ArrowUp);
         h.run_steps(4);
         let after = slider_value(&h, &name);

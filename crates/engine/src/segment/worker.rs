@@ -263,6 +263,7 @@ struct State {
 fn supersedes(later: &Job, job: &Job) -> bool {
     match (&later.tag, &job.tag) {
         (Tag::Prepare, Tag::Prepare) => later.key == job.key,
+        (Tag::AiRemove { .. }, Tag::AiRemove { .. }) => true,
         (Tag::Clicks { photo: a, mask: am, comp: ac, .. }, Tag::Clicks { photo: b, mask: bm, comp: bc, .. }) => (a, am, ac) == (b, bm, bc),
         (Tag::Detail { photo: a, mask: am, comp: ac, .. }, Tag::Detail { photo: b, mask: bm, comp: bc, .. }) => (a, am, ac) == (b, bm, bc),
         _ => false,

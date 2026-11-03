@@ -141,8 +141,44 @@ pub(super) fn remove_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &
 
 /// Paint a private AI mask; classic healing spots and their source handles are untouched.
 fn ai_selection_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Response, map: &CanvasMap) {
-    let radius = app.ui.remove_size * map.rect.width().max(map.rect.height());
+    let mode = ui.data(|data| data.get_temp::<u8>(egui::Id::unique("ai-remove-selection-mode"))).unwrap_or(0);
+    let origin = map.screen(Point::new(0.0, 0.0));
+    let long = map.screen(Point::new(1.0, 0.0)).distance(origin).max(map.screen(Point::new(0.0, 1.0)).distance(origin));
+    let radius = app.ui.remove_size * long;
     let p = ui.painter_at(app.canvas_rect.unwrap_or(map.rect));
+    if app.session.ai_remove.draft.is_none()
+        && let Some(selection) = &app.session.ai_remove.object_selection
+    {
+        if let Some(seg) = &selection.seg {
+            draw_object_selection(ui, &p, map, seg);
+        }
+        for (points, color) in [(&selection.include, Color32::from_rgb(80, 230, 120)), (&selection.exclude, Color32::from_rgb(255, 95, 90))] {
+            for point in points {
+                p.circle_filled(map.screen(*point), 4.0, color);
+                p.circle_stroke(map.screen(*point), 4.0, Stroke::new(1.0, Color32::WHITE));
+            }
+        }
+    }
+    if mode == 0 {
+        if app.session.ai_remove.draft.is_none()
+            && let Some(selection) = &app.session.ai_remove.selection
+        {
+            draw_ai_selection(ui, &p, map, &selection.points, selection.size as f32 * long);
+        }
+        if resp.hover_pos().is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        if resp.clicked()
+            && let Some(q) = resp.interact_pointer_pos().filter(|q| map.rect.contains(*q))
+        {
+            let point = map.norm(q);
+            let exclude = ui.input(|i| i.modifiers.alt);
+            if let Err(e) = app.run_typed("aiRemove.objectPoint", json!({"x":point.x,"y":point.y,"exclude":exclude})) {
+                app.ai_error(ui.ctx(), e, None);
+            }
+        }
+        return;
+    }
     if let Some(q) = resp.hover_pos().filter(|p| map.rect.contains(*p)) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::None);
         p.circle_stroke(q, radius, Stroke::new(1.0, Color32::from_rgb(35, 220, 240)));
@@ -171,9 +207,7 @@ fn ai_selection_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui:
     let selection = app.session.ai_remove.selection.as_ref();
     let painted = match &app.gesture {
         Some(Gesture::Spot { points }) => Some((points.as_slice(), radius)),
-        _ if app.session.ai_remove.draft.is_none() => {
-            selection.map(|s| (s.points.as_slice(), s.size as f32 * map.rect.width().max(map.rect.height())))
-        }
+        _ if app.session.ai_remove.draft.is_none() => selection.map(|s| (s.points.as_slice(), s.size as f32 * long)),
         _ => None,
     };
     if let Some((points, radius)) = painted {
@@ -187,13 +221,71 @@ fn ai_selection_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui:
             .filter(|p| p.x.is_finite() && p.y.is_finite() && (0.0..=1.0).contains(&p.x) && (0.0..=1.0).contains(&p.y))
             .map(|p| [p.x, p.y])
             .collect();
+        let subtract = mode == 2 || ui.input(|i| i.modifiers.alt);
+        let refinement = app.session.ai_remove.object_selection.is_some() || subtract;
         if let Err(e) = app.run(
-            "aiRemove.select",
-            json!({"points":points,"size":app.ui.remove_size,"feather":app.ui.remove_feather,"opacity":app.ui.remove_opacity}),
+            if refinement { "aiRemove.refineBrush" } else { "aiRemove.select" },
+            json!({"points":points,"size":app.ui.remove_size,"feather":app.ui.remove_feather,"opacity":app.ui.remove_opacity,"subtract":subtract}),
         ) {
             app.toast(ui.ctx(), e);
         }
     }
+}
+
+/// Vector row spans share the click coordinate map and work in both native and
+/// shadow screenshots: no texture handle from a different egui context is reused.
+fn draw_object_selection(ui: &egui::Ui, painter: &egui::Painter, map: &CanvasMap, seg: &lightcraft_develop::SegMask) {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    seg.data.hash(&mut hash);
+    seg.side.hash(&mut hash);
+    for v in seg.rect.unwrap_or([0.0, 0.0, 1.0, 1.0]) {
+        v.to_bits().hash(&mut hash);
+    }
+    for n in [Point::new(0.0, 0.0), Point::new(1.0, 0.0), Point::new(0.0, 1.0)] {
+        let q = map.screen(n);
+        q.x.to_bits().hash(&mut hash);
+        q.y.to_bits().hash(&mut hash);
+    }
+    let hash = hash.finish();
+    let key = egui::Id::unique("ai-remove-object-mesh");
+    let cached = ui.data(|data| data.get_temp::<(u64, std::sync::Arc<egui::Mesh>)>(key));
+    let mesh = match cached {
+        Some((old, mesh)) if old == hash => mesh,
+        _ => {
+            let Some(logits) = seg.logits() else { return };
+            let Some(rect) = seg.bounds() else { return };
+            let side = seg.side as usize;
+            let color = Color32::from_rgba_unmultiplied(20, 210, 235, 100);
+            let screen = |x: usize, y: usize| {
+                map.screen(Point::new(rect[0] + x as f64 / side as f64 * (rect[2] - rect[0]), rect[1] + y as f64 / side as f64 * (rect[3] - rect[1])))
+            };
+            let mut mesh = egui::Mesh::default();
+            for (y, row) in logits.chunks_exact(side).enumerate() {
+                let mut x = 0;
+                while x < side {
+                    if row.get(x).is_none_or(|v| *v <= 0.0) {
+                        x += 1;
+                        continue;
+                    }
+                    let first = x;
+                    while x < side && row.get(x).is_some_and(|v| *v > 0.0) {
+                        x += 1;
+                    }
+                    let index = mesh.vertices.len() as u32;
+                    for q in [screen(first, y), screen(x, y), screen(x, y + 1), screen(first, y + 1)] {
+                        mesh.colored_vertex(q, color);
+                    }
+                    mesh.add_triangle(index, index + 1, index + 2);
+                    mesh.add_triangle(index, index + 2, index + 3);
+                }
+            }
+            let mesh = std::sync::Arc::new(mesh);
+            ui.data_mut(|data| data.insert_temp(key, (hash, mesh.clone())));
+            mesh
+        }
+    };
+    painter.add(egui::Shape::Mesh(mesh));
 }
 
 /// A union mask in one texture: overlapping capsules never accumulate opacity.

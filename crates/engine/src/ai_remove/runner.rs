@@ -136,7 +136,7 @@ mod tests {
                 seed: 42,
                 steps: 20,
             },
-            support: AiBrushSupport { geometry: None, continuous: true, points: vec![[0.75, 0.5]], radius: 0.1, feather: 0.0 },
+            support: Some(AiBrushSupport { geometry: None, continuous: true, points: vec![[0.75, 0.5]], radius: 0.1, feather: 0.0 }),
         }
     }
     #[test]
@@ -147,7 +147,7 @@ mod tests {
                 id: 0,
                 enabled: true,
                 rect: input.request.rect,
-                support: Some(input.support.clone()),
+                support: input.support.clone(),
                 width: 2,
                 height: 1,
                 pixels: String::new(),
@@ -245,7 +245,7 @@ mod tests {
         assert_eq!(prepared.request.rect, [0.0, 0.0, 1.0, 1.0]);
         assert!(prepared.request.rgb.iter().all(|p| *p == [0.5, 0.25, 0.125]));
         assert_eq!(prepared.request.seed, 7);
-        let geometry = prepared.support.geometry.as_ref().unwrap();
+        let geometry = prepared.support.as_ref().unwrap().geometry.as_ref().unwrap();
         assert_eq!(geometry.orientation, lightcraft_geom::Orientation::Rotate90);
         assert_eq!(geometry.source_size, [16, 12]);
     }
