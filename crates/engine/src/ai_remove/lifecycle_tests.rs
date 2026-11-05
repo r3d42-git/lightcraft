@@ -6,7 +6,7 @@ use std::sync::{
     mpsc::{Sender, channel},
 };
 
-type Reply = std::result::Result<AiEdit, String>;
+type Reply = std::result::Result<JobResult, String>;
 fn pending(s: &mut Session) -> (Sender<Reply>, Sender<Phase>, crate::activity::TaskGuard, AiEdit) {
     tests::draft(s);
     let edit = s.ai_remove.draft.take().unwrap();
@@ -36,7 +36,7 @@ fn cancel_keeps_receiver_and_activity_until_ack_and_discards_late_success() {
     assert!(s.activity.list()[0].cancelling);
     assert!(s.execute("aiRemove.start", &json!({})).unwrap_err().to_string().contains("already running"));
     drop(task); // Real worker drops its activity guard before sending acknowledgement.
-    tx.send(Ok(edit)).unwrap(); // The cancelled job retained its reply receiver.
+    tx.send(Ok(JobResult::Single(Box::new(edit)))).unwrap(); // The cancelled job retained its reply receiver.
     s.ai_remove_poll();
     assert!(!s.ai_remove.busy());
     assert!(s.ai_remove.draft.is_none());
@@ -54,7 +54,7 @@ fn activity_cancel_uses_same_flag_and_blocks_late_success() {
     assert!(s.ai_remove.busy());
     assert!(s.activity.list()[0].cancelling);
     drop(task);
-    tx.send(Ok(edit)).unwrap();
+    tx.send(Ok(JobResult::Single(Box::new(edit)))).unwrap();
     s.ai_remove_poll();
     assert_eq!(s.ai_remove.phase, Phase::Cancelled);
     assert!(s.ai_remove.draft.is_none());
@@ -82,7 +82,7 @@ fn phase_updates_ready_and_failure_are_additive_status_fields() {
         );
     }
     drop(task);
-    tx.send(Ok(edit)).unwrap();
+    tx.send(Ok(JobResult::Single(Box::new(edit)))).unwrap();
     let status = s.execute("aiRemove.status", &json!({})).unwrap();
     assert_eq!(status["phase"], "ready");
     assert_eq!(status["running"], false);
@@ -111,7 +111,7 @@ fn edit_and_photo_invalidation_keep_worker_until_ack() {
         assert!(s.ai_remove.busy());
         assert!(s.ai_remove.message.contains("discarded"));
         drop(task);
-        tx.send(Ok(edit)).unwrap();
+        tx.send(Ok(JobResult::Single(Box::new(edit)))).unwrap();
         s.ai_remove_poll();
         assert_eq!(s.ai_remove.phase, Phase::Cancelled);
         assert!(s.ai_remove.draft.is_none());

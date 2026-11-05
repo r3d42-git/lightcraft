@@ -31,13 +31,20 @@ Es werden weder Credits gekauft noch eigene Abrechnungsdaten eingerichtet.
 3. Optional **Schatten und Spiegelungen einbeziehen** aktivieren. Dafür ist die
    unterstützte vertrauenswürdige lokale ObjectClear-Laufzeit erforderlich.
    Objektentfernung allein benötigt kein lokales Retuschemodell.
-4. **Mit ChatGPT entfernen** startet ausdrücklich die Übertragung an OpenAI.
+4. **Helligkeit an Umgebung angleichen** ist für neue Cloud-Berechnungen
+   standardmäßig aktiv und lässt sich ausschalten. Die Wahl gilt nur für die
+   aktuelle Sitzung. Kann bei Licht- oder Materialkanten unpassend wirken.
+   Bei Bedarf ausschalten. Auch am fertigen Entwurf lässt sich zwischen
+   abgeglichenem und unverändertem Cloud-Ergebnis umschalten, ohne eine weitere
+   Cloud-Anfrage oder zusätzlichen Kontingentverbrauch. Vorhandene gespeicherte
+   Retuschen werden dadurch nicht verändert.
+5. **Mit ChatGPT entfernen** startet ausdrücklich die Übertragung an OpenAI.
    Gesendet werden ein vorbereiteter Bildausschnitt mit umgebendem Kontext und
    dessen Bearbeitungsmaske als neue PNG-Bilder, außerdem die Bearbeitungsanweisung.
    Die Bilder enthalten keine übernommenen EXIF-/GPS-Metadaten oder Katalogdaten.
    Der sichtbare Inhalt des Kontextausschnitts wird auch außerhalb der Maske
    übertragen; die Maske begrenzt die spätere lokale Änderung.
-5. Vorschau prüfen und ausdrücklich übernehmen oder verwerfen. Die bestehende
+6. Vorschau prüfen und ausdrücklich übernehmen oder verwerfen. Die bestehende
    Original-/Entwurf-Ansicht und Rückgängig/Wiederholen bleiben verfügbar.
 
 Die Bilddateien werden aus den vorbereiteten Pixeln neu kodiert. Die lokale
@@ -64,10 +71,27 @@ unverändert. Ein Fehler oder Abbruch speichert keinen neuen Patch. Erst
 Provenienz; Öffnen und Export erfordern danach weder Codex noch KI-Modelle.
 Vorhandene Retuschen werden nicht neu berechnet.
 
-Kleine globale Farbverschiebungen des Cloud-Ergebnisses werden anhand der
-unveränderten Umgebung ausgeglichen, damit beim Einsetzen weniger sichtbare
-Helligkeitsränder entstehen. Dieser Abgleich verändert nur die erlaubte Füllung;
-bei zu wenig geeignetem oder widersprüchlichem Kontext wird er ausgelassen.
+Der abschaltbare Helligkeitsabgleich erfolgt lokal auf dem vorbereiteten
+Retuscheraster. Die mit σ = 32 Pixeln geglättete Beleuchtung des Modellbilds wird
+innerhalb der erlaubten Füllung durch einen Verlauf aus den unveränderten
+Randwerten ersetzt; die feinere erzeugte Struktur bleibt erhalten.
+Nur die erlaubte Füllung wird korrigiert; Schutzpinsel und Pixel
+außerhalb der Maske bleiben erhalten. Das ist keine bildspezifische
+Randüberblendung. Der Abgleich kann Helligkeitsübergänge verbessern, garantiert
+aber weder passende Textur noch korrekte Material- und Lichtkanten.
+
+Für den aktuellen Entwurf werden das ursprüngliche Cloud-Ergebnis und die lokal
+abgeglichene Variante aus derselben Cloud-Antwort vorübergehend gehalten. Die
+Checkbox wechselt zwischen diesen Varianten und aktualisiert die Vorschau; sie
+startet keine weitere Bildgenerierung. Während einer Berechnung oder
+Objektauswahl ist die Checkbox gesperrt. Schlägt der Abgleich fehl, meldet die
+App den Fehler und zeigt das ursprüngliche Ergebnis nicht als erfolgreich
+abgeglichen an. Durch Ausschalten lässt sich das bereits empfangene
+Cloud-Ergebnis ohne Abgleich verwenden.
+
+Übernehmen, Verwerfen sowie Foto- oder Anbieterwechsel verwerfen das temporäre
+Variantenpaar. Gespeicherte Patches bleiben unverändert. Eine persönliche
+Gesamtabnahme des Cloud-Kandidaten steht noch aus.
 
 Generierte Inhalte, Hintergrundstruktur und die räumliche Übereinstimmung
 innerhalb der Maske sind nicht garantiert. Die lokale Begrenzung verhindert
@@ -79,8 +103,12 @@ Im WASM-Build ist der ChatGPT-Anbieter nicht verfügbar.
 ## Schnittstellen und Quellen im Projekt
 
 - `aiRemove.provider {"provider":"local"|"chatgpt"}` wählt den Anbieter.
-- `aiRemove.start` akzeptiert optional `provider` und `includeEffects`; im
-  ChatGPT-Modus wird kein ausgewähltes lokales `modelId` mitgesendet.
+- `aiRemove.matchLighting {"enabled":true|false}` setzt den sitzungsbezogenen
+  Helligkeitsabgleich; Standard ist `true`. `aiRemove.status` liefert dazu
+  `matchLighting` als Boolean.
+- `aiRemove.start` akzeptiert optional `provider`, `includeEffects` und
+  `matchLighting`; im ChatGPT-Modus wird kein ausgewähltes lokales `modelId`
+  mitgesendet.
 - `aiRemove.status`, `aiRemove.cancel`, `aiRemove.accept` und die vorhandenen
   Vorschaukommandos behalten den bisherigen Entwurfsablauf.
 - Umsetzung: `crates/engine/src/ai_remove/cloud.rs`,

@@ -10,6 +10,8 @@ mod cloud;
 mod codex_client;
 #[cfg(not(target_arch = "wasm32"))]
 mod input;
+#[cfg(not(target_arch = "wasm32"))]
+mod lighting;
 mod object;
 #[cfg(not(target_arch = "wasm32"))]
 mod patch;
@@ -44,6 +46,10 @@ pub enum Phase {
 pub struct AiRemove {
     /// Explicit session preference; local remains the default and uploads never happen implicitly.
     pub use_cloud: bool,
+    /// Cloud-only session preference; None means enabled for new cloud jobs.
+    pub match_lighting: Option<bool>,
+    #[cfg(not(target_arch = "wasm32"))]
+    cloud_drafts: Option<CloudDrafts>,
     pub include_effects: Option<bool>,
     pub reconstruct: Option<bool>,
     reconstruction_active: bool,
@@ -65,9 +71,21 @@ pub struct AiRemove {
     job: Option<Job>,
 }
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+struct CloudDrafts {
+    raw: AiEdit,
+    matched: std::result::Result<AiEdit, String>,
+}
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+enum JobResult {
+    Single(Box<AiEdit>),
+    Cloud(Box<CloudDrafts>),
+}
+#[cfg(not(target_arch = "wasm32"))]
 struct Job {
     phases: std::sync::mpsc::Receiver<Phase>,
-    reply: std::sync::mpsc::Receiver<std::result::Result<AiEdit, String>>,
+    reply: std::sync::mpsc::Receiver<std::result::Result<JobResult, String>>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 #[cfg(not(target_arch = "wasm32"))]
@@ -82,6 +100,21 @@ impl Job {
         activity: &crate::activity::Activity,
         detail: &str,
         work: impl FnOnce(&std::sync::atomic::AtomicBool, &dyn Fn(Phase)) -> std::result::Result<AiEdit, String> + Send + 'static,
+    ) -> std::result::Result<Self, String> {
+        Self::spawn_result(activity, detail, move |cancel, progress| work(cancel, progress).map(|edit| JobResult::Single(Box::new(edit))))
+    }
+    fn spawn_cloud(
+        activity: &crate::activity::Activity,
+        work: impl FnOnce(&std::sync::atomic::AtomicBool, &dyn Fn(Phase)) -> std::result::Result<CloudDrafts, String> + Send + 'static,
+    ) -> std::result::Result<Self, String> {
+        Self::spawn_result(activity, "ChatGPT via Codex", move |cancel, progress| {
+            work(cancel, progress).map(|variants| JobResult::Cloud(Box::new(variants)))
+        })
+    }
+    fn spawn_result(
+        activity: &crate::activity::Activity,
+        detail: &str,
+        work: impl FnOnce(&std::sync::atomic::AtomicBool, &dyn Fn(Phase)) -> std::result::Result<JobResult, String> + Send + 'static,
     ) -> std::result::Result<Self, String> {
         let (tx, reply) = std::sync::mpsc::channel();
         let (phase_tx, phases) = std::sync::mpsc::channel();
@@ -107,6 +140,22 @@ impl Job {
     }
 }
 impl AiRemove {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn select_cloud_draft(&mut self, enabled: bool) -> std::result::Result<(), String> {
+        let Some(variants) = &self.cloud_drafts else { return Ok(()) };
+        let edit = if enabled { variants.matched.clone()? } else { variants.raw.clone() };
+        self.draft = Some(edit);
+        self.preview_settings = None;
+        self.preview_original = false;
+        self.phase = Phase::Ready;
+        self.message = if enabled {
+            "Result ready with lighting matching. Review texture and transitions before accepting."
+        } else {
+            "Unadjusted result ready. Lighting matching is off; review before accepting."
+        }
+        .into();
+        Ok(())
+    }
     pub fn busy(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -195,8 +244,8 @@ impl Session {
                     self.ai_remove.message = self.ai_remove.cancel_reason.unwrap_or("Cancelled.").into();
                 } else {
                     match result {
-                        Ok(edit) => {
-                            self.ai_remove.draft = Some(edit);
+                        Ok(JobResult::Single(edit)) => {
+                            self.ai_remove.draft = Some(*edit);
                             self.ai_remove.phase = Phase::Ready;
                             self.ai_remove.message = if self.ai_remove.reconstruction_active {
                                 "Result ready. Review shadows, texture and transitions before accepting."
@@ -206,6 +255,17 @@ impl Session {
                                 "Result ready. Review the patch before accepting."
                             }
                             .into();
+                        }
+                        Ok(JobResult::Cloud(variants)) => {
+                            self.ai_remove.cloud_drafts = Some(*variants);
+                            if let Err(message) = self.ai_remove.select_cloud_draft(self.ai_remove.match_lighting.unwrap_or(true)) {
+                                self.ai_remove.draft = None;
+                                self.ai_remove.preview_settings = None;
+                                self.ai_remove.phase = Phase::Failed;
+                                self.ai_remove.message = message;
+                                // Retain the valid job tag and raw variant so turning matching
+                                // off can use this exact response without another cloud request.
+                            }
                         }
                         Err(e) => {
                             self.ai_remove.phase = Phase::Failed;
@@ -249,6 +309,10 @@ impl Session {
     }
 
     fn ai_remove_cancel(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.ai_remove.cloud_drafts = None;
+        }
         self.ai_remove.effects_active = false;
         self.ai_remove.reconstruction_active = false;
         self.ai_remove.selection_revision = self.ai_remove.selection_revision.wrapping_add(1);
@@ -386,6 +450,8 @@ impl Session {
         .map_err(error)?;
         self.ai_remove = AiRemove {
             use_cloud: false,
+            match_lighting: self.ai_remove.match_lighting,
+            cloud_drafts: None,
             include_effects: self.ai_remove.include_effects,
             reconstruct: self.ai_remove.reconstruct,
             reconstruction_active,
@@ -435,6 +501,15 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             }
             Ok(json!({"provider":if cloud { "chatgpt" } else { "local" }}))
         }),
+        cmd!(query "aiRemove.matchLighting", "Match Cloud Lighting", [], None, "{enabled:bool} — choose lighting matching for cloud jobs or switch the cached cloud draft without another request", always, |s, p| {
+            s.ai_remove_poll();
+            if s.ai_remove.busy() || s.ai_remove.selecting { return Err(error("Wait for AI Remove and object selection to finish.")); }
+            let enabled = p.get("enabled").and_then(Value::as_bool).ok_or_else(|| error("Give enabled as a boolean."))?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if s.ai_remove.use_cloud { s.ai_remove.select_cloud_draft(enabled).map_err(error)?; }
+            s.ai_remove.match_lighting = Some(enabled);
+            Ok(json!({"matchLighting":enabled}))
+        }),
         cmd!(query "aiRemove.objectPoint", "Select AI Object", [], None, "{x,y,exclude?:bool} — refine a temporary object selection", has_active, |s, p| s.ai_remove_object_point(p)),
         cmd!(query "aiRemove.objectMargin", "Object Selection Margin", [], None, "{size:0..0.02} — visible margin as a fraction of the long edge", has_active, |s, p| s.ai_remove_object_margin(p)),
         cmd!(query "aiRemove.refineBrush", "Refine AI Selection", [], None, "{points:[[x,y],…],size?,subtract?:bool}", has_active, |s, p| s.ai_remove_refine_brush(p)),
@@ -474,7 +549,7 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             }
             Ok(json!({"enabled": enabled}))
         }),
-        cmd!(query "aiRemove.start", "AI Remove", [], None, "{provider?:local|chatgpt,modelId?:installed revision ID,backend?:objectclear|lama|rorem,includeEffects?:bool,reconstruction?:objectclear-rorem|selected} — starts a background draft; chatgpt sends the selected region and mask to OpenAI through Codex", has_active, |s, p| {
+        cmd!(query "aiRemove.start", "AI Remove", [], None, "{provider?:local|chatgpt,modelId?:installed revision ID,backend?:objectclear|lama|rorem,includeEffects?:bool,reconstruction?:objectclear-rorem|selected,matchLighting?:bool} — starts a background draft; chatgpt sends the selected region and mask to OpenAI through Codex", has_active, |s, p| {
             let cloud = provider_param(p, s.ai_remove.use_cloud)?;
             let backend = if p.get("backend").is_some() { Some(backend_param(p)?) } else { None };
             let model_id = match p.get("modelId") { None=>None,Some(Value::String(id)) if !id.is_empty() && id.len()<=256=>Some(id.clone()),_=>return Err(error("Give modelId as a nonempty installed model ID.")) };
@@ -483,15 +558,16 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
                 None => None,
             };
             let reconstruct = reconstruction_param(p)?;
+            let match_lighting = match p.get("matchLighting") { None => None, Some(Value::Bool(v)) => Some(*v), _ => return Err(error("matchLighting must be a boolean.")) };
             #[cfg(not(target_arch = "wasm32"))] {
                 if cloud {
                     if backend.is_some() || model_id.is_some() || reconstruct.is_some() { return Err(error("ChatGPT removal does not accept a local model or reconstruction override.")); }
-                    s.ai_remove_start_cloud(include_effects)
+                    s.ai_remove_start_cloud(include_effects, match_lighting)
                 } else { s.ai_remove_start(backend, model_id, include_effects, reconstruct) }
             }
-            #[cfg(target_arch = "wasm32")] { let _ = (s, cloud, backend, model_id, include_effects, reconstruct); Err(error("AI Remove is unavailable in the browser.")) }
+            #[cfg(target_arch = "wasm32")] { let _ = (s, cloud, backend, model_id, include_effects, reconstruct, match_lighting); Err(error("AI Remove is unavailable in the browser.")) }
         }),
-        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"provider":if s.ai_remove.use_cloud { "chatgpt" } else { "local" },"reconstruction":if s.ai_remove.reconstruction_active { "objectclear-rorem" } else { "selected" },"reconstructionPreference":match s.ai_remove.reconstruct { Some(true)=>"objectclear-rorem",Some(false)=>"selected",None=>"auto" },"stage":match s.ai_remove.phase { Phase::Effects=>1,Phase::Reconstruction=>2,_=>0 },"draftStages":s.ai_remove.draft.as_ref().map(|e|&e.stages),"reconstructionAvailable":s.ai_remove_reconstruction_available(),"includeEffects":s.ai_remove.include_effects.unwrap_or(true),"effectsActive":s.ai_remove.effects_active,"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some() || s.ai_remove.object_selection.as_ref().is_some_and(|o|o.seg.is_some()),"selecting":s.ai_remove.selecting,"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
+        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"provider":if s.ai_remove.use_cloud { "chatgpt" } else { "local" },"matchLighting":s.ai_remove.match_lighting.unwrap_or(true),"reconstruction":if s.ai_remove.reconstruction_active { "objectclear-rorem" } else { "selected" },"reconstructionPreference":match s.ai_remove.reconstruct { Some(true)=>"objectclear-rorem",Some(false)=>"selected",None=>"auto" },"stage":match s.ai_remove.phase { Phase::Effects=>1,Phase::Reconstruction=>2,_=>0 },"draftStages":s.ai_remove.draft.as_ref().map(|e|&e.stages),"reconstructionAvailable":s.ai_remove_reconstruction_available(),"includeEffects":s.ai_remove.include_effects.unwrap_or(true),"effectsActive":s.ai_remove.effects_active,"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some() || s.ai_remove.object_selection.as_ref().is_some_and(|o|o.seg.is_some()),"selecting":s.ai_remove.selecting,"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
         cmd!(query "aiRemove.previewOriginal", "Show Photo Without AI Draft", [], None, "{enabled:bool} — compare the pending result without accepting it", has_active, |s, p| {
             s.ai_remove_poll();
             if s.ai_remove.draft.is_none() { return Err(error("No current AI result to preview.")); }

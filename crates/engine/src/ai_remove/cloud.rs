@@ -1,7 +1,7 @@
 //! Cloud reconstruction keeps local geometry, authorization and raster persistence.
 //! Shadow coverage is determined by the existing trusted ObjectClear stage; only
 //! original RGB and the final authorized mask are sent to ChatGPT through Codex.
-use super::{AiRemove, Job, Phase, SelectionMask, codex_client, error, input, patch, protocol, runner};
+use super::{AiRemove, CloudDrafts, Job, Phase, SelectionMask, codex_client, error, input, lighting, patch, protocol, runner};
 use crate::{Result, Session};
 use lightcraft_codecs::{DecodeOptions, EncodeImage, EncodeMeta};
 use lightcraft_develop::Spot;
@@ -15,7 +15,7 @@ use std::{
 };
 
 impl Session {
-    pub(super) fn ai_remove_start_cloud(&mut self, include_effects: Option<bool>) -> Result<Value> {
+    pub(super) fn ai_remove_start_cloud(&mut self, include_effects: Option<bool>, match_lighting: Option<bool>) -> Result<Value> {
         self.ai_remove_poll();
         if self.ai_remove.busy() {
             return Err(error("AI Remove is already running."));
@@ -48,6 +48,7 @@ impl Session {
         if d.ai_edits.len() >= 8 {
             return Err(error("This photo already has eight AI patches."));
         }
+        let match_lighting = match_lighting.unwrap_or(self.ai_remove.match_lighting.unwrap_or(true));
         let executable = codex_client::find_executable().map_err(error)?;
         let requested_effects = include_effects.or(self.ai_remove.include_effects).unwrap_or(true);
         // No local model is needed for object-only cloud reconstruction.
@@ -68,7 +69,7 @@ impl Session {
         let source = self.media.source_ref(&photo, crate::media::SourceLevel::Full);
         let info = self.source_info(id);
         let settings = (*d).clone();
-        let job = Job::spawn(&self.activity, "ChatGPT via Codex", move |cancel, progress| {
+        let job = Job::spawn_cloud(&self.activity, move |cancel, progress| {
             let deadline = Instant::now() + Duration::from_secs(1200);
             progress(Phase::Preparing);
             let mut prepared = match segmented {
@@ -91,14 +92,16 @@ impl Session {
                     };
                     runner::invoke_checked(&prepared.request, &detector, cancel)?.coverage.ok_or("Shadow detection returned no coverage.")?
                 };
-                execute_with_coverage(prepared, coverage, &cloud, cancel, progress)
+                execute_variants(prepared, Some(coverage), &cloud, cancel, deadline, progress)
             } else {
-                runner::execute_with_progress(prepared, &cloud, cancel, progress)
+                execute_variants(prepared, None, &cloud, cancel, deadline, progress)
             }
         })
         .map_err(error)?;
         self.ai_remove = AiRemove {
             use_cloud: true,
+            match_lighting: Some(match_lighting),
+            cloud_drafts: None,
             include_effects: self.ai_remove.include_effects,
             reconstruct: self.ai_remove.reconstruct,
             effects_active: effects,
@@ -118,38 +121,78 @@ impl Session {
             selection_tag: self.ai_remove.selection_tag.clone(),
             job: Some(job),
         };
-        Ok(json!({"running":true,"provider":"chatgpt","effectsActive":effects}))
+        Ok(json!({"running":true,"provider":"chatgpt","effectsActive":effects,"matchLighting":match_lighting}))
     }
 }
 
-fn execute_with_coverage(
+/// One runner invocation produces both drafts. Changing the preference never
+/// runs a model again, and matching failure cannot discard the valid raw result.
+fn execute_variants(
     prepared: input::PreparedInput,
-    coverage: Vec<u8>,
+    coverage: Option<Vec<u8>>,
     cloud: &dyn RetouchRunner,
     cancel: &AtomicBool,
+    deadline: Instant,
     progress: &dyn Fn(Phase),
-) -> std::result::Result<lightcraft_develop::AiEdit, String> {
+) -> std::result::Result<CloudDrafts, String> {
     let mut reconstruction = prepared.request.clone();
-    if coverage.len() != reconstruction.mask.len()
-        || !coverage.iter().zip(&reconstruction.mask).all(|(c, m)| (*c == 0 || *c == 255) && (*m == 0 || *c == 255))
-    {
-        return Err("Invalid shadow coverage.".into());
+    if let Some(coverage) = &coverage {
+        if coverage.len() != reconstruction.mask.len()
+            || !coverage.iter().zip(&reconstruction.mask).all(|(c, m)| (*c == 0 || *c == 255) && (*m == 0 || *c == 255))
+        {
+            return Err("Invalid shadow coverage.".into());
+        }
+        reconstruction.mask = coverage.iter().zip(&reconstruction.protected).map(|(v, p)| if *p { 0 } else { *v }).collect();
     }
-    reconstruction.mask = coverage.iter().zip(&reconstruction.protected).map(|(v, p)| if *p { 0 } else { *v }).collect();
     reconstruction.effects = false;
     if !reconstruction.mask.contains(&255) {
         return Err("No unprotected pixels to reconstruct.".into());
     }
     progress(Phase::Reconstruction);
-    // The local detector's RGB is intentionally never used as cloud input.
+    // CloudRunner returns the entire decoded generated ROI, not a composite
+    // whose artificial mask edge could contaminate the high-frequency guide.
     let mut output = runner::invoke_checked(&reconstruction, cloud, cancel)?;
-    output.coverage = Some(coverage);
-    output.provenance.model = "ObjectClear coverage + ChatGPT image generation".into();
+    let gain = inference_gain(&reconstruction)?;
+    progress(Phase::Finalizing);
+    let matched_rgb = lighting::apply(&reconstruction, &output.rgb, gain, cancel, deadline);
     if cancel.load(Ordering::Relaxed) {
         return Err("Cancelled.".into());
     }
-    progress(Phase::Finalizing);
-    patch::construct(prepared, output)
+    output.coverage = coverage;
+    if output.coverage.is_some() {
+        output.provenance.model = "ObjectClear coverage + ChatGPT image generation".into();
+    }
+    let matched_output = matched_rgb.map(|rgb| {
+        let mut revision = output.provenance.revision.clone();
+        let suffix = "; lighting=boundary-sigma32-v1";
+        if revision.len() + suffix.len() <= 256 {
+            revision.push_str(suffix);
+        }
+        RetouchOutput {
+            width: output.width,
+            height: output.height,
+            rgb,
+            coverage: output.coverage.clone(),
+            provenance: RetouchProvenance { model: output.provenance.model.clone(), revision, identity: output.provenance.identity.clone() },
+        }
+    });
+    let raw = patch::construct(input::PreparedInput { request: prepared.request.clone(), support: prepared.support.clone() }, output)?;
+    let matched = matched_output.and_then(|output| patch::construct(prepared, output));
+    Ok(CloudDrafts { raw, matched })
+}
+
+fn inference_gain(input: &RetouchInput) -> std::result::Result<f32, String> {
+    let matrix = lightcraft_color::REC2020.to_space(&lightcraft_color::SRGB);
+    let mut gain = 1.0f32;
+    for pixel in &input.rgb {
+        for value in matrix.apply_f32(*pixel) {
+            if !value.is_finite() {
+                return Err("Non-finite cloud input.".into());
+            }
+            gain = gain.max(value);
+        }
+    }
+    Ok(gain)
 }
 
 struct CloudRunner {
@@ -175,7 +218,7 @@ impl RetouchRunner for CloudRunner {
         }
         let prompt = "Edit image 1 (the photo) with built-in image generation exactly once. Image 2 is an edit mask: WHITE pixels identify the object and any associated shadow to remove, BLACK pixels must remain unchanged. Remove the indicated object and reconstruct natural background only in the white region. Keep the exact square canvas, framing, alignment, lighting, color and every other object. Black padding is intentional; do not crop, zoom or move anything. Do not draw the mask into the result. Return one opaque edited photo, no text. Use the supplied photo as the edit target. Do not use any API-key fallback or other tools.";
         let generated = codex_client::edit(&self.executable, &[image, mask], prompt, cancel, self.deadline)?;
-        let rgb = canvas.decode(&generated.png, request.input)?;
+        let rgb = canvas.decode_generated(&generated.png, request.input)?;
         Ok(RetouchOutput {
             width: request.input.width,
             height: request.input.height,
@@ -259,7 +302,7 @@ impl Canvas {
         }
         Ok(Self { image, mask, x, y, gain })
     }
-    fn decode(&self, bytes: &[u8], input: &RetouchInput) -> std::result::Result<Vec<[f32; 3]>, String> {
+    fn decode_generated(&self, bytes: &[u8], input: &RetouchInput) -> std::result::Result<Vec<[f32; 3]>, String> {
         if bytes.len() > 32 * 1024 * 1024 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
             return Err("Cloud result must be a bounded PNG image.".into());
         }
@@ -277,67 +320,31 @@ impl Canvas {
             let y = ((self.y + i / input.width) as f32 + 0.5) * scale;
             working.sample_bilinear(x, y).map(|v| v * self.gain)
         };
-        let offset = self.context_offset(input, &sample);
-        let mut rgb = input.rgb.clone();
-        for (i, pixel) in rgb.iter_mut().enumerate() {
-            if input.mask.get(i) != Some(&255) || input.protected.get(i) != Some(&false) {
-                continue;
-            }
-            let generated = sample(i);
-            *pixel = std::array::from_fn(|channel| generated[channel] + offset[channel]);
-        }
+        let rgb: Vec<[f32; 3]> = (0..input.rgb.len()).map(sample).collect();
         if !rgb.iter().flatten().all(|v| v.is_finite()) {
             return Err("ChatGPT returned non-finite pixel data.".into());
         }
         Ok(rgb)
     }
-
-    /// Match small global cloud colour drift to unchanged local context. The
-    /// robust offset preserves generated texture; it does not change geometry or
-    /// blend across the authorized mask. Sparse, clipped, excessive or spatially
-    /// inconsistent evidence leaves the generated result unadjusted.
-    fn context_offset(&self, input: &RetouchInput, sample: &impl Fn(usize) -> [f32; 3]) -> [f32; 3] {
-        const MAX_SAMPLES: usize = 4096;
-        const MIN_SAMPLES: usize = 64;
-        let stride = input.rgb.len().div_ceil(MAX_SAMPLES).max(1);
-        let mut differences = Vec::with_capacity(MAX_SAMPLES);
-        for i in (0..input.rgb.len()).step_by(stride) {
-            if input.mask.get(i) != Some(&0) || input.protected.get(i) != Some(&false) {
-                continue;
-            }
-            let at = (self.y + i / input.width) * self.image.width + self.x + i % input.width;
-            let Some(preview) = self.image.data.get(at) else { continue };
-            // Gamut/exposure clipping in the transmitted preview cannot provide
-            // trustworthy evidence of an inferred colour shift.
-            if preview.iter().take(3).any(|v| *v <= 8 || *v >= 247) {
-                continue;
-            }
-            let Some(original) = input.rgb.get(i) else { continue };
-            let generated = sample(i);
-            let difference: [f32; 3] = std::array::from_fn(|channel| original[channel] - generated[channel]);
-            if difference.iter().all(|v: &f32| v.is_finite()) {
-                differences.push(difference);
-            }
-        }
-        if differences.len() < MIN_SAMPLES {
-            return [0.0; 3];
-        }
-        let offset: [f32; 3] = std::array::from_fn(|channel| {
-            let mut values: Vec<f32> = differences.iter().map(|d| d[channel]).collect();
-            values.sort_unstable_by(f32::total_cmp);
-            values.get(values.len() / 2).copied().unwrap_or(0.0)
-        });
-        if offset.iter().any(|v| v.abs() > 0.125 * self.gain) {
-            return [0.0; 3];
-        }
-        // At least three quarters of all samples must support the same shift in
-        // every channel. Do not mistake changed structure or local tone changes
-        // for a global offset and aggressively recolour the selected patch.
-        let consistent = differences.iter().filter(|d| (0..3).all(|channel| (d[channel] - offset[channel]).abs() <= 0.025 * self.gain)).count();
-        if consistent * 4 < differences.len() * 3 {
-            return [0.0; 3];
-        }
-        offset
+    #[cfg(test)]
+    fn decode(&self, bytes: &[u8], input: &RetouchInput) -> std::result::Result<Vec<[f32; 3]>, String> {
+        let generated = self.decode_generated(bytes, input)?;
+        Ok(generated
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                if input.mask.get(i) == Some(&255) && input.protected.get(i) == Some(&false) {
+                    p
+                } else {
+                    input.rgb.get(i).copied().unwrap_or([0.; 3])
+                }
+            })
+            .collect())
+    }
+    #[cfg(test)]
+    fn decode_matched(&self, bytes: &[u8], input: &RetouchInput) -> std::result::Result<Vec<[f32; 3]>, String> {
+        let generated = self.decode_generated(bytes, input)?;
+        lighting::apply(input, &generated, self.gain, &AtomicBool::new(false), Instant::now() + Duration::from_secs(60))
     }
 }
 
@@ -398,15 +405,15 @@ mod tests {
         generated
     }
     #[test]
-    fn cloud_global_brightness_drift_matches_context_without_restoring_removed_object() {
+    fn cloud_boundary_brightness_matches_context_without_restoring_removed_object() {
         let mut input = context_fixture();
         input.rgb[0] = [4.0, 2.0, 1.0];
         let protected = 32 * input.width + 64;
-        input.rgb[protected] = [3.0, 1.5, 0.5];
+        input.rgb[protected] = [0.4; 3];
         input.protected[protected] = true;
         let canvas = Canvas::new(&input).unwrap();
         let generated = generated_background(&canvas, [0.4 + 0.025 * canvas.gain; 3]);
-        let result = canvas.decode(&png(&generated).unwrap(), &input).unwrap();
+        let result = canvas.decode_matched(&png(&generated).unwrap(), &input).unwrap();
         for (i, pixel) in result.iter().enumerate() {
             if input.mask[i] == 0 || input.protected[i] {
                 assert_eq!(*pixel, input.rgb[i]);
@@ -414,7 +421,7 @@ mod tests {
                 assert!(pixel.iter().all(|v| (*v - 0.4).abs() < 0.0001), "{pixel:?}");
             }
         }
-        assert_eq!(result[protected], [3.0, 1.5, 0.5]);
+        assert_eq!(result[protected], [0.4; 3]);
     }
     #[test]
     fn cloud_context_normal_roundtrip_and_generated_texture_remain_stable() {
@@ -431,27 +438,27 @@ mod tests {
         let working = lightcraft_codecs::decode(&png(&generated).unwrap(), DecodeOptions::default()).unwrap().to_working();
         let base = working.sample_bilinear(canvas.x as f32 + 1.5, canvas.y as f32 + 1.5);
         let texture = working.sample_bilinear((canvas.x + 64) as f32 + 0.5, (canvas.y + 32) as f32 + 0.5);
-        let result = canvas.decode(&png(&generated).unwrap(), &input).unwrap();
+        let result = canvas.decode_matched(&png(&generated).unwrap(), &input).unwrap();
         for channel in 0..3 {
             assert!((result[selected][channel] - (0.4 + texture[channel] - base[channel])).abs() < 0.0001);
         }
     }
     #[test]
-    fn cloud_insufficient_clipped_excessive_or_inconsistent_context_is_not_corrected() {
-        let mut sparse = context_fixture();
+    fn cloud_matching_off_never_applies_the_old_global_offset() {
+        let input = context_fixture();
+        let canvas = Canvas::new(&input).unwrap();
+        let result = canvas.decode(&png(&generated_background(&canvas, [0.45; 3])).unwrap(), &input).unwrap();
+        for (i, p) in result.iter().enumerate() {
+            if input.mask[i] == 0 {
+                assert_eq!(*p, input.rgb[i]);
+            } else {
+                assert!(p.iter().all(|v| *v > 0.44));
+            }
+        }
+        let mut sparse = input.clone();
         sparse.mask.fill(255);
-        sparse.mask.iter_mut().take(63).for_each(|v| *v = 0);
-        let canvas = Canvas::new(&sparse).unwrap();
-        assert_eq!(canvas.context_offset(&sparse, &|_| [0.45; 3]), [0.0; 3]);
-        let actual = canvas.decode(&png(&generated_background(&canvas, [0.45; 3])).unwrap(), &sparse).unwrap();
-        assert!(actual[100].iter().all(|v| *v > 0.44));
-        let mut input = context_fixture();
-        let canvas = Canvas::new(&input).unwrap();
-        assert_eq!(canvas.context_offset(&input, &|_| [0.7; 3]), [0.0; 3]);
-        assert_eq!(canvas.context_offset(&input, &|i| if (i / input.width).is_multiple_of(2) { [0.3; 3] } else { [0.5; 3] }), [0.0; 3]);
-        input.rgb.fill([0.0; 3]);
-        let canvas = Canvas::new(&input).unwrap();
-        assert_eq!(canvas.context_offset(&input, &|_| [0.05; 3]), [0.0; 3]);
+        assert!(canvas.decode_matched(&png(&generated_background(&canvas, [0.45; 3])).unwrap(), &sparse).is_err());
+        assert!(canvas.decode(&png(&generated_background(&canvas, [0.45; 3])).unwrap(), &sparse).is_ok());
     }
     #[test]
     fn cloud_rejects_changed_aspect_transparency_and_invalid_input() {
@@ -519,14 +526,248 @@ mod tests {
                 effects: true,
             },
         };
-        let edit = execute_with_coverage(prepared(), vec![255, 255, 255, 0], &Fake, &AtomicBool::new(false), &|_| {}).unwrap();
+        let edit = execute_variants(
+            prepared(),
+            Some(vec![255, 255, 255, 0]),
+            &Fake,
+            &AtomicBool::new(false),
+            Instant::now() + Duration::from_secs(30),
+            &|_| {},
+        )
+        .unwrap()
+        .raw;
         let pixels = edit.decode_pixels().unwrap();
         assert_eq!(pixels[0], [0.2, 0.3, 0.4, 0.0]);
         assert_eq!(pixels[1], [0.7, 0.6, 0.5, 1.0]);
         assert_eq!(pixels[2], [0.7, 0.6, 0.5, 1.0]);
         assert_eq!(pixels[3], [0.2, 0.3, 0.4, 0.0]);
-        assert!(execute_with_coverage(prepared(), vec![255, 0, 255, 0], &Fake, &AtomicBool::new(false), &|_| {}).is_err());
-        assert!(execute_with_coverage(prepared(), vec![255, 255, 255, 0], &Fake, &AtomicBool::new(true), &|_| {}).is_err());
+        assert!(
+            execute_variants(
+                prepared(),
+                Some(vec![255, 0, 255, 0]),
+                &Fake,
+                &AtomicBool::new(false),
+                Instant::now() + Duration::from_secs(30),
+                &|_| {}
+            )
+            .is_err()
+        );
+        assert!(
+            execute_variants(
+                prepared(),
+                Some(vec![255, 255, 255, 0]),
+                &Fake,
+                &AtomicBool::new(true),
+                Instant::now() + Duration::from_secs(30),
+                &|_| {}
+            )
+            .is_err()
+        );
+    }
+
+    fn fake_variants(calls: &std::sync::atomic::AtomicUsize) -> CloudDrafts {
+        fake_variants_for(context_fixture(), calls)
+    }
+    fn fake_variants_for(input: RetouchInput, calls: &std::sync::atomic::AtomicUsize) -> CloudDrafts {
+        struct Fake<'a>(&'a std::sync::atomic::AtomicUsize);
+        impl RetouchRunner for Fake<'_> {
+            fn identity(&self) -> RetouchIdentity {
+                RetouchIdentity { model: "synthetic-cloud".into(), runtime: "fake".into(), adapter: "fake" }
+            }
+            fn run(&self, r: RetouchRequest<'_>, _: &AtomicBool) -> std::result::Result<RetouchOutput, String> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Ok(RetouchOutput {
+                    width: r.input.width,
+                    height: r.input.height,
+                    rgb: vec![[0.45; 3]; r.input.rgb.len()],
+                    coverage: None,
+                    provenance: RetouchProvenance { model: "synthetic-cloud".into(), revision: "fixture-1".into(), identity: r.identity.clone() },
+                })
+            }
+        }
+        execute_variants(
+            input::PreparedInput { request: input, support: None },
+            None,
+            &Fake(calls),
+            &AtomicBool::new(false),
+            Instant::now() + Duration::from_secs(30),
+            &|_| {},
+        )
+        .unwrap()
+    }
+    fn completed_session(variants: CloudDrafts, matching: bool) -> Session {
+        let mut session = Session::with_demo();
+        let (tx, reply) = std::sync::mpsc::channel();
+        let (_, phases) = std::sync::mpsc::channel();
+        session.ai_remove.use_cloud = true;
+        session.ai_remove.match_lighting = Some(matching);
+        session.ai_remove.tag = session.ai_remove_tag();
+        session.ai_remove.job = Some(Job { reply, phases, cancel: std::sync::Arc::new(AtomicBool::new(false)) });
+        tx.send(Ok(super::super::JobResult::Cloud(Box::new(variants)))).unwrap();
+        session.ai_remove_poll();
+        session
+    }
+    #[test]
+    fn cloud_pair_toggle_reuses_one_runner_result_and_accepts_only_chosen_variant() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let variants = fake_variants(&calls);
+        assert!(variants.matched.as_ref().unwrap().model_version.contains("lighting=boundary-sigma32-v1"));
+        let raw = variants.raw.clone();
+        let matched = variants.matched.clone().unwrap();
+        let mut s = completed_session(variants, true);
+        let id = s.active().unwrap();
+        let before = s.develop_of(id).unwrap();
+        assert_eq!(s.ai_remove.draft.as_ref(), Some(&matched));
+        let _ = s.ai_remove_preview_settings().unwrap();
+        assert!(s.ai_remove.preview_settings.is_some());
+        s.execute("aiRemove.matchLighting", &json!({"enabled":false})).unwrap();
+        assert_eq!(s.ai_remove.draft.as_ref(), Some(&raw));
+        assert!(s.ai_remove.preview_settings.is_none());
+        assert_eq!(*s.develop_of(id).unwrap(), *before);
+        s.execute("aiRemove.matchLighting", &json!({"enabled":true})).unwrap();
+        assert_eq!(s.ai_remove.draft.as_ref(), Some(&matched));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        s.execute("aiRemove.accept", &json!({})).unwrap();
+        assert!(s.ai_remove.cloud_drafts.is_none());
+        assert!(s.ai_remove.draft.is_none());
+        let accepted = s.develop_of(id).unwrap();
+        assert_eq!(accepted.ai_edits.len(), before.ai_edits.len() + 1);
+        assert_eq!(accepted.ai_edits.last().unwrap().pixels, matched.pixels);
+        s.execute("aiRemove.matchLighting", &json!({"enabled":false})).unwrap();
+        assert_eq!(*s.develop_of(id).unwrap(), *accepted);
+    }
+    #[test]
+    fn bright_protected_island_can_reject_matching_without_losing_raw_hdr() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let mut input = context_fixture();
+        let protected = 32 * input.width + 64;
+        input.rgb[0] = [4., 2., 1.];
+        input.rgb[protected] = [3., 1.5, 0.5];
+        input.protected[protected] = true;
+        let variants = fake_variants_for(input, &calls);
+        assert!(variants.matched.as_ref().unwrap_err().contains("too much"));
+        let raw = variants.raw.decode_pixels().unwrap();
+        assert_eq!(raw[0], [4., 2., 1., 0.]);
+        assert_eq!(raw[protected], [3., 1.5, 0.5, 0.]);
+        let mut s = completed_session(variants, true);
+        assert!(s.ai_remove.draft.is_none());
+        s.execute("aiRemove.matchLighting", &json!({"enabled":false})).unwrap();
+        assert_eq!(s.ai_remove.draft.as_ref().unwrap().decode_pixels().unwrap()[protected], [3., 1.5, 0.5, 0.]);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+    #[test]
+    fn cloud_pair_matching_error_keeps_raw_and_wrong_label_never_shows_raw() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let mut variants = fake_variants(&calls);
+        let raw = variants.raw.clone();
+        variants.matched = Err("Lighting fixture unsupported; turn matching off.".into());
+        let mut s = completed_session(variants, true);
+        assert_eq!(s.ai_remove.phase, Phase::Failed);
+        assert!(s.ai_remove.draft.is_none());
+        assert!(s.ai_remove.tag.is_some());
+        s.execute("aiRemove.matchLighting", &json!({"enabled":false})).unwrap();
+        assert_eq!(s.ai_remove.draft.as_ref(), Some(&raw));
+        assert!(s.execute("aiRemove.matchLighting", &json!({"enabled":true})).is_err());
+        assert_eq!(s.ai_remove.match_lighting, Some(false));
+        assert_eq!(s.ai_remove.draft.as_ref(), Some(&raw));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        s.ai_remove.selecting = true;
+        assert!(s.execute("aiRemove.matchLighting", &json!({"enabled":true})).is_err());
+    }
+    #[test]
+    fn cloud_pair_clears_on_cancel_provider_photo_change_and_rejects_busy_toggle() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let variants = fake_variants(&calls);
+        for action in ["cancel", "provider", "photo", "edit"] {
+            let mut s = completed_session(variants.clone(), true);
+            let _ = s.ai_remove_preview_settings();
+            match action {
+                "cancel" => {
+                    s.execute("aiRemove.cancel", &json!({})).unwrap();
+                }
+                "provider" => {
+                    s.execute("aiRemove.provider", &json!({"provider":"local"})).unwrap();
+                }
+                "photo" => {
+                    s.execute("library.down", &json!({})).unwrap();
+                }
+                _ => {
+                    s.execute("develop.set", &json!({"control":"light.exposure","value":0.5})).unwrap();
+                }
+            }
+            s.ai_remove_poll();
+            assert!(s.ai_remove.cloud_drafts.is_none(), "{action}");
+            assert!(s.ai_remove.draft.is_none());
+            assert!(s.ai_remove.preview_settings.is_none());
+        }
+        let mut s = Session::with_demo();
+        let (_tx, reply) = std::sync::mpsc::channel();
+        let (_, phases) = std::sync::mpsc::channel();
+        s.ai_remove.job = Some(Job { reply, phases, cancel: std::sync::Arc::new(AtomicBool::new(false)) });
+        assert!(s.execute("aiRemove.matchLighting", &json!({"enabled":false})).is_err());
+        assert_eq!(s.ai_remove.match_lighting, None);
+        assert!(s.execute("aiRemove.start", &json!({"provider":"chatgpt","matchLighting":"false"})).is_err());
+    }
+    #[test]
+    #[ignore = "explicit saved real-RAW/CodexPNG parity test; offline only"]
+    fn saved_real_boundary_matches_frozen_python_reference() {
+        let root = PathBuf::from(std::env::var_os("LIGHTCRAFT_CLOUD_REFERENCE_DIR").expect("reference root"));
+        let image = PathBuf::from(std::env::var_os("LIGHTCRAFT_CLOUD_REFERENCE_PNG").expect("saved generated PNG"));
+        let mut settings: Value = serde_json::from_slice(&std::fs::read(root.join("cloud-accepted-settings.json")).unwrap()).unwrap();
+        let baseline: lightcraft_develop::AiEdit = serde_json::from_value(settings["ai_edits"][0].clone()).unwrap();
+        let pixels = baseline.decode_pixels().unwrap();
+        let input = RetouchInput {
+            width: baseline.width as usize,
+            height: baseline.height as usize,
+            rgb: pixels.iter().map(|p| if p[3] > 0.0 { [0.; 3] } else { [p[0], p[1], p[2]] }).collect(),
+            mask: pixels.iter().map(|p| if p[3] > 0.0 { 255 } else { 0 }).collect(),
+            protected: vec![false; pixels.len()],
+            rect: baseline.rect,
+            seed: 0,
+            steps: 20,
+            effects: false,
+        };
+        let reference_settings: Value =
+            serde_json::from_slice(&std::fs::read(root.join("spatial-prototype-boundary/candidate-settings.json")).unwrap()).unwrap();
+        let reference: lightcraft_develop::AiEdit = serde_json::from_value(reference_settings["ai_edits"][0].clone()).unwrap();
+        let reference_pixels = reference.decode_pixels().unwrap();
+        let metadata: Value =
+            serde_json::from_slice(&std::fs::read(root.join("spatial-prototype-boundary/candidate-metadata.json")).unwrap()).unwrap();
+        let mut canvas = Canvas::new(&input).unwrap();
+        canvas.gain = metadata["gain"].as_f64().unwrap() as f32;
+        let started = Instant::now();
+        let generated = canvas.decode_generated(&std::fs::read(image).unwrap(), &input).unwrap();
+        let result = lighting::apply(&input, &generated, canvas.gain, &AtomicBool::new(false), Instant::now() + Duration::from_secs(180)).unwrap();
+        let mut max = 0.0f32;
+        let mut count = 0;
+        for (i, p) in result.iter().enumerate() {
+            if input.mask[i] == 0 {
+                assert_eq!(*p, input.rgb[i]);
+            } else {
+                count += 1;
+                for c in 0..3 {
+                    max = max.max((p[c] - reference_pixels[i][c]).abs());
+                }
+            }
+        }
+        println!("Rust boundary parity: selected={count}; maximum_float_delta={max:.9}; seconds={:.3}", started.elapsed().as_secs_f64());
+        assert!(max < 3e-6, "frozen Python/Rust mismatch {max}");
+        if let Some(path) = std::env::var_os("LIGHTCRAFT_CLOUD_REFERENCE_SETTINGS_OUTPUT") {
+            let output = RetouchOutput {
+                width: input.width,
+                height: input.height,
+                rgb: result,
+                coverage: None,
+                provenance: RetouchProvenance {
+                    model: baseline.model.clone(),
+                    revision: format!("{}; lighting=boundary-sigma32-v1", baseline.model_version),
+                    identity: RetouchIdentity { model: "offline-reference".into(), runtime: PathBuf::new(), adapter: "offline" },
+                },
+            };
+            let edit = patch::construct(input::PreparedInput { request: input, support: None }, output).unwrap();
+            settings["ai_edits"][0] = serde_json::to_value(edit).unwrap();
+            std::fs::write(path, serde_json::to_vec(&settings).unwrap()).unwrap();
+        }
     }
 
     #[test]
@@ -552,7 +793,7 @@ mod tests {
         };
         let canvas = Canvas::new(&input).unwrap();
         assert_eq!(canvas.gain, 1.0);
-        let corrected = canvas.decode(&std::fs::read(image).unwrap(), &input).unwrap();
+        let corrected = canvas.decode_matched(&std::fs::read(image).unwrap(), &input).unwrap();
         let mut old_error = 0.0f64;
         let mut new_error = 0.0f64;
         let mut selected = 0usize;
@@ -596,15 +837,24 @@ mod tests {
             }
         }
         let runner = CloudRunner { executable: codex_client::find_executable().unwrap(), deadline: Instant::now() + Duration::from_secs(600) };
-        let result = runner::invoke_checked(&input, &runner, &AtomicBool::new(false)).unwrap();
-        assert_eq!(result.rgb.len(), input.rgb.len());
-        for (i, pixel) in result.rgb.iter().enumerate() {
+        let result = execute_variants(
+            input::PreparedInput { request: input.clone(), support: None },
+            None,
+            &runner,
+            &AtomicBool::new(false),
+            runner.deadline,
+            &|_| {},
+        )
+        .unwrap();
+        let pixels = result.raw.decode_pixels().unwrap();
+        assert_eq!(pixels.len(), input.rgb.len());
+        for (i, pixel) in pixels.iter().enumerate() {
             if input.mask[i] == 0 {
-                assert_eq!(pixel, &input.rgb[i]);
+                assert_eq!([pixel[0], pixel[1], pixel[2]], input.rgb[i]);
             }
         }
-        let center = result.rgb[32 * input.width + 64];
+        let center = pixels[32 * input.width + 64];
         assert!((center[0] - center[1]).abs() < 0.12, "object removal failed: {center:?}");
-        println!("Cloud masked edit completed; protected/outside pixels identical; provenance: {}", result.provenance.revision);
+        println!("Cloud masked edit completed; protected/outside pixels identical; provenance: {}", result.raw.model_version);
     }
 }

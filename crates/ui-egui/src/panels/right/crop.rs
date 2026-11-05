@@ -490,6 +490,20 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                     .size(12.0)
                     .color(t.text_dim),
                 );
+                let mut match_lighting = app.session.ai_remove.match_lighting.unwrap_or(true);
+                let response = ui
+                    .add_enabled(!busy && !selecting, egui::Checkbox::new(&mut match_lighting, crate::i18n::tr("Match brightness to surroundings")));
+                crate::widgets::register(ui, "aiRemoveMatchLighting", response.rect);
+                if response.changed()
+                    && let Err(e) = app.run("aiRemove.matchLighting", json!({"enabled":match_lighting}))
+                {
+                    app.toast(ui.ctx(), e);
+                }
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr("May look unsuitable at lighting or material boundaries. Turn off if needed."))
+                        .size(12.0)
+                        .color(t.text_dim),
+                );
             }
             #[cfg(target_arch = "wasm32")]
             let (model_id, supports_effects, supports_reconstruction) = (String::new(), false, false);
@@ -605,7 +619,7 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                 && let Err(e) = app.run(
                     "aiRemove.start",
                     if use_cloud {
-                        json!({"provider":"chatgpt","includeEffects":include_effects})
+                        json!({"provider":"chatgpt","includeEffects":include_effects,"matchLighting":app.session.ai_remove.match_lighting.unwrap_or(true)})
                     } else {
                         json!({"provider":"local","modelId":model_id})
                     },
