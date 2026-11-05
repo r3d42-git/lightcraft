@@ -74,11 +74,15 @@ fn remove_brush_mode_remains_available_without_segmentation_model() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn cloud_lighting_option_toggles_without_editing_photo_and_is_hidden_locally() {
+fn lighting_option_toggles_for_both_providers_without_editing_photo() {
     let mut h = detail("panel.remove");
     let before = develop(&h);
-    assert!(!h.app.widgets.iter().any(|(id, _)| id == "aiRemoveMatchLighting"));
+    assert!(h.app.widgets.iter().any(|(id, _)| id == "aiRemoveMatchLighting"));
     assert_eq!(exec(&mut h, "aiRemove.status", json!({}))["matchLighting"], true);
+    click(&mut h, "aiRemoveMatchLighting");
+    assert_eq!(exec(&mut h, "aiRemove.status", json!({}))["matchLighting"], false);
+    click(&mut h, "aiRemoveMatchLighting");
+    assert_eq!(develop(&h), before, "local lighting preference never edits saved retouches");
     exec(&mut h, "aiRemove.provider", json!({"provider":"chatgpt"}));
     h.step();
     assert!(h.app.widgets.iter().any(|(id, _)| id == "aiRemoveMatchLighting"));
@@ -87,7 +91,7 @@ fn cloud_lighting_option_toggles_without_editing_photo_and_is_hidden_locally() {
     assert_eq!(develop(&h), before, "the option does not edit or regenerate saved retouches");
     exec(&mut h, "aiRemove.provider", json!({"provider":"local"}));
     h.step();
-    assert!(!h.app.widgets.iter().any(|(id, _)| id == "aiRemoveMatchLighting"));
+    assert!(h.app.widgets.iter().any(|(id, _)| id == "aiRemoveMatchLighting"));
     exec(&mut h, "aiRemove.provider", json!({"provider":"chatgpt"}));
     h.step();
     assert_eq!(exec(&mut h, "aiRemove.status", json!({}))["matchLighting"], false, "choice survives provider switches within the session");

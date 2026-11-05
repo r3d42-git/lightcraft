@@ -1,4 +1,4 @@
-//! Optional cloud-only boundary illumination matching. No original masked RGB is
+//! Optional boundary illumination matching with provider-specific guidance. No original masked RGB is
 //! used in the equations; authorization and geometry remain frozen by the engine.
 use super::runner::RetouchInput;
 use rayon::prelude::*;
@@ -18,7 +18,7 @@ fn check(cancel: &AtomicBool, deadline: Instant) -> Result<(), String> {
         return Err("Cancelled.".into());
     }
     if Instant::now() >= deadline {
-        return Err("Cloud lighting matching timed out. Turn off Match lighting to use the unadjusted result.".into());
+        return Err("Lighting matching timed out. Turn off Match lighting to use the unadjusted result.".into());
     }
     Ok(())
 }
@@ -269,6 +269,140 @@ pub(super) fn apply(
     Ok(output)
 }
 
+// A local worker has already restored original RGB outside the mask. Never
+// differentiate that composited image: its artificial step would become guide
+// texture. Fit each side independently, then harmonically extend only the
+// additive boundary discrepancy. This preserves generated interior detail.
+const LOCAL_RADIUS: usize = 12;
+const MAX_LOCAL_BOUNDARY: usize = 16_384;
+
+fn local_fit(values: &[[f32; 3]], selected: &[bool], inside: bool, pixel: usize, width: usize, height: usize) -> Result<[f64; 3], String> {
+    let (x, y) = (pixel % width, pixel / width);
+    // Weighted normal equations for [1, dx/radius, dy/radius], RGB RHS.
+    let mut matrix = [[0.0f64; 6]; 3];
+    let mut samples = 0usize;
+    for yy in y.saturating_sub(LOCAL_RADIUS)..=(y + LOCAL_RADIUS).min(height - 1) {
+        for xx in x.saturating_sub(LOCAL_RADIUS)..=(x + LOCAL_RADIUS).min(width - 1) {
+            let at = yy * width + xx;
+            if selected[at] != inside {
+                continue;
+            }
+            let dx = (xx as f64 - x as f64) / LOCAL_RADIUS as f64;
+            let dy = (yy as f64 - y as f64) / LOCAL_RADIUS as f64;
+            let weight = (-2.0 * (dx * dx + dy * dy)).exp();
+            let basis = [1.0, dx, dy];
+            for row in 0..3 {
+                for column in 0..3 {
+                    matrix[row][column] += weight * basis[row] * basis[column];
+                    matrix[row][3 + column] += weight * basis[row] * f64::from(values[at][column]);
+                }
+            }
+            samples += 1;
+        }
+    }
+    let scale = matrix[0][0];
+    if samples < 6 || !scale.is_finite() || scale <= 0.0 {
+        return Err("Local lighting matching needs more surrounding context. Turn off Match lighting to use the unadjusted result.".into());
+    }
+    for column in 0..3 {
+        let pivot =
+            (column..3).max_by(|&a, &b| matrix[a][column].abs().total_cmp(&matrix[b][column].abs())).ok_or("Missing local lighting support.")?;
+        if !matrix[pivot][column].is_finite() || matrix[pivot][column].abs() < scale * 1e-6 {
+            return Err("Local lighting matching needs two-dimensional context. Turn off Match lighting to use the unadjusted result.".into());
+        }
+        matrix.swap(column, pivot);
+        let divisor = matrix[column][column];
+        for value in &mut matrix[column][column..] {
+            *value /= divisor;
+        }
+        let pivot_row = matrix[column];
+        for (row, values) in matrix.iter_mut().enumerate() {
+            if row != column {
+                let factor = values[column];
+                for k in column..6 {
+                    values[k] -= factor * pivot_row[k];
+                }
+            }
+        }
+    }
+    let value = [matrix[0][3], matrix[0][4], matrix[0][5]];
+    if !value.iter().all(|v| v.is_finite()) {
+        return Err("Non-finite local lighting fit.".into());
+    }
+    Ok(value)
+}
+
+/// Match a locally composited prediction without using original masked RGB.
+/// This corrects smooth boundary offsets; broad interior lighting errors and
+/// material discontinuities cannot be inferred reliably from the surrounding
+/// pixels. Unsupported geometry returns an error so the raw draft stays usable.
+pub(super) fn apply_local(
+    input: &RetouchInput,
+    generated: &[[f32; 3]],
+    gain: f32,
+    cancel: &AtomicBool,
+    deadline: Instant,
+) -> Result<Vec<[f32; 3]>, String> {
+    check(cancel, deadline)?;
+    let count = input
+        .width
+        .checked_mul(input.height)
+        .filter(|n| *n > 0 && input.width <= 1024 && input.height <= 1024)
+        .ok_or("Invalid local lighting dimensions.")?;
+    if generated.len() != count
+        || input.rgb.len() != count
+        || input.mask.len() != count
+        || input.protected.len() != count
+        || !gain.is_finite()
+        || gain < 1.0
+        || !input.mask.iter().all(|v| *v == 0 || *v == 255)
+        || !generated.iter().flatten().all(|v| v.is_finite())
+    {
+        return Err("Invalid local lighting input.".into());
+    }
+    let selected: Vec<bool> = input.mask.iter().zip(&input.protected).map(|(mask, protected)| *mask == 255 && !protected).collect();
+    // Masked original RGB is deliberately neither sampled nor validated.
+    if input.rgb.iter().zip(&selected).any(|(p, inside)| !inside && !p.iter().all(|v| v.is_finite())) {
+        return Err("Invalid original local lighting context.".into());
+    }
+    let domain = Domain::new(input)?;
+    if domain.boundary.len() > MAX_LOCAL_BOUNDARY {
+        return Err("Local lighting matching has too many boundary pixels. Turn off Match lighting to use the unadjusted result.".into());
+    }
+    let mut boundary_values = vec![[0.0; 3]; count];
+    for &pixel in &domain.boundary {
+        check(cancel, deadline)?;
+        let outside = local_fit(&input.rgb, &selected, false, pixel, input.width, input.height)?;
+        let inside = local_fit(generated, &selected, true, pixel, input.width, input.height)?;
+        for channel in 0..3 {
+            boundary_values[pixel][channel] = outside[channel] - inside[channel];
+        }
+    }
+    let mut output = input.rgb.clone();
+    for channel in 0..3 {
+        check(cancel, deadline)?;
+        let mut samples: Vec<f64> = domain.boundary.iter().map(|&i| boundary_values[i][channel]).collect();
+        let initial = median(&mut samples)?;
+        let b: Vec<f64> = domain
+            .pixels
+            .iter()
+            .map(|&pixel| {
+                adjacent(pixel, input.width, input.height).into_iter().flatten().filter(|&i| !selected[i]).map(|i| boundary_values[i][channel]).sum()
+            })
+            .collect();
+        let correction = domain.solve(&b, initial, cancel, deadline)?;
+        for (&pixel, delta) in domain.pixels.iter().zip(correction) {
+            let result = f64::from(generated[pixel][channel]) + delta;
+            if !result.is_finite() || !(result as f32).is_finite() || delta.abs() > 0.125 * f64::from(gain) {
+                return Err("Local lighting matching would change the result too much. Turn off Match lighting to use the unadjusted result.".into());
+            }
+            output[pixel][channel] = result as f32;
+        }
+    }
+    check(cancel, deadline)?;
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +530,198 @@ mod tests {
         input = fixture();
         let bad = vec![[0.9; 3]; input.rgb.len()];
         assert!(run(&input, &bad).unwrap_err().contains("too much"));
+    }
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn fixture() -> RetouchInput {
+        let (width, height) = (96, 80);
+        RetouchInput {
+            width,
+            height,
+            rgb: (0..width * height).map(|i| [0.3 + (i % width) as f32 * 0.001 + (i / width) as f32 * 0.0007; 3]).collect(),
+            mask: (0..width * height).map(|i| if (24..72).contains(&(i % width)) && (20..60).contains(&(i / width)) { 255 } else { 0 }).collect(),
+            protected: vec![false; width * height],
+            rect: [0., 0., 1., 1.],
+            seed: 0,
+            steps: 20,
+            effects: false,
+        }
+    }
+    fn run(input: &RetouchInput, generated: &[[f32; 3]]) -> Result<Vec<[f32; 3]>, String> {
+        apply_local(input, generated, 1., &AtomicBool::new(false), Instant::now() + Duration::from_secs(30))
+    }
+    fn generated(input: &RetouchInput, affine: bool) -> Vec<[f32; 3]> {
+        input
+            .rgb
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                if input.mask[i] == 255 && !input.protected[i] {
+                    let offset = 0.04 + if affine { (i % input.width) as f32 * 0.0002 + (i / input.width) as f32 * 0.0001 } else { 0. };
+                    p.map(|v| v + offset)
+                } else {
+                    *p
+                }
+            })
+            .collect()
+    }
+    #[test]
+    fn local_offset_and_affine_ramp_do_not_inherit_composite_boundary_step() {
+        let input = fixture();
+        for affine in [false, true] {
+            let result = run(&input, &generated(&input, affine)).unwrap();
+            for (i, pixel) in result.iter().enumerate() {
+                if input.mask[i] == 0 {
+                    assert_eq!(*pixel, input.rgb[i]);
+                } else {
+                    assert!((pixel[0] - input.rgb[i][0]).abs() < 2e-6, "{i}: {pixel:?}");
+                }
+            }
+        }
+    }
+    #[test]
+    fn local_poisoned_original_and_protected_hole_are_not_references() {
+        let mut input = fixture();
+        for y in 34..46 {
+            for x in 42..54 {
+                input.protected[y * input.width + x] = true;
+            }
+        }
+        let prediction = generated(&input, false);
+        let first = run(&input, &prediction).unwrap();
+        for (i, p) in input.rgb.iter_mut().enumerate() {
+            if input.mask[i] == 255 && !input.protected[i] {
+                *p = [f32::NAN, -100., 100.];
+            }
+        }
+        let second = run(&input, &prediction).unwrap();
+        for (i, pixel) in first.iter().enumerate() {
+            assert_eq!(*pixel, second[i]);
+        }
+        for (i, pixel) in second.iter().enumerate() {
+            if input.mask[i] == 0 || input.protected[i] {
+                assert_eq!(*pixel, input.rgb[i]);
+            }
+        }
+    }
+    #[test]
+    fn local_disconnected_and_border_masks_stay_finite_and_preserve_context() {
+        for border in [false, true] {
+            let mut input = fixture();
+            for (i, mask) in input.mask.iter_mut().enumerate() {
+                let (x, y) = (i % input.width, i / input.width);
+                *mask = if (16..64).contains(&y) && if border { x < 48 } else { (12..36).contains(&x) || (60..84).contains(&x) } { 255 } else { 0 };
+            }
+            let result = run(&input, &generated(&input, false)).unwrap();
+            for (i, pixel) in result.iter().enumerate() {
+                if input.mask[i] == 0 {
+                    assert_eq!(*pixel, input.rgb[i]);
+                } else {
+                    assert!((pixel[0] - input.rgb[i][0]).abs() < 2e-6);
+                }
+            }
+        }
+    }
+    #[test]
+    fn local_material_step_and_generated_fine_texture_survive_smooth_correction() {
+        let mut input = fixture();
+        for (i, p) in input.rgb.iter_mut().enumerate() {
+            if i % input.width >= 48 {
+                for value in p {
+                    *value += 0.2;
+                }
+            }
+        }
+        let result = run(&input, &generated(&input, false)).unwrap();
+        for (i, pixel) in result.iter().enumerate() {
+            assert!((pixel[0] - input.rgb[i][0]).abs() < 2e-6);
+        }
+        input = fixture();
+        let mut prediction = generated(&input, false);
+        for (i, pixel) in prediction.iter_mut().enumerate() {
+            if input.mask[i] == 255 {
+                for value in pixel {
+                    *value += 0.012 * ((i % input.width) as f32).sin();
+                }
+            }
+        }
+        let result = run(&input, &prediction).unwrap();
+        // Harmonic correction has no interior Laplacian: generated local
+        // curvature (including texture) is retained, rather than blurred away.
+        let i = 40 * input.width + 48;
+        let laplacian =
+            |pixels: &[[f32; 3]]| 4. * pixels[i][0] - adjacent(i, input.width, input.height).into_iter().flatten().map(|j| pixels[j][0]).sum::<f32>();
+        assert!((laplacian(&result) - laplacian(&prediction)).abs() < 2e-6);
+    }
+    #[test]
+    fn local_unsupported_geometry_limits_and_interruptions_fail_safely() {
+        let mut input = fixture();
+        let prediction = generated(&input, false);
+        assert!(
+            apply_local(&input, &prediction, 1., &AtomicBool::new(true), Instant::now() + Duration::from_secs(1)).unwrap_err().contains("Cancelled")
+        );
+        assert!(apply_local(&input, &prediction, 1., &AtomicBool::new(false), Instant::now()).unwrap_err().contains("timed out"));
+        assert!(run(&input, &generated(&input, false).iter().map(|p| p.map(|v| v + 0.3)).collect::<Vec<_>>()).unwrap_err().contains("too much"));
+        input.mask.fill(255);
+        assert!(run(&input, &prediction).unwrap_err().contains("context"));
+        for (i, mask) in input.mask.iter_mut().enumerate() {
+            *mask = if i % input.width == 48 && (10..70).contains(&(i / input.width)) { 255 } else { 0 };
+        }
+        assert!(run(&input, &prediction).unwrap_err().contains("two-dimensional"));
+        input = fixture();
+        input.mask[0] = 1;
+        assert!(run(&input, &prediction).unwrap_err().contains("Invalid"));
+    }
+}
+
+#[cfg(test)]
+mod saved_local_reference {
+    use super::*;
+    #[test]
+    #[ignore = "explicit offline archived local RAW patch parity; no model inference"]
+    fn local_match_agrees_with_independent_saved_reference() {
+        let root = std::path::PathBuf::from(std::env::var_os("LIGHTCRAFT_LOCAL_LIGHTING_REFERENCE_DIR").expect("reference directory"));
+        let settings: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("local-settings.json")).unwrap()).unwrap();
+        let baseline: lightcraft_develop::AiEdit = serde_json::from_value(settings["ai_edits"][0].clone()).unwrap();
+        let pixels = baseline.decode_pixels().unwrap();
+        let input = RetouchInput {
+            width: baseline.width as usize,
+            height: baseline.height as usize,
+            rgb: pixels.iter().map(|p| if p[3] > 0. { [f32::NAN; 3] } else { [p[0], p[1], p[2]] }).collect(),
+            mask: pixels.iter().map(|p| if p[3] > 0. { 255 } else { 0 }).collect(),
+            protected: vec![false; pixels.len()],
+            rect: baseline.rect,
+            seed: baseline.seed.try_into().unwrap(),
+            steps: 20,
+            effects: false,
+        };
+        let generated: Vec<_> = pixels.iter().map(|p| [p[0], p[1], p[2]]).collect();
+        let start = Instant::now();
+        let result = apply_local(&input, &generated, 1., &AtomicBool::new(false), Instant::now() + std::time::Duration::from_secs(90)).unwrap();
+        let bytes = std::fs::read(root.join("candidate.rgba")).unwrap();
+        assert_eq!(bytes.len(), pixels.len() * 16);
+        let mut max_error = 0.0f32;
+        let mut out = Vec::with_capacity(bytes.len());
+        for (i, (rgb, old)) in result.iter().zip(&pixels).enumerate() {
+            if old[3] == 0. {
+                assert_eq!(*rgb, [old[0], old[1], old[2]]);
+            }
+            for c in 0..3 {
+                let at = i * 16 + c * 4;
+                let expected = f32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+                max_error = max_error.max((rgb[c] - expected).abs());
+            }
+            for value in [rgb[0], rgb[1], rgb[2], old[3]] {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        assert!(max_error < 3e-6, "max error {max_error}");
+        std::fs::write(root.join("rust-candidate.rgba"), out).unwrap();
+        println!("archived local reference max_RGB_error={max_error}; elapsed={:?}", start.elapsed());
     }
 }

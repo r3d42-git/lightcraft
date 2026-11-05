@@ -490,6 +490,8 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                     .size(12.0)
                     .color(t.text_dim),
                 );
+            }
+            if !cfg!(target_arch = "wasm32") {
                 let mut match_lighting = app.session.ai_remove.match_lighting.unwrap_or(true);
                 let response = ui
                     .add_enabled(!busy && !selecting, egui::Checkbox::new(&mut match_lighting, crate::i18n::tr("Match brightness to surroundings")));
@@ -621,7 +623,7 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                     if use_cloud {
                         json!({"provider":"chatgpt","includeEffects":include_effects,"matchLighting":app.session.ai_remove.match_lighting.unwrap_or(true)})
                     } else {
-                        json!({"provider":"local","modelId":model_id})
+                        json!({"provider":"local","modelId":model_id,"matchLighting":app.session.ai_remove.match_lighting.unwrap_or(true)})
                     },
                 )
             {

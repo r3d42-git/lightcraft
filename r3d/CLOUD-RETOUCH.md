@@ -1,9 +1,9 @@
 # Optionale ChatGPT-Retusche: Objekt- und Schattenentfernung
 
-Stand: 05.11.2026 · Entwicklungskandidat; noch keine persönliche Live-Abnahme.
-Diese Dokumentation bestätigt weder einen abgeschlossenen CI-Lauf noch eine
-Installation oder eine Qualitätsabnahme des Kandidaten. Paritätsstatus und
-Zählwerte bleiben unverändert.
+Stand: 05.11.2026 · Die Cloud-Option mit abschaltbarem Helligkeitsabgleich wurde
+als R3D.48 persönlich abgenommen und privat installiert. Die Erweiterung des
+Abgleichs auf lokale Modelle wird separat geprüft; siehe `LOCAL-RETOUCH-LIGHTING.md`.
+Paritätsstatus und Zählwerte bleiben unverändert.
 
 ## Voraussetzungen und Kontingent
 
@@ -90,14 +90,13 @@ abgeglichen an. Durch Ausschalten lässt sich das bereits empfangene
 Cloud-Ergebnis ohne Abgleich verwenden.
 
 Übernehmen, Verwerfen sowie Foto- oder Anbieterwechsel verwerfen das temporäre
-Variantenpaar. Gespeicherte Patches bleiben unverändert. Eine persönliche
-Gesamtabnahme des Cloud-Kandidaten steht noch aus.
+Variantenpaar. Gespeicherte Patches bleiben unverändert.
 
 Generierte Inhalte, Hintergrundstruktur und die räumliche Übereinstimmung
 innerhalb der Maske sind nicht garantiert. Die lokale Begrenzung verhindert
 keine erfundenen Details oder sichtbaren Übergänge innerhalb des erlaubten
-Bereichs. Der Kandidat benötigt noch die Prüfung mit realen Fotos und die
-persönliche Abnahme. RAW-Entrauschung und SAM-Objektauswahl bleiben lokal.
+Bereichs. Die Abnahme am Tischmotiv ist keine allgemeine Garantie für andere
+Fotos. RAW-Entrauschung und SAM-Objektauswahl bleiben lokal.
 Im WASM-Build ist der ChatGPT-Anbieter nicht verfügbar.
 
 ## Schnittstellen und Quellen im Projekt

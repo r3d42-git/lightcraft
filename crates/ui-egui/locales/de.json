@@ -3659,5 +3659,16 @@
   "Invalid original lighting boundary.": "Der Helligkeitsabgleich konnte die Bilddaten nicht verarbeiten.",
   "Invalid generated lighting boundary.": "Der Helligkeitsabgleich konnte die Bilddaten nicht verarbeiten.",
   "Invalid lighting solution pixel.": "Der Helligkeitsabgleich konnte die Bilddaten nicht verarbeiten.",
-  "Invalid generated lighting pixel.": "Der Helligkeitsabgleich konnte die Bilddaten nicht verarbeiten."
+  "Invalid generated lighting pixel.": "Der Helligkeitsabgleich konnte die Bilddaten nicht verarbeiten.",
+  "Lighting matching timed out. Turn off Match lighting to use the unadjusted result.": "Der Helligkeitsabgleich hat zu lange gedauert. Schalte „Helligkeit an Umgebung angleichen“ aus, um das Ergebnis ohne Abgleich zu verwenden.",
+  "Local lighting matching needs more surrounding context. Turn off Match lighting to use the unadjusted result.": "Für den lokalen Helligkeitsabgleich fehlt ausreichend Umgebung. Schalte „Helligkeit an Umgebung angleichen“ aus, um das Ergebnis ohne Abgleich zu verwenden.",
+  "Local lighting matching needs two-dimensional context. Turn off Match lighting to use the unadjusted result.": "Die Auswahl ist für einen zuverlässigen lokalen Helligkeitsabgleich zu schmal. Schalte „Helligkeit an Umgebung angleichen“ aus, um das Ergebnis ohne Abgleich zu verwenden.",
+  "Local lighting matching has too many boundary pixels. Turn off Match lighting to use the unadjusted result.": "Die Auswahlgrenze ist für den lokalen Helligkeitsabgleich zu komplex. Schalte „Helligkeit an Umgebung angleichen“ aus, um das Ergebnis ohne Abgleich zu verwenden.",
+  "Local lighting matching would change the result too much. Turn off Match lighting to use the unadjusted result.": "Der lokale Helligkeitsabgleich würde das Ergebnis zu stark verändern. Schalte „Helligkeit an Umgebung angleichen“ aus, um das Ergebnis ohne Abgleich zu verwenden.",
+  "Invalid local lighting dimensions.": "Ungültige Bildgröße für den lokalen Helligkeitsabgleich.",
+  "Invalid local lighting input.": "Ungültige Bilddaten für den lokalen Helligkeitsabgleich.",
+  "Invalid original local lighting context.": "Ungültige Umgebungsdaten für den lokalen Helligkeitsabgleich.",
+  "Non-finite local lighting fit.": "Der lokale Helligkeitsabgleich liefert ungültige Zahlenwerte.",
+  "Missing local lighting support.": "Stützpunkte für den lokalen Helligkeitsabgleich fehlen.",
+  "Lighting provenance is too long. Turn off Match lighting to use the unadjusted result.": "Der Modellnachweis ist für den Helligkeitsabgleich zu lang. Schalte „Helligkeit an Umgebung angleichen“ aus, um das Ergebnis ohne Abgleich zu verwenden."
 }

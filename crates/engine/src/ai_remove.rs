@@ -46,10 +46,10 @@ pub enum Phase {
 pub struct AiRemove {
     /// Explicit session preference; local remains the default and uploads never happen implicitly.
     pub use_cloud: bool,
-    /// Cloud-only session preference; None means enabled for new cloud jobs.
+    /// Session preference for either provider; None means enabled for new jobs.
     pub match_lighting: Option<bool>,
     #[cfg(not(target_arch = "wasm32"))]
-    cloud_drafts: Option<CloudDrafts>,
+    lighting_drafts: Option<LightingDrafts>,
     pub include_effects: Option<bool>,
     pub reconstruct: Option<bool>,
     reconstruction_active: bool,
@@ -72,15 +72,16 @@ pub struct AiRemove {
 }
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug)]
-struct CloudDrafts {
+struct LightingDrafts {
     raw: AiEdit,
     matched: std::result::Result<AiEdit, String>,
 }
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 enum JobResult {
+    #[cfg(test)]
     Single(Box<AiEdit>),
-    Cloud(Box<CloudDrafts>),
+    Variants(Box<LightingDrafts>),
 }
 #[cfg(not(target_arch = "wasm32"))]
 struct Job {
@@ -96,6 +97,7 @@ impl Drop for Job {
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl Job {
+    #[cfg(test)]
     fn spawn(
         activity: &crate::activity::Activity,
         detail: &str,
@@ -103,12 +105,19 @@ impl Job {
     ) -> std::result::Result<Self, String> {
         Self::spawn_result(activity, detail, move |cancel, progress| work(cancel, progress).map(|edit| JobResult::Single(Box::new(edit))))
     }
+    fn spawn_variants(
+        activity: &crate::activity::Activity,
+        detail: &str,
+        work: impl FnOnce(&std::sync::atomic::AtomicBool, &dyn Fn(Phase)) -> std::result::Result<LightingDrafts, String> + Send + 'static,
+    ) -> std::result::Result<Self, String> {
+        Self::spawn_result(activity, detail, move |cancel, progress| work(cancel, progress).map(|variants| JobResult::Variants(Box::new(variants))))
+    }
     fn spawn_cloud(
         activity: &crate::activity::Activity,
-        work: impl FnOnce(&std::sync::atomic::AtomicBool, &dyn Fn(Phase)) -> std::result::Result<CloudDrafts, String> + Send + 'static,
+        work: impl FnOnce(&std::sync::atomic::AtomicBool, &dyn Fn(Phase)) -> std::result::Result<LightingDrafts, String> + Send + 'static,
     ) -> std::result::Result<Self, String> {
         Self::spawn_result(activity, "ChatGPT via Codex", move |cancel, progress| {
-            work(cancel, progress).map(|variants| JobResult::Cloud(Box::new(variants)))
+            work(cancel, progress).map(|variants| JobResult::Variants(Box::new(variants)))
         })
     }
     fn spawn_result(
@@ -141,8 +150,8 @@ impl Job {
 }
 impl AiRemove {
     #[cfg(not(target_arch = "wasm32"))]
-    fn select_cloud_draft(&mut self, enabled: bool) -> std::result::Result<(), String> {
-        let Some(variants) = &self.cloud_drafts else { return Ok(()) };
+    fn select_lighting_draft(&mut self, enabled: bool) -> std::result::Result<(), String> {
+        let Some(variants) = &self.lighting_drafts else { return Ok(()) };
         let edit = if enabled { variants.matched.clone()? } else { variants.raw.clone() };
         self.draft = Some(edit);
         self.preview_settings = None;
@@ -244,6 +253,7 @@ impl Session {
                     self.ai_remove.message = self.ai_remove.cancel_reason.unwrap_or("Cancelled.").into();
                 } else {
                     match result {
+                        #[cfg(test)]
                         Ok(JobResult::Single(edit)) => {
                             self.ai_remove.draft = Some(*edit);
                             self.ai_remove.phase = Phase::Ready;
@@ -256,15 +266,15 @@ impl Session {
                             }
                             .into();
                         }
-                        Ok(JobResult::Cloud(variants)) => {
-                            self.ai_remove.cloud_drafts = Some(*variants);
-                            if let Err(message) = self.ai_remove.select_cloud_draft(self.ai_remove.match_lighting.unwrap_or(true)) {
+                        Ok(JobResult::Variants(variants)) => {
+                            self.ai_remove.lighting_drafts = Some(*variants);
+                            if let Err(message) = self.ai_remove.select_lighting_draft(self.ai_remove.match_lighting.unwrap_or(true)) {
                                 self.ai_remove.draft = None;
                                 self.ai_remove.preview_settings = None;
                                 self.ai_remove.phase = Phase::Failed;
                                 self.ai_remove.message = message;
                                 // Retain the valid job tag and raw variant so turning matching
-                                // off can use this exact response without another cloud request.
+                                // off can use this exact response without another inference.
                             }
                         }
                         Err(e) => {
@@ -311,7 +321,7 @@ impl Session {
     fn ai_remove_cancel(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.ai_remove.cloud_drafts = None;
+            self.ai_remove.lighting_drafts = None;
         }
         self.ai_remove.effects_active = false;
         self.ai_remove.reconstruction_active = false;
@@ -336,6 +346,7 @@ impl Session {
         model_id: Option<String>,
         include_effects: Option<bool>,
         reconstruct: Option<bool>,
+        match_lighting: Option<bool>,
     ) -> Result<Value> {
         self.ai_remove_poll();
         if self.ai_remove.busy() {
@@ -407,7 +418,7 @@ impl Session {
         static NEXT_SEED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(42);
         let seed = if backend == "lama" { 0 } else { next_diffusion_seed(&NEXT_SEED) };
         let detail = selected_id.clone();
-        let job = Job::spawn(&self.activity, &detail, move |stopped, progress| {
+        let job = Job::spawn_variants(&self.activity, &detail, move |stopped, progress| {
             progress(Phase::Loading);
             let _store_lock = crate::ai_models::store_lock(&ai_root).map_err(|e| e.to_string())?;
             if stopped.load(std::sync::atomic::Ordering::Relaxed) {
@@ -450,8 +461,8 @@ impl Session {
         .map_err(error)?;
         self.ai_remove = AiRemove {
             use_cloud: false,
-            match_lighting: self.ai_remove.match_lighting,
-            cloud_drafts: None,
+            match_lighting: Some(match_lighting.unwrap_or(self.ai_remove.match_lighting.unwrap_or(true))),
+            lighting_drafts: None,
             include_effects: self.ai_remove.include_effects,
             reconstruct: self.ai_remove.reconstruct,
             reconstruction_active,
@@ -501,12 +512,12 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             }
             Ok(json!({"provider":if cloud { "chatgpt" } else { "local" }}))
         }),
-        cmd!(query "aiRemove.matchLighting", "Match Cloud Lighting", [], None, "{enabled:bool} — choose lighting matching for cloud jobs or switch the cached cloud draft without another request", always, |s, p| {
+        cmd!(query "aiRemove.matchLighting", "Match Removal Lighting", [], None, "{enabled:bool} — choose lighting matching for local or cloud jobs; switch the cached draft without another inference", always, |s, p| {
             s.ai_remove_poll();
             if s.ai_remove.busy() || s.ai_remove.selecting { return Err(error("Wait for AI Remove and object selection to finish.")); }
             let enabled = p.get("enabled").and_then(Value::as_bool).ok_or_else(|| error("Give enabled as a boolean."))?;
             #[cfg(not(target_arch = "wasm32"))]
-            if s.ai_remove.use_cloud { s.ai_remove.select_cloud_draft(enabled).map_err(error)?; }
+            s.ai_remove.select_lighting_draft(enabled).map_err(error)?;
             s.ai_remove.match_lighting = Some(enabled);
             Ok(json!({"matchLighting":enabled}))
         }),
@@ -563,7 +574,7 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
                 if cloud {
                     if backend.is_some() || model_id.is_some() || reconstruct.is_some() { return Err(error("ChatGPT removal does not accept a local model or reconstruction override.")); }
                     s.ai_remove_start_cloud(include_effects, match_lighting)
-                } else { s.ai_remove_start(backend, model_id, include_effects, reconstruct) }
+                } else { s.ai_remove_start(backend, model_id, include_effects, reconstruct, match_lighting) }
             }
             #[cfg(target_arch = "wasm32")] { let _ = (s, cloud, backend, model_id, include_effects, reconstruct, match_lighting); Err(error("AI Remove is unavailable in the browser.")) }
         }),
@@ -698,6 +709,7 @@ fn run_worker(
     cancel: &std::sync::atomic::AtomicBool,
 ) -> std::result::Result<AiEdit, String> {
     run_worker_with_progress(runtime, backend, package, None, source, info, d, spot, None, Vec::new(), false, continuous, seed, cancel, &|_| {})
+        .map(|variants| variants.raw)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -718,7 +730,7 @@ fn run_worker_with_progress(
     seed: u32,
     cancel: &std::sync::atomic::AtomicBool,
     progress: &dyn Fn(Phase),
-) -> std::result::Result<AiEdit, String> {
+) -> std::result::Result<LightingDrafts, String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1200);
     progress(Phase::Preparing);
     let mut prepared = match segmented {
@@ -732,7 +744,7 @@ fn run_worker_with_progress(
             first.stage_record(lightcraft_develop::ai_edit::AiStageRole::Effects, seed, 20).map_err(|e| e.to_string())?,
             second.stage_record(lightcraft_develop::ai_edit::AiStageRole::Reconstruction, seed, 20).map_err(|e| e.to_string())?,
         ];
-        runner::execute_chain_with_progress(
+        runner::execute_chain_variants_with_progress(
             prepared,
             &protocol::ProtocolRunner { runtime, backend, package, deadline: Some(deadline) },
             &protocol::ProtocolRunner { runtime: &second.runtime, backend: &second.backend, package: Some(second), deadline: Some(deadline) },
@@ -742,7 +754,13 @@ fn run_worker_with_progress(
             progress,
         )
     } else {
-        runner::execute_with_progress(prepared, &protocol::ProtocolRunner { runtime, backend, package, deadline: None }, cancel, progress)
+        runner::execute_variants_with_progress(
+            prepared,
+            &protocol::ProtocolRunner { runtime, backend, package, deadline: Some(deadline) },
+            cancel,
+            deadline,
+            progress,
+        )
     }
 }
 

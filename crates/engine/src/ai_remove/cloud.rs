@@ -1,7 +1,7 @@
 //! Cloud reconstruction keeps local geometry, authorization and raster persistence.
 //! Shadow coverage is determined by the existing trusted ObjectClear stage; only
 //! original RGB and the final authorized mask are sent to ChatGPT through Codex.
-use super::{AiRemove, CloudDrafts, Job, Phase, SelectionMask, codex_client, error, input, lighting, patch, protocol, runner};
+use super::{AiRemove, Job, LightingDrafts, Phase, SelectionMask, codex_client, error, input, lighting, patch, protocol, runner};
 use crate::{Result, Session};
 use lightcraft_codecs::{DecodeOptions, EncodeImage, EncodeMeta};
 use lightcraft_develop::Spot;
@@ -101,7 +101,7 @@ impl Session {
         self.ai_remove = AiRemove {
             use_cloud: true,
             match_lighting: Some(match_lighting),
-            cloud_drafts: None,
+            lighting_drafts: None,
             include_effects: self.ai_remove.include_effects,
             reconstruct: self.ai_remove.reconstruct,
             effects_active: effects,
@@ -134,7 +134,7 @@ fn execute_variants(
     cancel: &AtomicBool,
     deadline: Instant,
     progress: &dyn Fn(Phase),
-) -> std::result::Result<CloudDrafts, String> {
+) -> std::result::Result<LightingDrafts, String> {
     let mut reconstruction = prepared.request.clone();
     if let Some(coverage) = &coverage {
         if coverage.len() != reconstruction.mask.len()
@@ -178,7 +178,7 @@ fn execute_variants(
     });
     let raw = patch::construct(input::PreparedInput { request: prepared.request.clone(), support: prepared.support.clone() }, output)?;
     let matched = matched_output.and_then(|output| patch::construct(prepared, output));
-    Ok(CloudDrafts { raw, matched })
+    Ok(LightingDrafts { raw, matched })
 }
 
 fn inference_gain(input: &RetouchInput) -> std::result::Result<f32, String> {
@@ -565,10 +565,10 @@ mod tests {
         );
     }
 
-    fn fake_variants(calls: &std::sync::atomic::AtomicUsize) -> CloudDrafts {
+    fn fake_variants(calls: &std::sync::atomic::AtomicUsize) -> LightingDrafts {
         fake_variants_for(context_fixture(), calls)
     }
-    fn fake_variants_for(input: RetouchInput, calls: &std::sync::atomic::AtomicUsize) -> CloudDrafts {
+    fn fake_variants_for(input: RetouchInput, calls: &std::sync::atomic::AtomicUsize) -> LightingDrafts {
         struct Fake<'a>(&'a std::sync::atomic::AtomicUsize);
         impl RetouchRunner for Fake<'_> {
             fn identity(&self) -> RetouchIdentity {
@@ -595,7 +595,7 @@ mod tests {
         )
         .unwrap()
     }
-    fn completed_session(variants: CloudDrafts, matching: bool) -> Session {
+    fn completed_session(variants: LightingDrafts, matching: bool) -> Session {
         let mut session = Session::with_demo();
         let (tx, reply) = std::sync::mpsc::channel();
         let (_, phases) = std::sync::mpsc::channel();
@@ -603,7 +603,7 @@ mod tests {
         session.ai_remove.match_lighting = Some(matching);
         session.ai_remove.tag = session.ai_remove_tag();
         session.ai_remove.job = Some(Job { reply, phases, cancel: std::sync::Arc::new(AtomicBool::new(false)) });
-        tx.send(Ok(super::super::JobResult::Cloud(Box::new(variants)))).unwrap();
+        tx.send(Ok(super::super::JobResult::Variants(Box::new(variants)))).unwrap();
         session.ai_remove_poll();
         session
     }
@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(s.ai_remove.draft.as_ref(), Some(&matched));
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         s.execute("aiRemove.accept", &json!({})).unwrap();
-        assert!(s.ai_remove.cloud_drafts.is_none());
+        assert!(s.ai_remove.lighting_drafts.is_none());
         assert!(s.ai_remove.draft.is_none());
         let accepted = s.develop_of(id).unwrap();
         assert_eq!(accepted.ai_edits.len(), before.ai_edits.len() + 1);
@@ -696,7 +696,7 @@ mod tests {
                 }
             }
             s.ai_remove_poll();
-            assert!(s.ai_remove.cloud_drafts.is_none(), "{action}");
+            assert!(s.ai_remove.lighting_drafts.is_none(), "{action}");
             assert!(s.ai_remove.draft.is_none());
             assert!(s.ai_remove.preview_settings.is_none());
         }
