@@ -3618,5 +3618,22 @@
   "Two-stage reconstruction needs the trusted native RORem model.": "Die zweistufige Rekonstruktion benötigt das vertrauenswürdige native RORem-Modell.",
   "Two-stage reconstruction requires supported ObjectClear effects.": "Die zweistufige Rekonstruktion benötigt unterstützte ObjectClear-Effekte.",
   "Wait for AI Remove and object selection to finish.": "Auf den Abschluss von KI-Entfernung und Objektauswahl warten.",
-  "Two local stages with ObjectClear and RORem; takes longer.": "Zwei lokale Schritte mit ObjectClear und RORem; benötigt mehr Zeit."
+  "Two local stages with ObjectClear and RORem; takes longer.": "Zwei lokale Schritte mit ObjectClear und RORem; benötigt mehr Zeit.",
+  "Processing": "Verarbeitung",
+  "Local on this Mac": "Lokal auf diesem Mac",
+  "ChatGPT via Codex": "ChatGPT über Codex",
+  "Sends the image region and mask to OpenAI. Uses your ChatGPT plan through Codex; ChatGPT login required, no API key.": "Sendet Bildausschnitt und Maske an OpenAI. Nutzt dein ChatGPT-Kontingent über Codex; ChatGPT-Anmeldung erforderlich, kein API-Schlüssel.",
+  "Detects shadows and reflections locally with ObjectClear; ChatGPT reconstructs the selected region.": "ObjectClear erkennt Schatten und Spiegelungen lokal; ChatGPT rekonstruiert den ausgewählten Bereich.",
+  "Object removal is available without a local model.": "Objekte lassen sich auch ohne lokales Modell entfernen.",
+  "Remove with ChatGPT": "Mit ChatGPT entfernen",
+  "Sending selected region to ChatGPT through Codex…": "Ausgewählter Bereich wird über Codex an ChatGPT gesendet…",
+  "Codex executable not found. Install or update Codex/ChatGPT and sign in with ChatGPT.": "Codex wurde nicht gefunden. Codex/ChatGPT installieren oder aktualisieren und mit ChatGPT anmelden.",
+  "ChatGPT subscription sign-in is required; API-key billing is disabled.": "Eine Anmeldung mit dem ChatGPT-Abo ist erforderlich; die Abrechnung über einen API-Schlüssel ist deaktiviert.",
+  "This ChatGPT account does not currently offer image generation through Codex.": "Dieses ChatGPT-Konto bietet derzeit keine Bildgenerierung über Codex an.",
+  "Cloud editing cancelled.": "Cloud-Bearbeitung abgebrochen.",
+  "Cloud editing timed out.": "Die Zeit für die Cloud-Bearbeitung ist abgelaufen.",
+  "Cloud shadow removal needs local ObjectClear shadow detection.": "Die Cloud-Schattenentfernung benötigt die lokale Schattenerkennung durch ObjectClear.",
+  "ChatGPT changed the image canvas. Try again; no retouch was applied.": "ChatGPT hat das Bildformat verändert. Erneut versuchen; es wurde keine Retusche übernommen.",
+  "Codex completed without an image.": "Codex hat kein Bild zurückgegeben.",
+  "Codex protocol request failed.": "Die Anfrage an Codex ist fehlgeschlagen."
 }

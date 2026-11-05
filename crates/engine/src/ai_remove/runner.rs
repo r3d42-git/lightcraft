@@ -115,7 +115,7 @@ pub(super) fn execute_with_progress(
     patch::construct(prepared, output)
 }
 
-fn invoke_checked(input: &RetouchInput, runner: &dyn RetouchRunner, cancel: &AtomicBool) -> Result<RetouchOutput, String> {
+pub(super) fn invoke_checked(input: &RetouchInput, runner: &dyn RetouchRunner, cancel: &AtomicBool) -> Result<RetouchOutput, String> {
     if cancel.load(Ordering::Relaxed) {
         return Err("Cancelled.".into());
     }

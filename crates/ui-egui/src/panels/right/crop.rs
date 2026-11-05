@@ -452,11 +452,45 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             let t = Tokens::get(ui.ctx());
             ui.spacing_mut().item_spacing.y = 6.0;
             ui.add_space(6.0);
-            ui.label(egui::RichText::new(crate::i18n::tr("AI model")).font(t.semibold(13.0)).color(t.text_label));
             let busy = app.session.ai_remove.busy();
             let selecting = app.session.ai_remove.selecting;
             let selected =
                 app.session.ai_remove.selection.is_some() || app.session.ai_remove.object_selection.as_ref().is_some_and(|s| s.seg.is_some());
+            let use_cloud = !cfg!(target_arch = "wasm32") && app.session.ai_remove.use_cloud;
+            ui.label(egui::RichText::new(crate::i18n::tr("Processing")).font(t.semibold(13.0)).color(t.text_label));
+            let provider = ui
+                .add_enabled_ui(!busy && !selecting, |ui| {
+                    crate::widgets::combo_box("ai-remove-provider")
+                        .width(ui.available_width())
+                        .selected_text(crate::i18n::tr(if use_cloud { "ChatGPT via Codex" } else { "Local on this Mac" }))
+                        .show_ui(ui, |ui| {
+                            for (cloud, label) in [(false, "Local on this Mac"), (true, "ChatGPT via Codex")] {
+                                if ui
+                                    .add_enabled(
+                                        !cloud || !cfg!(target_arch = "wasm32"),
+                                        egui::Button::selectable(use_cloud == cloud, crate::i18n::tr(label)),
+                                    )
+                                    .clicked()
+                                    && let Err(e) = app.run("aiRemove.provider", json!({"provider":if cloud { "chatgpt" } else { "local" }}))
+                                {
+                                    app.toast(ui.ctx(), e);
+                                }
+                            }
+                        })
+                })
+                .inner;
+            crate::widgets::name_combo(&provider.response, crate::i18n::tr("Processing"));
+            crate::widgets::register(ui, "aiRemoveProvider", provider.response.rect);
+            let use_cloud = !cfg!(target_arch = "wasm32") && app.session.ai_remove.use_cloud;
+            if use_cloud {
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr(
+                        "Sends the image region and mask to OpenAI. Uses your ChatGPT plan through Codex; ChatGPT login required, no API key.",
+                    ))
+                    .size(12.0)
+                    .color(t.text_dim),
+                );
+            }
             #[cfg(target_arch = "wasm32")]
             let (model_id, supports_effects, supports_reconstruction) = (String::new(), false, false);
             #[cfg(not(target_arch = "wasm32"))]
@@ -471,32 +505,39 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                     .find(|m| m["id"] == selected)
                     .map(ai_model_label)
                     .unwrap_or_else(|| crate::i18n::tr("No installed AI model").to_owned());
-                let response = crate::widgets::combo_box("ai-remove-model").width(ui.available_width()).selected_text(label).show_ui(ui, |ui| {
-                    for model in &models {
-                        if let Some(id) = model["id"].as_str() {
-                            let label = ai_model_label(model);
-                            if ui
-                                .add_enabled(!busy && status["running"] != true, egui::Button::selectable(id == selected, label))
-                                .on_hover_text(ai_model_details(model))
-                                .clicked()
-                            {
-                                let _ = app.run("aiModels.setDefault", json!({"id":id}));
+                if !use_cloud {
+                    ui.label(egui::RichText::new(crate::i18n::tr("AI model")).font(t.semibold(13.0)).color(t.text_label));
+                    let response = crate::widgets::combo_box("ai-remove-model").width(ui.available_width()).selected_text(label).show_ui(ui, |ui| {
+                        for model in &models {
+                            if let Some(id) = model["id"].as_str() {
+                                let label = ai_model_label(model);
+                                if ui
+                                    .add_enabled(!busy && status["running"] != true, egui::Button::selectable(id == selected, label))
+                                    .on_hover_text(ai_model_details(model))
+                                    .clicked()
+                                {
+                                    let _ = app.run("aiModels.setDefault", json!({"id":id}));
+                                }
                             }
                         }
+                    });
+                    if let Some(model) = models.iter().find(|m| m["id"] == selected) {
+                        response.response.clone().on_hover_text(ai_model_details(model));
                     }
-                });
-                if let Some(model) = models.iter().find(|m| m["id"] == selected) {
-                    response.response.clone().on_hover_text(ai_model_details(model));
+                    crate::widgets::name_combo(&response.response, crate::i18n::tr("AI model"));
+                    crate::widgets::register(ui, "aiRemoveModel", response.response.rect);
+                    // Store diagnostics can include long paths and arrive between pointer frames.
+                    // Keep them in the management window so controls below this row stay in place.
+                    ai_model_management(app, ui, &status);
                 }
-                crate::widgets::name_combo(&response.response, crate::i18n::tr("AI model"));
-                crate::widgets::register(ui, "aiRemoveModel", response.response.rect);
-                // Store diagnostics can include long paths and arrive between pointer frames.
-                // Keep them in the management window so controls below this row stay in place.
-                ai_model_management(app, ui, &status);
                 if status["running"] == true {
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
                 }
-                let supports_effects = models.iter().find(|m| m["id"] == selected).is_some_and(|m| m["supports_effects"] == true);
+                let supports_effects = if use_cloud {
+                    models.iter().any(|m| m["id"] == lightcraft_engine::ai_models::EFFECTS_MODEL_ID && m["supports_effects"] == true)
+                } else {
+                    models.iter().find(|m| m["id"] == selected).is_some_and(|m| m["supports_effects"] == true)
+                };
                 let supports_reconstruction = models.iter().find(|m| m["id"] == selected).is_some_and(|m| m["supports_reconstruction"] == true);
                 (model_id, supports_effects, supports_reconstruction)
             };
@@ -516,35 +557,59 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                         .color(t.text_dim),
                 );
             }
-            let mut reconstruct = app.session.ai_remove.reconstruct.unwrap_or(true) && supports_reconstruction && include_effects;
-            let response = ui.add_enabled(
-                !busy && !selecting && supports_reconstruction && include_effects,
-                egui::Checkbox::new(&mut reconstruct, crate::i18n::tr("Detailed background reconstruction")),
-            );
-            let response = response.on_hover_text(crate::i18n::tr("Two local stages with ObjectClear and RORem; takes longer."));
-            crate::widgets::register(ui, "aiRemoveReconstruction", response.rect);
-            if response.changed() {
-                let _ = app.run("aiRemove.reconstruction", json!({"mode":if reconstruct { "objectclear-rorem" } else { "selected" }}));
+            if use_cloud && supports_effects {
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr(
+                        "Detects shadows and reflections locally with ObjectClear; ChatGPT reconstructs the selected region.",
+                    ))
+                    .size(12.0)
+                    .color(t.text_dim),
+                );
             }
-            ui.label(
-                egui::RichText::new(crate::i18n::tr(if supports_reconstruction && include_effects {
-                    "Reconstructs background texture and transitions; takes longer."
-                } else {
-                    "Detailed reconstruction needs both local models and enabled shadow and reflection removal."
-                }))
-                .size(12.0)
-                .color(t.text_dim),
-            );
+            if use_cloud && !supports_effects {
+                ui.label(egui::RichText::new(crate::i18n::tr("Object removal is available without a local model.")).size(12.0).color(t.text_dim));
+            }
+            if !use_cloud {
+                let mut reconstruct = app.session.ai_remove.reconstruct.unwrap_or(true) && supports_reconstruction && include_effects;
+                let response = ui.add_enabled(
+                    !busy && !selecting && supports_reconstruction && include_effects,
+                    egui::Checkbox::new(&mut reconstruct, crate::i18n::tr("Detailed background reconstruction")),
+                );
+                let response = response.on_hover_text(crate::i18n::tr("Two local stages with ObjectClear and RORem; takes longer."));
+                crate::widgets::register(ui, "aiRemoveReconstruction", response.rect);
+                if response.changed() {
+                    let _ = app.run("aiRemove.reconstruction", json!({"mode":if reconstruct { "objectclear-rorem" } else { "selected" }}));
+                }
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr(if supports_reconstruction && include_effects {
+                        "Reconstructs background texture and transitions; takes longer."
+                    } else {
+                        "Detailed reconstruction needs both local models and enabled shadow and reflection removal."
+                    }))
+                    .size(12.0)
+                    .color(t.text_dim),
+                );
+            }
             ui.add_space(8.0);
             if ui
-                .add_enabled_ui((selected || sel.is_some()) && !busy && !selecting && !model_id.is_empty(), |ui| {
-                    let response = ui.add_sized([ui.available_width(), 34.0], egui::Button::new(crate::i18n::tr("Remove selected area")));
+                .add_enabled_ui((selected || sel.is_some()) && !busy && !selecting && (use_cloud || !model_id.is_empty()), |ui| {
+                    let response = ui.add_sized(
+                        [ui.available_width(), 34.0],
+                        egui::Button::new(crate::i18n::tr(if use_cloud { "Remove with ChatGPT" } else { "Remove selected area" })),
+                    );
                     crate::widgets::register(ui, "aiRemoveStart", response.rect);
                     response
                 })
                 .inner
                 .clicked()
-                && let Err(e) = app.run("aiRemove.start", json!({"modelId":model_id}))
+                && let Err(e) = app.run(
+                    "aiRemove.start",
+                    if use_cloud {
+                        json!({"provider":"chatgpt","includeEffects":include_effects})
+                    } else {
+                        json!({"provider":"local","modelId":model_id})
+                    },
+                )
             {
                 app.toast(ui.ctx(), e);
             }

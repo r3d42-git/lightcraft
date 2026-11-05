@@ -5,6 +5,10 @@ pub use object::{ObjectSelection, SelectionMask};
 use serde_json::{Value, json};
 
 #[cfg(not(target_arch = "wasm32"))]
+mod cloud;
+#[cfg(not(target_arch = "wasm32"))]
+mod codex_client;
+#[cfg(not(target_arch = "wasm32"))]
 mod input;
 mod object;
 #[cfg(not(target_arch = "wasm32"))]
@@ -38,6 +42,8 @@ pub enum Phase {
 
 #[derive(Default)]
 pub struct AiRemove {
+    /// Explicit session preference; local remains the default and uploads never happen implicitly.
+    pub use_cloud: bool,
     pub include_effects: Option<bool>,
     pub reconstruct: Option<bool>,
     reconstruction_active: bool,
@@ -379,6 +385,7 @@ impl Session {
         })
         .map_err(error)?;
         self.ai_remove = AiRemove {
+            use_cloud: false,
             include_effects: self.ai_remove.include_effects,
             reconstruct: self.ai_remove.reconstruct,
             reconstruction_active,
@@ -414,6 +421,20 @@ fn reconstruction_param(p: &Value) -> Result<Option<bool>> {
 pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
     use crate::cmd::{always, cmd, has_active};
     vec![
+        cmd!(query "aiRemove.provider", "AI Remove Provider", [], None, "{provider:local|chatgpt} — select local models or the signed-in Codex ChatGPT plan", always, |s, p| {
+            s.ai_remove_poll();
+            if s.ai_remove.busy() || s.ai_remove.selecting { return Err(error("Wait for AI Remove and object selection to finish.")); }
+            if p.get("provider").is_none() { return Err(error("Choose local or chatgpt as the AI Remove provider.")); }
+            let cloud = provider_param(p, false)?;
+            #[cfg(target_arch = "wasm32")]
+            if cloud { return Err(error("ChatGPT removal requires the desktop app and Codex.")); }
+            if s.ai_remove.use_cloud != cloud {
+                s.ai_remove_cancel();
+                s.ai_remove.use_cloud = cloud;
+                s.ai_remove.message = String::new();
+            }
+            Ok(json!({"provider":if cloud { "chatgpt" } else { "local" }}))
+        }),
         cmd!(query "aiRemove.objectPoint", "Select AI Object", [], None, "{x,y,exclude?:bool} — refine a temporary object selection", has_active, |s, p| s.ai_remove_object_point(p)),
         cmd!(query "aiRemove.objectMargin", "Object Selection Margin", [], None, "{size:0..0.02} — visible margin as a fraction of the long edge", has_active, |s, p| s.ai_remove_object_margin(p)),
         cmd!(query "aiRemove.refineBrush", "Refine AI Selection", [], None, "{points:[[x,y],…],size?,subtract?:bool}", has_active, |s, p| s.ai_remove_refine_brush(p)),
@@ -453,7 +474,8 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             }
             Ok(json!({"enabled": enabled}))
         }),
-        cmd!(query "aiRemove.start", "AI Remove", [], None, "{modelId?:installed revision ID,backend?:objectclear|lama|rorem,includeEffects?:bool,reconstruction?:objectclear-rorem|selected} — starts a local background draft from the painted selection", has_active, |s, p| {
+        cmd!(query "aiRemove.start", "AI Remove", [], None, "{provider?:local|chatgpt,modelId?:installed revision ID,backend?:objectclear|lama|rorem,includeEffects?:bool,reconstruction?:objectclear-rorem|selected} — starts a background draft; chatgpt sends the selected region and mask to OpenAI through Codex", has_active, |s, p| {
+            let cloud = provider_param(p, s.ai_remove.use_cloud)?;
             let backend = if p.get("backend").is_some() { Some(backend_param(p)?) } else { None };
             let model_id = match p.get("modelId") { None=>None,Some(Value::String(id)) if !id.is_empty() && id.len()<=256=>Some(id.clone()),_=>return Err(error("Give modelId as a nonempty installed model ID.")) };
             let include_effects = match p.get("includeEffects") {
@@ -461,10 +483,15 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
                 None => None,
             };
             let reconstruct = reconstruction_param(p)?;
-            #[cfg(not(target_arch = "wasm32"))] { s.ai_remove_start(backend, model_id, include_effects, reconstruct) }
-            #[cfg(target_arch = "wasm32")] { let _ = (s, backend, model_id, include_effects, reconstruct); Err(error("Local AI Remove is unavailable in the browser.")) }
+            #[cfg(not(target_arch = "wasm32"))] {
+                if cloud {
+                    if backend.is_some() || model_id.is_some() || reconstruct.is_some() { return Err(error("ChatGPT removal does not accept a local model or reconstruction override.")); }
+                    s.ai_remove_start_cloud(include_effects)
+                } else { s.ai_remove_start(backend, model_id, include_effects, reconstruct) }
+            }
+            #[cfg(target_arch = "wasm32")] { let _ = (s, cloud, backend, model_id, include_effects, reconstruct); Err(error("AI Remove is unavailable in the browser.")) }
         }),
-        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"reconstruction":if s.ai_remove.reconstruction_active { "objectclear-rorem" } else { "selected" },"reconstructionPreference":match s.ai_remove.reconstruct { Some(true)=>"objectclear-rorem",Some(false)=>"selected",None=>"auto" },"stage":match s.ai_remove.phase { Phase::Effects=>1,Phase::Reconstruction=>2,_=>0 },"draftStages":s.ai_remove.draft.as_ref().map(|e|&e.stages),"reconstructionAvailable":s.ai_remove_reconstruction_available(),"includeEffects":s.ai_remove.include_effects.unwrap_or(true),"effectsActive":s.ai_remove.effects_active,"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some() || s.ai_remove.object_selection.as_ref().is_some_and(|o|o.seg.is_some()),"selecting":s.ai_remove.selecting,"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
+        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"provider":if s.ai_remove.use_cloud { "chatgpt" } else { "local" },"reconstruction":if s.ai_remove.reconstruction_active { "objectclear-rorem" } else { "selected" },"reconstructionPreference":match s.ai_remove.reconstruct { Some(true)=>"objectclear-rorem",Some(false)=>"selected",None=>"auto" },"stage":match s.ai_remove.phase { Phase::Effects=>1,Phase::Reconstruction=>2,_=>0 },"draftStages":s.ai_remove.draft.as_ref().map(|e|&e.stages),"reconstructionAvailable":s.ai_remove_reconstruction_available(),"includeEffects":s.ai_remove.include_effects.unwrap_or(true),"effectsActive":s.ai_remove.effects_active,"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some() || s.ai_remove.object_selection.as_ref().is_some_and(|o|o.seg.is_some()),"selecting":s.ai_remove.selecting,"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
         cmd!(query "aiRemove.previewOriginal", "Show Photo Without AI Draft", [], None, "{enabled:bool} — compare the pending result without accepting it", has_active, |s, p| {
             s.ai_remove_poll();
             if s.ai_remove.draft.is_none() { return Err(error("No current AI result to preview.")); }
@@ -512,6 +539,15 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             Ok(json!({}))
         }),
     ]
+}
+
+fn provider_param(params: &Value, default_cloud: bool) -> Result<bool> {
+    match params.get("provider") {
+        None => Ok(default_cloud),
+        Some(Value::String(s)) if s == "local" => Ok(false),
+        Some(Value::String(s)) if s == "chatgpt" => Ok(true),
+        _ => Err(error("Choose local or chatgpt as the AI Remove provider.")),
+    }
 }
 
 fn selection_param(params: &Value) -> Result<Spot> {
