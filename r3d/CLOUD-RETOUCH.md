@@ -64,6 +64,11 @@ unverändert. Ein Fehler oder Abbruch speichert keinen neuen Patch. Erst
 Provenienz; Öffnen und Export erfordern danach weder Codex noch KI-Modelle.
 Vorhandene Retuschen werden nicht neu berechnet.
 
+Kleine globale Farbverschiebungen des Cloud-Ergebnisses werden anhand der
+unveränderten Umgebung ausgeglichen, damit beim Einsetzen weniger sichtbare
+Helligkeitsränder entstehen. Dieser Abgleich verändert nur die erlaubte Füllung;
+bei zu wenig geeignetem oder widersprüchlichem Kontext wird er ausgelassen.
+
 Generierte Inhalte, Hintergrundstruktur und die räumliche Übereinstimmung
 innerhalb der Maske sind nicht garantiert. Die lokale Begrenzung verhindert
 keine erfundenen Details oder sichtbaren Übergänge innerhalb des erlaubten

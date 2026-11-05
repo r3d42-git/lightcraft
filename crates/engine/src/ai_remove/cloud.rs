@@ -272,19 +272,72 @@ impl Canvas {
         }
         let working = decoded.to_working();
         let scale = working.width as f32 / self.image.width as f32;
+        let sample = |i: usize| {
+            let x = ((self.x + i % input.width) as f32 + 0.5) * scale;
+            let y = ((self.y + i / input.width) as f32 + 0.5) * scale;
+            working.sample_bilinear(x, y).map(|v| v * self.gain)
+        };
+        let offset = self.context_offset(input, &sample);
         let mut rgb = input.rgb.clone();
         for (i, pixel) in rgb.iter_mut().enumerate() {
             if input.mask.get(i) != Some(&255) || input.protected.get(i) != Some(&false) {
                 continue;
             }
-            let x = ((self.x + i % input.width) as f32 + 0.5) * scale;
-            let y = ((self.y + i / input.width) as f32 + 0.5) * scale;
-            *pixel = working.sample_bilinear(x, y).map(|v| v * self.gain);
+            let generated = sample(i);
+            *pixel = std::array::from_fn(|channel| generated[channel] + offset[channel]);
         }
         if !rgb.iter().flatten().all(|v| v.is_finite()) {
             return Err("ChatGPT returned non-finite pixel data.".into());
         }
         Ok(rgb)
+    }
+
+    /// Match small global cloud colour drift to unchanged local context. The
+    /// robust offset preserves generated texture; it does not change geometry or
+    /// blend across the authorized mask. Sparse, clipped, excessive or spatially
+    /// inconsistent evidence leaves the generated result unadjusted.
+    fn context_offset(&self, input: &RetouchInput, sample: &impl Fn(usize) -> [f32; 3]) -> [f32; 3] {
+        const MAX_SAMPLES: usize = 4096;
+        const MIN_SAMPLES: usize = 64;
+        let stride = input.rgb.len().div_ceil(MAX_SAMPLES).max(1);
+        let mut differences = Vec::with_capacity(MAX_SAMPLES);
+        for i in (0..input.rgb.len()).step_by(stride) {
+            if input.mask.get(i) != Some(&0) || input.protected.get(i) != Some(&false) {
+                continue;
+            }
+            let at = (self.y + i / input.width) * self.image.width + self.x + i % input.width;
+            let Some(preview) = self.image.data.get(at) else { continue };
+            // Gamut/exposure clipping in the transmitted preview cannot provide
+            // trustworthy evidence of an inferred colour shift.
+            if preview.iter().take(3).any(|v| *v <= 8 || *v >= 247) {
+                continue;
+            }
+            let Some(original) = input.rgb.get(i) else { continue };
+            let generated = sample(i);
+            let difference: [f32; 3] = std::array::from_fn(|channel| original[channel] - generated[channel]);
+            if difference.iter().all(|v: &f32| v.is_finite()) {
+                differences.push(difference);
+            }
+        }
+        if differences.len() < MIN_SAMPLES {
+            return [0.0; 3];
+        }
+        let offset: [f32; 3] = std::array::from_fn(|channel| {
+            let mut values: Vec<f32> = differences.iter().map(|d| d[channel]).collect();
+            values.sort_unstable_by(f32::total_cmp);
+            values.get(values.len() / 2).copied().unwrap_or(0.0)
+        });
+        if offset.iter().any(|v| v.abs() > 0.125 * self.gain) {
+            return [0.0; 3];
+        }
+        // At least three quarters of all samples must support the same shift in
+        // every channel. Do not mistake changed structure or local tone changes
+        // for a global offset and aggressively recolour the selected patch.
+        let consistent = differences.iter().filter(|d| (0..3).all(|channel| (d[channel] - offset[channel]).abs() <= 0.025 * self.gain)).count();
+        if consistent * 4 < differences.len() * 3 {
+            return [0.0; 3];
+        }
+        offset
     }
 }
 
@@ -319,6 +372,86 @@ mod tests {
         for v in result[2] {
             assert!((v - 0.2).abs() < 0.012, "{v}");
         }
+    }
+    fn context_fixture() -> RetouchInput {
+        let mut input = input();
+        input.rgb.fill([0.4; 3]);
+        input.mask.fill(0);
+        let red = lightcraft_color::SRGB.to_space(&lightcraft_color::REC2020).apply_f32([0.8, 0.0, 0.0]);
+        for y in 20..44 {
+            for x in 48..80 {
+                input.rgb[y * input.width + x] = red;
+                input.mask[y * input.width + x] = 255;
+            }
+        }
+        input
+    }
+    fn generated_background(canvas: &Canvas, color: [f32; 3]) -> Rgba8 {
+        let mut generated = canvas.image.clone();
+        let srgb = lightcraft_color::REC2020.to_space(&lightcraft_color::SRGB).apply_f32(color);
+        let encoded = srgb.map(|v| lightcraft_color::transfer::encode_srgb8(v / canvas.gain));
+        for y in canvas.y..canvas.image.height - canvas.y {
+            for x in canvas.x..canvas.image.width - canvas.x {
+                generated.data[y * generated.width + x] = [encoded[0], encoded[1], encoded[2], 255];
+            }
+        }
+        generated
+    }
+    #[test]
+    fn cloud_global_brightness_drift_matches_context_without_restoring_removed_object() {
+        let mut input = context_fixture();
+        input.rgb[0] = [4.0, 2.0, 1.0];
+        let protected = 32 * input.width + 64;
+        input.rgb[protected] = [3.0, 1.5, 0.5];
+        input.protected[protected] = true;
+        let canvas = Canvas::new(&input).unwrap();
+        let generated = generated_background(&canvas, [0.4 + 0.025 * canvas.gain; 3]);
+        let result = canvas.decode(&png(&generated).unwrap(), &input).unwrap();
+        for (i, pixel) in result.iter().enumerate() {
+            if input.mask[i] == 0 || input.protected[i] {
+                assert_eq!(*pixel, input.rgb[i]);
+            } else {
+                assert!(pixel.iter().all(|v| (*v - 0.4).abs() < 0.0001), "{pixel:?}");
+            }
+        }
+        assert_eq!(result[protected], [3.0, 1.5, 0.5]);
+    }
+    #[test]
+    fn cloud_context_normal_roundtrip_and_generated_texture_remain_stable() {
+        let input = context_fixture();
+        let canvas = Canvas::new(&input).unwrap();
+        let roundtrip = canvas.decode(&png(&canvas.image).unwrap(), &input).unwrap();
+        let selected = 32 * input.width + 64;
+        for channel in 0..3 {
+            assert!((roundtrip[selected][channel] - input.rgb[selected][channel]).abs() < 0.005);
+        }
+        let mut generated = generated_background(&canvas, [0.44; 3]);
+        let at = (canvas.y + 32) * generated.width + canvas.x + 64;
+        generated.data[at] = [190, 180, 170, 255];
+        let working = lightcraft_codecs::decode(&png(&generated).unwrap(), DecodeOptions::default()).unwrap().to_working();
+        let base = working.sample_bilinear(canvas.x as f32 + 1.5, canvas.y as f32 + 1.5);
+        let texture = working.sample_bilinear((canvas.x + 64) as f32 + 0.5, (canvas.y + 32) as f32 + 0.5);
+        let result = canvas.decode(&png(&generated).unwrap(), &input).unwrap();
+        for channel in 0..3 {
+            assert!((result[selected][channel] - (0.4 + texture[channel] - base[channel])).abs() < 0.0001);
+        }
+    }
+    #[test]
+    fn cloud_insufficient_clipped_excessive_or_inconsistent_context_is_not_corrected() {
+        let mut sparse = context_fixture();
+        sparse.mask.fill(255);
+        sparse.mask.iter_mut().take(63).for_each(|v| *v = 0);
+        let canvas = Canvas::new(&sparse).unwrap();
+        assert_eq!(canvas.context_offset(&sparse, &|_| [0.45; 3]), [0.0; 3]);
+        let actual = canvas.decode(&png(&generated_background(&canvas, [0.45; 3])).unwrap(), &sparse).unwrap();
+        assert!(actual[100].iter().all(|v| *v > 0.44));
+        let mut input = context_fixture();
+        let canvas = Canvas::new(&input).unwrap();
+        assert_eq!(canvas.context_offset(&input, &|_| [0.7; 3]), [0.0; 3]);
+        assert_eq!(canvas.context_offset(&input, &|i| if (i / input.width).is_multiple_of(2) { [0.3; 3] } else { [0.5; 3] }), [0.0; 3]);
+        input.rgb.fill([0.0; 3]);
+        let canvas = Canvas::new(&input).unwrap();
+        assert_eq!(canvas.context_offset(&input, &|_| [0.05; 3]), [0.0; 3]);
     }
     #[test]
     fn cloud_rejects_changed_aspect_transparency_and_invalid_input() {
@@ -394,6 +527,58 @@ mod tests {
         assert_eq!(pixels[3], [0.2, 0.3, 0.4, 0.0]);
         assert!(execute_with_coverage(prepared(), vec![255, 0, 255, 0], &Fake, &AtomicBool::new(false), &|_| {}).is_err());
         assert!(execute_with_coverage(prepared(), vec![255, 255, 255, 0], &Fake, &AtomicBool::new(true), &|_| {}).is_err());
+    }
+
+    #[test]
+    #[ignore = "explicit offline reference from the procedural cloud edit, no network"]
+    fn saved_synthetic_reference_corrects_observed_brightness_drift() {
+        let root = PathBuf::from(std::env::var_os("LIGHTCRAFT_CLOUD_REFERENCE_DIR").expect("explicit synthetic reference directory"));
+        let image = PathBuf::from(std::env::var_os("LIGHTCRAFT_CLOUD_REFERENCE_PNG").expect("explicit generated reference PNG"));
+        let settings: Value = serde_json::from_slice(&std::fs::read(root.join("synthetic-accepted-settings.json")).unwrap()).unwrap();
+        let edit: lightcraft_develop::AiEdit = serde_json::from_value(settings["ai_edits"][0].clone()).unwrap();
+        assert_eq!((edit.width, edit.height), (687, 512));
+        let pixels = edit.decode_pixels().unwrap();
+        let neutral = [0.4564111f32; 3];
+        let input = RetouchInput {
+            width: edit.width as usize,
+            height: edit.height as usize,
+            rgb: pixels.iter().map(|p| if p[3] > 0.0 { neutral } else { [p[0], p[1], p[2]] }).collect(),
+            mask: pixels.iter().map(|p| if p[3] > 0.0 { 255 } else { 0 }).collect(),
+            protected: vec![false; pixels.len()],
+            rect: edit.rect,
+            seed: u32::try_from(edit.seed).unwrap(),
+            steps: 20,
+            effects: false,
+        };
+        let canvas = Canvas::new(&input).unwrap();
+        assert_eq!(canvas.gain, 1.0);
+        let corrected = canvas.decode(&std::fs::read(image).unwrap(), &input).unwrap();
+        let mut old_error = 0.0f64;
+        let mut new_error = 0.0f64;
+        let mut selected = 0usize;
+        for (i, result) in corrected.iter().enumerate() {
+            if input.mask[i] == 0 {
+                assert_eq!(*result, input.rgb[i]);
+            } else {
+                selected += 1;
+                for channel in 0..3 {
+                    old_error += f64::from((pixels[i][channel] - neutral[channel]).abs());
+                    new_error += f64::from((result[channel] - neutral[channel]).abs());
+                }
+            }
+        }
+        assert!(selected > 0);
+        let old_mae = old_error / (selected * 3) as f64;
+        let new_mae = new_error / (selected * 3) as f64;
+        println!(
+            "Offline synthetic reference: selected={selected}; previous_MAE={old_mae:.8}; corrected_MAE={new_mae:.8}; ratio={:.6}",
+            new_mae / old_mae
+        );
+        assert!(new_mae < old_mae * 0.25 && new_mae < 0.01, "old={old_mae}, corrected={new_mae}");
+        if let Some(path) = std::env::var_os("LIGHTCRAFT_CLOUD_REFERENCE_OUTPUT") {
+            let output = RetouchInput { rgb: corrected, ..input };
+            std::fs::write(path, png(&Canvas::new(&output).unwrap().image).unwrap()).unwrap();
+        }
     }
 
     #[test]
