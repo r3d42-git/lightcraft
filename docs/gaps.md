@@ -189,10 +189,14 @@ The upstream gap assessment above is retained. This personal fork additionally h
 
 ## R3D local retouch lighting candidate — 2026-11-05
 
-Optional local boundary brightness matching extends `cmd:aiRemove.matchLighting`
+Optional local low-frequency and boundary brightness matching extends `cmd:aiRemove.matchLighting`
 to native removal and the ObjectClear → RORem chain. Cached raw/matched drafts
 come from one inference and retain coverage, protection and stage provenance.
 The Cloud implementation was privately accepted in R3D.48; this local extension
-requires separate real-image and personal acceptance. Material/texture transitions
-remain a quality limitation. See `r3d/LOCAL-RETOUCH-LIGHTING.md`; existing upstream
+is authorized for a private everyday installation with known quality limits.
+ObjectClear direct is the default; RORem reconstruction is explicit opt-in.
+Masked local-affine Gaussian
+decomposition plus harmonic boundary continuation corrects broad generated interior
+illumination; legitimate curved lighting and material/texture transitions remain
+quality limitations. See `r3d/LOCAL-RETOUCH-LIGHTING.md`; existing upstream
 statuses and parity counts are unchanged.

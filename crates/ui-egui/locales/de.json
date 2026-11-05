@@ -3669,6 +3669,7 @@
   "Invalid local lighting input.": "Ungültige Bilddaten für den lokalen Helligkeitsabgleich.",
   "Invalid original local lighting context.": "Ungültige Umgebungsdaten für den lokalen Helligkeitsabgleich.",
   "Non-finite local lighting fit.": "Der lokale Helligkeitsabgleich liefert ungültige Zahlenwerte.",
+  "Non-finite local lighting frequency split.": "Die lokale Helligkeitstrennung liefert ungültige Zahlenwerte.",
   "Missing local lighting support.": "Stützpunkte für den lokalen Helligkeitsabgleich fehlen.",
   "Lighting provenance is too long. Turn off Match lighting to use the unadjusted result.": "Der Modellnachweis ist für den Helligkeitsabgleich zu lang. Schalte „Helligkeit an Umgebung angleichen“ aus, um das Ergebnis ohne Abgleich zu verwenden."
 }

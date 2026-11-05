@@ -5277,14 +5277,18 @@ fn ai_remove_effects_checkbox_requires_capability_and_changes_preference() {
 }
 
 #[test]
-fn ai_remove_reconstruction_checkbox_defaults_on_only_for_verified_pair() {
+fn ai_remove_reconstruction_checkbox_is_opt_in_for_verified_pair() {
     let mut h = demo([1200.0, 1100.0]);
     let t = Duration::from_secs(10);
     h.app.session.ai_models.snapshot = json!({"models":[{"id":"synthetic","backend":"objectclear","name":"Test ObjectClear","supports_effects":true,"supports_reconstruction":true}],"defaults":{"selected_model_id":"synthetic"}});
     h.request("ui.set", json!({"view":"detail","right":"remove"}), t);
     h.settle(SETTLE);
+    assert_eq!(h.app.session.ai_remove.reconstruct, None);
+    assert!(!h.app.session.ai_remove.reconstruction_enabled(None));
     let result = h.request("ui.clickWidget", json!({"id":"aiRemoveReconstruction"}), t);
     assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(h.app.session.ai_remove.reconstruct, Some(true), "verified pair is available but starts off");
+    h.request("ui.clickWidget", json!({"id":"aiRemoveReconstruction"}), t);
     assert_eq!(h.app.session.ai_remove.reconstruct, Some(false));
     h.request("ui.clickWidget", json!({"id":"aiRemoveReconstruction"}), t);
     assert_eq!(h.app.session.ai_remove.reconstruct, Some(true));

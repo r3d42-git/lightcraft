@@ -271,12 +271,19 @@ pub(super) fn apply(
 
 // A local worker has already restored original RGB outside the mask. Never
 // differentiate that composited image: its artificial step would become guide
-// texture. Fit each side independently, then harmonically extend only the
-// additive boundary discrepancy. This preserves generated interior detail.
+// texture. Split generated pixels with a masked affine Gaussian instead, then
+// harmonically extend an independently fitted exterior/interior residual boundary.
 const LOCAL_RADIUS: usize = 12;
 const MAX_LOCAL_BOUNDARY: usize = 16_384;
 
-fn local_fit(values: &[[f32; 3]], selected: &[bool], inside: bool, pixel: usize, width: usize, height: usize) -> Result<[f64; 3], String> {
+fn local_fit<T: Copy + Into<f64>>(
+    values: &[[T; 3]],
+    selected: &[bool],
+    inside: bool,
+    pixel: usize,
+    width: usize,
+    height: usize,
+) -> Result<[f64; 3], String> {
     let (x, y) = (pixel % width, pixel / width);
     // Weighted normal equations for [1, dx/radius, dy/radius], RGB RHS.
     let mut matrix = [[0.0f64; 6]; 3];
@@ -294,7 +301,7 @@ fn local_fit(values: &[[f32; 3]], selected: &[bool], inside: bool, pixel: usize,
             for row in 0..3 {
                 for column in 0..3 {
                     matrix[row][column] += weight * basis[row] * basis[column];
-                    matrix[row][3 + column] += weight * basis[row] * f64::from(values[at][column]);
+                    matrix[row][3 + column] += weight * basis[row] * values[at][column].into();
                 }
             }
             samples += 1;
@@ -332,10 +339,118 @@ fn local_fit(values: &[[f32; 3]], selected: &[bool], inside: bool, pixel: usize,
     Ok(value)
 }
 
-/// Match a locally composited prediction without using original masked RGB.
-/// This corrects smooth boundary offsets; broad interior lighting errors and
-/// material discontinuities cannot be inferred reliably from the surrounding
-/// pixels. Unsupported geometry returns an error so the raw draft stays usable.
+/// Generated-only affine Gaussian high-frequency residual. Zero padding and
+/// normalized sigma32/truncate4 moments match the independent SciPy reference.
+/// Only selected pixels require a fit; originals inside the mask are not inputs.
+/// The full-resolution horizontal buffer has nine f64 scalars per pixel (72 MiB
+/// at 1024²), and is dropped before the boundary fits/CG. No 2-D kernel loop.
+fn local_high(
+    generated: &[[f32; 3]],
+    selected: &[bool],
+    width: usize,
+    height: usize,
+    cancel: &AtomicBool,
+    deadline: Instant,
+) -> Result<Vec<[f64; 3]>, String> {
+    let mut kernel: Vec<[f64; 3]> = (0..=2 * RADIUS)
+        .map(|k| {
+            let offset = (k as f64 - RADIUS as f64) / SIGMA;
+            let weight = (-0.5 * offset * offset).exp();
+            [weight, weight * offset, weight * offset * offset]
+        })
+        .collect();
+    let normalization: f64 = kernel.iter().map(|k| k[0]).sum();
+    for weights in &mut kernel {
+        for value in weights {
+            *value /= normalization;
+        }
+    }
+    // [mask0, maskx, maskxx, RGB0(3), RGBx(3)] in sigma-normalized coordinates.
+    let mut horizontal = vec![[0.0f64; 9]; generated.len()];
+    horizontal.par_chunks_mut(width).enumerate().try_for_each(|(y, row)| -> Result<(), String> {
+        check(cancel, deadline)?;
+        let first = y * width;
+        if !selected[first..first + width].iter().any(|v| *v) {
+            return Ok(());
+        }
+        for (x, moments) in row.iter_mut().enumerate() {
+            for xx in x.saturating_sub(RADIUS)..=(x + RADIUS).min(width - 1) {
+                let at = first + xx;
+                if !selected[at] {
+                    continue;
+                }
+                let weights = kernel[xx + RADIUS - x];
+                for k in 0..3 {
+                    moments[k] += weights[k];
+                    let value = f64::from(generated[at][k]);
+                    moments[3 + k] += weights[0] * value;
+                    moments[6 + k] += weights[1] * value;
+                }
+            }
+        }
+        Ok(())
+    })?;
+    let mut high = vec![[0.0; 3]; generated.len()];
+    high.par_chunks_mut(width).enumerate().try_for_each(|(y, row)| -> Result<(), String> {
+        check(cancel, deadline)?;
+        for (x, pixel) in row.iter_mut().enumerate() {
+            let at = y * width + x;
+            if !selected[at] {
+                continue;
+            }
+            // [s, sx, sy, sxx, sxy, syy] and [b, bx, by] for each channel.
+            let mut moments = [0.0; 6];
+            let mut rhs = [[0.0; 3]; 3];
+            for yy in y.saturating_sub(RADIUS)..=(y + RADIUS).min(height - 1) {
+                let weights = kernel[yy + RADIUS - y];
+                let h = horizontal[yy * width + x];
+                moments[0] += weights[0] * h[0];
+                moments[1] += weights[0] * h[1];
+                moments[2] += weights[1] * h[0];
+                moments[3] += weights[0] * h[2];
+                moments[4] += weights[1] * h[1];
+                moments[5] += weights[2] * h[0];
+                for channel in 0..3 {
+                    rhs[channel][0] += weights[0] * h[3 + channel];
+                    rhs[channel][1] += weights[0] * h[6 + channel];
+                    rhs[channel][2] += weights[1] * h[3 + channel];
+                }
+            }
+            let [s, sx, sy, sxx, sxy, syy] = moments;
+            if !s.is_finite() || s <= 1e-5 {
+                return Err("Local lighting matching needs two-dimensional context. Turn off Match lighting to use the unadjusted result.".into());
+            }
+            let vx = sxx - sx * sx / s;
+            let vy = syy - sy * sy / s;
+            let vxy = sxy - sx * sy / s;
+            let determinant = vx * vy - vxy * vxy;
+            if !determinant.is_finite() || determinant <= 1e-6 * s * s {
+                return Err("Local lighting matching needs two-dimensional context. Turn off Match lighting to use the unadjusted result.".into());
+            }
+            for channel in 0..3 {
+                let [b, bx, by] = rhs[channel];
+                let ex = bx - sx * b / s;
+                let ey = by - sy * b / s;
+                let ax = (ex * vy - ey * vxy) / determinant;
+                let ay = (ey * vx - ex * vxy) / determinant;
+                let low = (b - sx * ax - sy * ay) / s;
+                pixel[channel] = f64::from(generated[at][channel]) - low;
+                if !pixel[channel].is_finite() {
+                    return Err("Non-finite local lighting frequency split.".into());
+                }
+            }
+        }
+        Ok(())
+    })?;
+    check(cancel, deadline)?;
+    Ok(high)
+}
+
+/// Replace broad generated illumination using surrounding context, preserving
+/// the generated-only high-frequency residual. Independent radius12 boundary
+/// fits retain local mean brightness continuity without filtering the composite
+/// seam. Real interior light curvature/material transitions remain a limitation.
+/// Unsupported geometry returns an error so the raw draft stays usable.
 pub(super) fn apply_local(
     input: &RetouchInput,
     generated: &[[f32; 3]],
@@ -369,11 +484,12 @@ pub(super) fn apply_local(
     if domain.boundary.len() > MAX_LOCAL_BOUNDARY {
         return Err("Local lighting matching has too many boundary pixels. Turn off Match lighting to use the unadjusted result.".into());
     }
+    let high = local_high(generated, &selected, input.width, input.height, cancel, deadline)?;
     let mut boundary_values = vec![[0.0; 3]; count];
     for &pixel in &domain.boundary {
         check(cancel, deadline)?;
         let outside = local_fit(&input.rgb, &selected, false, pixel, input.width, input.height)?;
-        let inside = local_fit(generated, &selected, true, pixel, input.width, input.height)?;
+        let inside = local_fit(&high, &selected, true, pixel, input.width, input.height)?;
         for channel in 0..3 {
             boundary_values[pixel][channel] = outside[channel] - inside[channel];
         }
@@ -390,9 +506,10 @@ pub(super) fn apply_local(
                 adjacent(pixel, input.width, input.height).into_iter().flatten().filter(|&i| !selected[i]).map(|i| boundary_values[i][channel]).sum()
             })
             .collect();
-        let correction = domain.solve(&b, initial, cancel, deadline)?;
-        for (&pixel, delta) in domain.pixels.iter().zip(correction) {
-            let result = f64::from(generated[pixel][channel]) + delta;
+        let basis = domain.solve(&b, initial, cancel, deadline)?;
+        for (&pixel, value) in domain.pixels.iter().zip(basis) {
+            let result = high[pixel][channel] + value;
+            let delta = result - f64::from(generated[pixel][channel]);
             if !result.is_finite() || !(result as f32).is_finite() || delta.abs() > 0.125 * f64::from(gain) {
                 return Err("Local lighting matching would change the result too much. Turn off Match lighting to use the unadjusted result.".into());
             }
@@ -573,6 +690,8 @@ mod local_tests {
     #[test]
     fn local_offset_and_affine_ramp_do_not_inherit_composite_boundary_step() {
         let input = fixture();
+        let correct = run(&input, &input.rgb).unwrap();
+        assert!(correct.iter().zip(&input.rgb).all(|(a, b)| a.iter().zip(b).all(|(a, b)| (*a - *b).abs() < 2e-6)));
         for affine in [false, true] {
             let result = run(&input, &generated(&input, affine)).unwrap();
             for (i, pixel) in result.iter().enumerate() {
@@ -617,31 +736,75 @@ mod local_tests {
                 let (x, y) = (i % input.width, i / input.width);
                 *mask = if (16..64).contains(&y) && if border { x < 48 } else { (12..36).contains(&x) || (60..84).contains(&x) } { 255 } else { 0 };
             }
-            let result = run(&input, &generated(&input, false)).unwrap();
+            let prediction = generated(&input, false);
+            let result = run(&input, &prediction).unwrap();
             for (i, pixel) in result.iter().enumerate() {
                 if input.mask[i] == 0 {
                     assert_eq!(*pixel, input.rgb[i]);
                 } else {
-                    assert!((pixel[0] - input.rgb[i][0]).abs() < 2e-6);
+                    assert!(pixel.iter().all(|v| v.is_finite()));
+                    if !border {
+                        assert!((pixel[0] - input.rgb[i][0]).abs() < 2e-6);
+                    }
+                    // At an image edge there is no exterior sample along the
+                    // missing normal: harmonic extension need not reproduce
+                    // a ramp in that direction. It must still remain bounded.
+                    assert!((pixel[0] - prediction[i][0]).abs() <= 0.125);
                 }
             }
         }
     }
     #[test]
-    fn local_material_step_and_generated_fine_texture_survive_smooth_correction() {
+    fn local_broad_interior_cloud_is_removed_without_original_interior_guidance() {
+        let mut input = fixture();
+        input.width = 384;
+        input.height = 384;
+        input.rgb.clear();
+        input.mask.clear();
+        input.protected = vec![false; input.width * input.height];
+        let mut prediction = Vec::with_capacity(input.width * input.height);
+        let mut truth = Vec::with_capacity(input.width * input.height);
+        for y in 0..input.height {
+            for x in 0..input.width {
+                let u = x as f64 / input.width as f64;
+                let v = y as f64 / input.height as f64;
+                let texture = 0.008 * (std::f64::consts::TAU * x as f64 / 9.0).sin()
+                    + 0.005 * (std::f64::consts::TAU * (y as f64 + 0.27 * x as f64) / 5.0).sin();
+                let clean = (0.2 + 0.06 * u + 0.02 * v + texture) as f32;
+                let inside = ((u - 0.5) / 0.30).powi(2) + ((v - 0.51) / 0.34).powi(2) < 1.0;
+                let cloud = 0.065 * (-0.5 * (((u - 0.52) / 0.18).powi(2) + ((v - 0.51) / 0.20).powi(2))).exp();
+                input.mask.push(if inside { 255 } else { 0 });
+                // No clean original interior is available to the algorithm.
+                input.rgb.push(if inside { [f32::NAN; 3] } else { [clean; 3] });
+                truth.push(clean);
+                prediction.push([clean + if inside { cloud as f32 } else { 0.0 }; 3]);
+            }
+        }
+        let result = run(&input, &prediction).unwrap();
+        let mut before = 0.0;
+        let mut after = 0.0;
+        for (i, pixel) in result.iter().enumerate() {
+            if input.mask[i] == 255 {
+                before += f64::from((prediction[i][0] - truth[i]).abs());
+                after += f64::from((pixel[0] - truth[i]).abs());
+            } else {
+                assert_eq!(*pixel, input.rgb[i]);
+            }
+        }
+        // Boundary-only harmonic offsets retain this broad interior error;
+        // frequency replacement must remove at least 85% of its mean error.
+        assert!(after < before * 0.15, "before={before}; after={after}");
+    }
+    #[test]
+    fn local_frequency_contract_changes_broad_material_but_preserves_generated_high_pass() {
         let mut input = fixture();
         for (i, p) in input.rgb.iter_mut().enumerate() {
             if i % input.width >= 48 {
                 for value in p {
-                    *value += 0.2;
+                    *value += 0.08;
                 }
             }
         }
-        let result = run(&input, &generated(&input, false)).unwrap();
-        for (i, pixel) in result.iter().enumerate() {
-            assert!((pixel[0] - input.rgb[i][0]).abs() < 2e-6);
-        }
-        input = fixture();
         let mut prediction = generated(&input, false);
         for (i, pixel) in prediction.iter_mut().enumerate() {
             if input.mask[i] == 255 {
@@ -651,12 +814,38 @@ mod local_tests {
             }
         }
         let result = run(&input, &prediction).unwrap();
-        // Harmonic correction has no interior Laplacian: generated local
-        // curvature (including texture) is retained, rather than blurred away.
-        let i = 40 * input.width + 48;
-        let laplacian =
-            |pixels: &[[f32; 3]]| 4. * pixels[i][0] - adjacent(i, input.width, input.height).into_iter().flatten().map(|j| pixels[j][0]).sum::<f32>();
-        assert!((laplacian(&result) - laplacian(&prediction)).abs() < 2e-6);
+        let selected: Vec<_> = input.mask.iter().map(|v| *v == 255).collect();
+        let high =
+            local_high(&prediction, &selected, input.width, input.height, &AtomicBool::new(false), Instant::now() + Duration::from_secs(30)).unwrap();
+        let mut max_material_change = 0.0f32;
+        for (i, pixel) in result.iter().enumerate() {
+            if !selected[i] {
+                assert_eq!(*pixel, input.rgb[i]);
+            } else {
+                max_material_change = max_material_change.max((pixel[0] - input.rgb[i][0]).abs());
+                assert!(pixel.iter().all(|v| v.is_finite()));
+            }
+        }
+        // Legitimate broad material structure is no longer an exact invariant.
+        assert!(max_material_change > 0.001);
+        // The basis is harmonic: the output retains the *masked high-pass*
+        // Laplacian, not the entire generated image's low-frequency curvature.
+        // Check several textured interior points, including the material edge.
+        for y in [30, 40, 50] {
+            for x in [35, 47, 48, 60] {
+                let i = y * input.width + x;
+                let result_lap = 4.0 * f64::from(result[i][0])
+                    - adjacent(i, input.width, input.height).into_iter().flatten().map(|j| f64::from(result[j][0])).sum::<f64>();
+                let high_lap = 4.0 * high[i][0] - adjacent(i, input.width, input.height).into_iter().flatten().map(|j| high[j][0]).sum::<f64>();
+                assert!((result_lap - high_lap).abs() < 2e-6, "{x},{y}: {result_lap} vs {high_lap}");
+            }
+        }
+        // Away from the material edge, the generated fine oscillation's
+        // curvature is retained (the broad fitted baseline is much smoother).
+        let i = 40 * input.width + 60;
+        let texture_lap = 0.012 * (2.0 * 60.0f64.sin() - 59.0f64.sin() - 61.0f64.sin());
+        let high_lap = 4.0 * high[i][0] - adjacent(i, input.width, input.height).into_iter().flatten().map(|j| high[j][0]).sum::<f64>();
+        assert!((high_lap - texture_lap).abs() < 2e-4, "{high_lap} vs {texture_lap}");
     }
     #[test]
     fn local_unsupported_geometry_limits_and_interruptions_fail_safely() {

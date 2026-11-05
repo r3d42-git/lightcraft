@@ -51,6 +51,7 @@ pub struct AiRemove {
     #[cfg(not(target_arch = "wasm32"))]
     lighting_drafts: Option<LightingDrafts>,
     pub include_effects: Option<bool>,
+    /// Explicit opt-in to ObjectClear → RORem; None keeps the selected model output.
     pub reconstruct: Option<bool>,
     reconstruction_active: bool,
     effects_active: bool,
@@ -149,6 +150,10 @@ impl Job {
     }
 }
 impl AiRemove {
+    /// Resolve a per-job override before the session preference; reconstruction is opt-in.
+    pub fn reconstruction_enabled(&self, requested: Option<bool>) -> bool {
+        requested.or(self.reconstruct).unwrap_or(false)
+    }
     #[cfg(not(target_arch = "wasm32"))]
     fn select_lighting_draft(&mut self, enabled: bool) -> std::result::Result<(), String> {
         let Some(variants) = &self.lighting_drafts else { return Ok(()) };
@@ -381,16 +386,13 @@ impl Session {
         if include_effects == Some(true) && !capable {
             return Err(error("Shadows and reflections need a supported trusted native ObjectClear runtime."));
         }
-        let reconstruction = if effects && reconstruct.or(self.ai_remove.reconstruct) != Some(false) {
-            match crate::ai_models::reconstruction_package(&ai_root, &resolved) {
-                Ok(p) => Some((p.id, p.runtime_id)),
-                Err(e) if reconstruct == Some(true) || self.ai_remove.reconstruct == Some(true) => return Err(e),
-                Err(_) => None,
-            }
-        } else {
-            if reconstruct == Some(true) {
+        let reconstruction = if self.ai_remove.reconstruction_enabled(reconstruct) {
+            if !effects {
                 return Err(error("Two-stage reconstruction requires supported ObjectClear effects."));
             }
+            let package = crate::ai_models::reconstruction_package(&ai_root, &resolved)?;
+            Some((package.id, package.runtime_id))
+        } else {
             None
         };
         let reconstruction_active = reconstruction.is_some();
@@ -578,7 +580,7 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             }
             #[cfg(target_arch = "wasm32")] { let _ = (s, cloud, backend, model_id, include_effects, reconstruct, match_lighting); Err(error("AI Remove is unavailable in the browser.")) }
         }),
-        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"provider":if s.ai_remove.use_cloud { "chatgpt" } else { "local" },"matchLighting":s.ai_remove.match_lighting.unwrap_or(true),"reconstruction":if s.ai_remove.reconstruction_active { "objectclear-rorem" } else { "selected" },"reconstructionPreference":match s.ai_remove.reconstruct { Some(true)=>"objectclear-rorem",Some(false)=>"selected",None=>"auto" },"stage":match s.ai_remove.phase { Phase::Effects=>1,Phase::Reconstruction=>2,_=>0 },"draftStages":s.ai_remove.draft.as_ref().map(|e|&e.stages),"reconstructionAvailable":s.ai_remove_reconstruction_available(),"includeEffects":s.ai_remove.include_effects.unwrap_or(true),"effectsActive":s.ai_remove.effects_active,"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some() || s.ai_remove.object_selection.as_ref().is_some_and(|o|o.seg.is_some()),"selecting":s.ai_remove.selecting,"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
+        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"provider":if s.ai_remove.use_cloud { "chatgpt" } else { "local" },"matchLighting":s.ai_remove.match_lighting.unwrap_or(true),"reconstruction":if s.ai_remove.reconstruction_active { "objectclear-rorem" } else { "selected" },"reconstructionPreference":if s.ai_remove.reconstruction_enabled(None) { "objectclear-rorem" } else { "selected" },"stage":match s.ai_remove.phase { Phase::Effects=>1,Phase::Reconstruction=>2,_=>0 },"draftStages":s.ai_remove.draft.as_ref().map(|e|&e.stages),"reconstructionAvailable":s.ai_remove_reconstruction_available(),"includeEffects":s.ai_remove.include_effects.unwrap_or(true),"effectsActive":s.ai_remove.effects_active,"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some() || s.ai_remove.object_selection.as_ref().is_some_and(|o|o.seg.is_some()),"selecting":s.ai_remove.selecting,"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
         cmd!(query "aiRemove.previewOriginal", "Show Photo Without AI Draft", [], None, "{enabled:bool} — compare the pending result without accepting it", has_active, |s, p| {
             s.ai_remove_poll();
             if s.ai_remove.draft.is_none() { return Err(error("No current AI result to preview.")); }
@@ -917,6 +919,21 @@ printf '%s' '{"version":1,"width":128,"height":96,"model":"test","model_version"
     fn reconstruction_status_is_unavailable_in_browser() {
         let mut s = Session::with_demo();
         assert_eq!(s.execute("aiRemove.status", &json!({})).unwrap()["reconstructionAvailable"], false);
+    }
+    #[test]
+    fn reconstruction_defaults_to_selected_model_and_honors_explicit_overrides() {
+        let mut s = Session::with_demo();
+        let status = s.execute("aiRemove.status", &json!({})).unwrap();
+        assert_eq!(status["reconstructionPreference"], "selected");
+        assert_eq!(status["includeEffects"], true);
+        for preference in [None, Some(false), Some(true)] {
+            s.ai_remove.reconstruct = preference;
+            assert_eq!(s.ai_remove.reconstruction_enabled(None), preference == Some(true));
+            assert!(!s.ai_remove.reconstruction_enabled(Some(false)));
+            assert!(s.ai_remove.reconstruction_enabled(Some(true)));
+            let status = s.execute("aiRemove.status", &json!({})).unwrap();
+            assert_eq!(status["reconstructionPreference"], if preference == Some(true) { "objectclear-rorem" } else { "selected" });
+        }
     }
     #[test]
     fn reconstruction_controls_validate_preserve_selection_and_discard_only_draft() {

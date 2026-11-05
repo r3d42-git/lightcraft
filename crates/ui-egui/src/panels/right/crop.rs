@@ -586,7 +586,7 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                 ui.label(egui::RichText::new(crate::i18n::tr("Object removal is available without a local model.")).size(12.0).color(t.text_dim));
             }
             if !use_cloud {
-                let mut reconstruct = app.session.ai_remove.reconstruct.unwrap_or(true) && supports_reconstruction && include_effects;
+                let mut reconstruct = app.session.ai_remove.reconstruction_enabled(None) && supports_reconstruction && include_effects;
                 let response = ui.add_enabled(
                     !busy && !selecting && supports_reconstruction && include_effects,
                     egui::Checkbox::new(&mut reconstruct, crate::i18n::tr("Detailed background reconstruction")),

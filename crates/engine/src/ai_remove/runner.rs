@@ -156,7 +156,7 @@ fn construct_local_variants(
     // a photometric reference. Local workers already restore original context.
     let gain = output.rgb.iter().flatten().fold(1.0f32, |gain, value| gain.max(value.abs()));
     let matched = super::lighting::apply_local(&matching, &output.rgb, gain, cancel, deadline).and_then(|rgb| {
-        let suffix = "; lighting=local-boundary-v1";
+        let suffix = "; lighting=local-frequency-v2";
         let model = format!("{}{suffix}", output.provenance.model);
         if model.len() > 256 {
             return Err("Lighting provenance is too long. Turn off Match lighting to use the unadjusted result.".into());
@@ -550,7 +550,7 @@ mod lighting_tests {
                 .unwrap();
         let raw = variants.raw.clone();
         let matched = variants.matched.as_ref().unwrap().clone();
-        assert!(matched.model.ends_with("; lighting=local-boundary-v1"));
+        assert!(matched.model.ends_with("; lighting=local-frequency-v2"));
         assert_eq!(matched.model_version, raw.model_version);
         for (raw, matched) in raw.decode_pixels().unwrap().iter().zip(matched.decode_pixels().unwrap()) {
             assert_eq!(raw[3], matched[3]);
@@ -691,7 +691,7 @@ mod chain_lighting_persistence {
         assert_eq!(matched.model_version, "reconstruction-revision");
         assert_eq!(matched.stages, variants.raw.stages);
         assert_eq!(matched.stages[1].model_revision, matched.model_version);
-        assert!(matched.model.contains("lighting=local-boundary-v1"));
+        assert!(matched.model.contains("lighting=local-frequency-v2"));
         let settings = lightcraft_develop::DevelopSettings { ai_edits: vec![matched.clone()], ..Default::default() };
         let saved = serde_json::to_vec(&settings).unwrap();
         let reopened: lightcraft_develop::DevelopSettings = serde_json::from_slice(&saved).unwrap();
