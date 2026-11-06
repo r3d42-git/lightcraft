@@ -405,6 +405,12 @@ impl Session {
         for b in content.bytes() {
             h = mix(h, u64::from(b));
         }
+        // RAW starting colour also depends on database vignetting. Remove then
+        // mixes its full corrected settings below; ordinary mask geometry stays off.
+        let lens = crate::media::lens_key(p);
+        if lens != 0 {
+            h = mix(h, lens);
+        }
         Some((h, d))
     }
 

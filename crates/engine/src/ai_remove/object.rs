@@ -318,12 +318,7 @@ impl Session {
     #[cfg_attr(not(feature = "sam"), allow(dead_code))]
     pub(crate) fn ai_remove_apply_seg(&mut self, revision: u64, detail: bool, result: Result<Option<SegMask>, String>) -> Option<[f64; 4]> {
         if revision != self.ai_remove.selection_revision
-            || !self
-                .ai_remove
-                .selection_tag
-                .as_ref()
-                .zip(self.ai_remove_tag())
-                .is_some_and(|((id, d, g), (now, current, generation))| *id == now && *g == generation && std::sync::Arc::ptr_eq(d, &current))
+            || !self.ai_remove.selection_tag.as_ref().zip(self.ai_remove_tag()).is_some_and(|(old, current)| super::same_tag(old, &current))
         {
             return None;
         }
@@ -394,6 +389,28 @@ mod tests {
         s.ai_remove.selection_tag = s.ai_remove_tag();
         s.ai_remove.object_selection = Some(ObjectSelection { seg: Some(seg()), include: vec![Point::new(0.4, 0.4)], ..Default::default() });
     }
+    #[test]
+    fn late_sam_outcome_is_dropped_after_lens_metadata_changes() {
+        use lightcraft_develop::{EmbeddedLens, LensSource};
+        let mut s = Session::with_demo();
+        selected(&mut s);
+        let id = s.active().unwrap();
+        let develop = s.develop_of(id).unwrap();
+        let revision = s.ai_remove.selection_revision;
+        let old = s.ai_remove.object_selection.as_ref().unwrap().seg.clone();
+        s.catalog
+            .apply(lightcraft_catalog::Op::SetEmbeddedLens {
+                id,
+                lens: Some(Box::new(EmbeddedLens { source: LensSource::Database, ..Default::default() })),
+            })
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&develop, &s.develop_of(id).unwrap()));
+        assert!(s.ai_remove_apply_seg(revision, false, Ok(Some(SegMask::from_logits(1, &[8.])))).is_none());
+        assert_eq!(s.ai_remove.object_selection.as_ref().unwrap().seg, old);
+        s.ai_remove_poll();
+        assert!(s.ai_remove.object_selection.is_none() && s.ai_remove.selection_tag.is_none());
+    }
+
     #[test]
     fn temporary_object_refinement_and_clear_never_edit_photo() {
         let mut s = Session::with_demo();

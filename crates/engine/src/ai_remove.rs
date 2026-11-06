@@ -42,6 +42,14 @@ pub enum Phase {
     Cancelled,
 }
 
+// Source identity also covers reloadable lens profiles, whose change need not
+// replace the develop Arc. Local/cloud drafts and SAM selections share this owner.
+type RemoveTag = (PhotoId, std::sync::Arc<DevelopSettings>, u64, lightcraft_preview::Hash128);
+
+fn same_tag(a: &RemoveTag, b: &RemoveTag) -> bool {
+    a.0 == b.0 && a.2 == b.2 && a.3 == b.3 && std::sync::Arc::ptr_eq(&a.1, &b.1)
+}
+
 #[derive(Default)]
 pub struct AiRemove {
     /// Explicit session preference; local remains the default and uploads never happen implicitly.
@@ -65,8 +73,8 @@ pub struct AiRemove {
     preview_settings: Option<(std::sync::Arc<DevelopSettings>, u64)>,
     pub preview_original: bool,
     pub selection: Option<Spot>,
-    selection_tag: Option<(PhotoId, std::sync::Arc<DevelopSettings>, u64)>,
-    tag: Option<(PhotoId, std::sync::Arc<DevelopSettings>, u64)>,
+    selection_tag: Option<RemoveTag>,
+    tag: Option<RemoveTag>,
     spot: Option<usize>,
     #[cfg(not(target_arch = "wasm32"))]
     job: Option<Job>,
@@ -199,29 +207,23 @@ impl Session {
             false
         }
     }
-    fn ai_remove_tag(&self) -> Option<(PhotoId, std::sync::Arc<DevelopSettings>, u64)> {
+    fn ai_remove_tag(&self) -> Option<RemoveTag> {
         let id = self.active()?;
         let d = self.develop_of(id)?;
-        Some((id, d, self.library_generation()))
+        let source = crate::media::source_identity(self.catalog.photo(id)?);
+        Some((id, d, self.library_generation(), source))
     }
     pub fn ai_remove_poll(&mut self) {
         self.segment_ai_remove_poll();
         if self.ai_remove.selection_tag.is_some()
-            && !self.ai_remove.selection_tag.as_ref().zip(self.ai_remove_tag()).is_some_and(|((id, settings, generation), (now, current, g))| {
-                *id == now && *generation == g && std::sync::Arc::ptr_eq(settings, &current)
-            })
+            && !self.ai_remove.selection_tag.as_ref().zip(self.ai_remove_tag()).is_some_and(|(old, current)| same_tag(old, &current))
         {
             self.ai_remove_clear_object();
             self.ai_remove.selection = None;
             self.ai_remove.selection_tag = None;
         }
         if self.ai_remove.tag.is_some()
-            && !self
-                .ai_remove
-                .tag
-                .as_ref()
-                .zip(self.ai_remove_tag())
-                .is_some_and(|((id, d, g), (now, settings, generation))| *id == now && *g == generation && std::sync::Arc::ptr_eq(d, &settings))
+            && !self.ai_remove.tag.as_ref().zip(self.ai_remove_tag()).is_some_and(|(old, current)| same_tag(old, &current))
         {
             self.ai_remove_cancel();
             self.ai_remove.cancel_reason = Some("AI result discarded because the photo or edits changed.");
@@ -794,6 +796,51 @@ mod tests {
         s.ai_remove.draft = Some(edit);
         s.ai_remove.spot = Some(0);
     }
+    #[test]
+    fn lens_change_invalidates_selection_and_draft_without_a_develop_edit() {
+        use lightcraft_develop::{EmbeddedLens, EmbeddedWarp, LensSource};
+        let lens = |k| EmbeddedLens {
+            source: LensSource::Database,
+            warp: Some(EmbeddedWarp { planes: [[1.0, k, 0.0, 0.0, 0.0, 0.0]; 3], ..Default::default() }),
+            ..Default::default()
+        };
+        for changed in [false, true] {
+            let mut s = Session::with_demo();
+            let id = s.active().unwrap();
+            s.catalog.apply(lightcraft_catalog::Op::SetEmbeddedLens { id, lens: Some(Box::new(lens(-0.01))) }).unwrap();
+            s.execute("aiRemove.select", &json!({"points":[[0.5,0.5]]})).unwrap();
+            draft(&mut s);
+            let develop = s.develop_of(id).unwrap();
+            s.catalog.apply(lightcraft_catalog::Op::SetEmbeddedLens { id, lens: Some(Box::new(lens(if changed { -0.02 } else { -0.01 }))) }).unwrap();
+            assert!(std::sync::Arc::ptr_eq(&develop, &s.develop_of(id).unwrap()));
+            s.ai_remove_poll();
+            assert_eq!(s.ai_remove.selection.is_none(), changed);
+            assert_eq!(s.ai_remove.draft.is_none(), changed);
+        }
+    }
+
+    #[test]
+    fn sam_input_key_follows_database_colour_but_keeps_upstream_unwarped_settings() {
+        use lightcraft_develop::{EmbeddedLens, LensSource};
+        let mut s = Session::with_demo();
+        let id = s.active().unwrap();
+        let none = s.segment_key(id).unwrap().0;
+        let set = |s: &mut Session, source| {
+            s.catalog
+                .apply(lightcraft_catalog::Op::SetEmbeddedLens { id, lens: Some(Box::new(EmbeddedLens { source, ..Default::default() })) })
+                .unwrap()
+        };
+        set(&mut s, LensSource::File);
+        assert_eq!(s.segment_key(id).unwrap().0, none, "File and no-profile keep their original input key");
+        set(&mut s, LensSource::Database);
+        let (db, settings) = s.segment_key(id).unwrap();
+        assert_ne!(db, none);
+        set(&mut s, LensSource::Database);
+        assert_eq!(s.segment_key(id).unwrap().0, db);
+        assert_eq!(settings.geometry, lightcraft_develop::DevelopSettings::default().geometry);
+        assert!(!settings.optics.lens_profile && settings.optics.distortion == 0.0 && !settings.optics.remove_ca);
+    }
+
     #[test]
     #[cfg(unix)]
     fn active_lens_corrections_reach_worker_without_disabling_settings() {

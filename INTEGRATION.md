@@ -22,6 +22,10 @@ corrections until a background probe classifies File/Database/None. Explicit Fil
 is saved explicitly and remains fail-closed. While Legacy is unclassified, decoded
 source and persistent-render cache reuse/publication are bypassed; source/view/quick keys include a stable parsed-DB
 snapshot fingerprint; a DB switch/removal cannot reuse old output.
+Retouch selection/draft ownership includes the same source/lens identity, and SAM
+input keys include lens-dependent starting colour without enabling its unwarped
+mask geometry. A runtime profile refresh cannot reuse old SAM input or accept a
+late local/cloud draft for another lens frame.
 Retain upstream photo-attached mask conversion beside exact frozen R3D AI brush
 support and corrected AiRemove model input. Do not extrapolate a narrower lens
 calibration to an unknown or wider recorded frame.
