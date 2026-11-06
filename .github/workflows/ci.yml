@@ -4,7 +4,7 @@ name: CI
 # suite's shared gate workflow in craft-common-actions.
 on:
   push:
-    branches: [main, r3d/update-0.16.0, r3d/update-0.17.0, r3d/update-0.18.0]
+    branches: [main, r3d/update-0.16.0, r3d/update-0.17.0, r3d/update-0.18.0, r3d/update-0.18.1-test]
   pull_request:
   workflow_dispatch:
 

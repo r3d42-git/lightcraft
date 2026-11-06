@@ -28,6 +28,7 @@ pub(crate) fn file_local_look(format: RawFormat) -> bool {
             | RawFormat::Pef
             | RawFormat::Srw
             | RawFormat::Orf
+            | RawFormat::Crw
             | RawFormat::Mrw
             | RawFormat::Erf
     )

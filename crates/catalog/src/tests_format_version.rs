@@ -239,8 +239,31 @@ fn op_variants_are_versioned() {
             Op::SetDenoiseState { .. } => 10,
         }
     }
-    /// v12: AI brush support stores frozen lens/perspective geometry.
-    const NEWEST_FIELDS: u32 = 12;
+    /// v13: Mask.on_photo and EmbeddedLens.source; v12 retains frozen AI brush geometry.
+    const NEWEST_FIELDS: u32 = 13;
     let newest = since(&Op::SetHistoryCursor { id: PhotoId(1), cursor: None });
     assert_eq!(newest.max(NEWEST_FIELDS), VERSION, "the newest op's or fields' version must be the current format version");
+}
+
+/// R3D v12 did not know photo-attached masks. Its old frame coordinates must stay
+/// frame coordinates during the format upgrade, with unrelated develop data retained.
+#[test]
+fn r3d_v12_upgrades_without_reinterpreting_legacy_masks() {
+    use lightcraft_develop::Mask;
+    let mut base = Catalog::new();
+    let mut p = Photo::new(PhotoId(1), Source::File { path: "/p/raw.cr2".into() }, "raw.cr2", "CR2", 5472, 3648, "2026-01-01");
+    let mut settings = lightcraft_develop::DevelopSettings::default();
+    settings.light.exposure = 0.75;
+    settings.masks.push(Mask { id: 7, name: "Legacy frame".into(), on_photo: false, ..Mask::default() });
+    p.develop = std::sync::Arc::new(settings);
+    base.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    let m = MemStore::new();
+    m.set(SNAPSHOT, format!("{{\"format\":\"lightcraft-catalog\",\"version\":12,\"seq\":1,\"catalog\":{}}}\n", base.to_snapshot()).into_bytes());
+    m.set(LOG, Vec::new());
+    let (_, loaded, report) = Journal::open(Box::new(m.clone())).unwrap();
+    assert_eq!(report.upgraded_from, Some(12));
+    assert_eq!(snapshot_version(&m), 13);
+    assert_eq!(loaded.to_snapshot(), base.to_snapshot());
+    let mask = &loaded.photo(PhotoId(1)).unwrap().develop.masks[0];
+    assert!(!mask.on_photo, "an old mask cannot move to the unwarped photo without conversion");
 }

@@ -147,6 +147,11 @@ impl eframe::App for App {
 /// a second; anything slower gives way to quitting.
 const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
+const APP_NAME: &str = match option_env!("LIGHTCRAFT_R3D_APP_NAME") {
+    Some(name) => name,
+    None => "LightCraft R3D",
+};
+
 fn main() -> eframe::Result {
     // Windows: the update helper is a copy of this program started with `--finish-update`.
     #[cfg(windows)]
@@ -246,7 +251,7 @@ fn main() -> eframe::Result {
     let opens_as = prefs.as_ref().and_then(|ui| ui.window).and_then(lightcraft_ui_egui::window_place::WindowPlace::checked);
     let options = eframe::NativeOptions {
         renderer,
-        viewport: as_remembered(egui::ViewportBuilder::default().with_title("LightCraft R3D · Entwicklung"), opens_as)
+        viewport: as_remembered(egui::ViewportBuilder::default().with_title(APP_NAME), opens_as)
             .with_min_inner_size(lightcraft_ui_egui::window_place::MIN_SIZE)
             .with_drag_and_drop(true)
             .with_transparent(window_gpu::composes_window(compose_window, window_renderer))
@@ -275,7 +280,7 @@ fn main() -> eframe::Result {
     }
     let started = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         eframe::run_native(
-            "LightCraft R3D",
+            APP_NAME,
             options,
             Box::new(move |cc| {
                 // the window's renderer is up (eframe calls this after creating it)

@@ -37,6 +37,7 @@ pub mod geometry;
 pub mod local;
 pub mod local_tone;
 pub mod lut;
+pub mod mask_space;
 pub mod masks;
 pub mod optics;
 pub mod output;
@@ -846,6 +847,8 @@ mod tests_geometry;
 mod tests_hdr;
 #[cfg(test)]
 mod tests_local;
+#[cfg(test)]
+mod tests_mask_geometry;
 #[cfg(test)]
 mod tests_nr_scale;
 #[cfg(test)]

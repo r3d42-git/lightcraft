@@ -1,6 +1,6 @@
 {
-  "release": "v0.18.0",
-  "commit": "32d569ad5d19a6b55cf8d5c077127faa0f44a83b",
+  "release": "v0.18.1",
+  "commit": "57024f072c234e0c6c850e0940a261790f976575",
   "remote": "upstream",
   "repository": "https://github.com/storytold/lightcraft.git"
 }

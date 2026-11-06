@@ -1,11 +1,41 @@
 # R3D optics integration
 
-This fork integrates exact LightCraft `v0.18.0`,
-`32d569ad5d19a6b55cf8d5c077127faa0f44a83b`, into its accepted R3D history.
-The machine-readable base is `r3d/upstream-base.json`.
-The candidate checkout is `update-0.18.0/` on `r3d/update-0.18.0`.
-Installed 0.17 and the GitHub default branch remain unchanged during acceptance.
-Both update checkouts reuse the shared excluded buildvolume cache.
+This separate test branch integrates exact upstream LightCraft `v0.18.1`,
+`57024f072c234e0c6c850e0940a261790f976575`, into accepted R3D.50
+`068aae9ddd2406d74e78873132282abc26e29fac` by an ordinary merge.
+The machine-readable base is `r3d/upstream-base.json`; checkout `update-0.18.1/`,
+branch `r3d/update-0.18.1-test`. The installed 0.18.0 app, source branch and
+GitHub default branch remain unchanged. Validation is recorded separately under
+`../evidence/update-0.18.1-test-20261106/`.
+
+## v0.18.1 isolated compatibility integration (2026-11-06)
+
+Preserve the complete R3D history, conservative optics resolver, optional crop
+metadata and mount compatibility, camera-fit/provenance contracts, all native AI
+model/runtime bindings and trust pins, SAM3/protection, both denoisers with RawNIND
+default, local/cloud lighting toggles, saved scene-linear retouches and reset
+contracts. Combine upstream reloadable Arc lens databases and named LensSource
+with the existing R3D resolver; the view identity includes both lens and denoise
+products, and late source/remote-colour results must match the lens-aware identity.
+Retain upstream photo-attached mask conversion beside exact frozen R3D AI brush
+support and corrected AiRemove model input. Do not extrapolate a narrower lens
+calibration to an unknown or wider recorded frame.
+
+Catalog13 is intentional: R3D catalog12 did not contain `Mask.on_photo` or
+`EmbeddedLens.source`; older R3D apps must refuse the new coordinate semantics.
+R3D catalog10/11/12 history is retained. Render82 invalidates previous output for
+upstream mask/lens/raw changes; camera look14 remains unchanged. Rust1.99.1 and
+the fork-only Ubuntu gate remain pinned; only its new test branch trigger is added.
+No release/platform workflows are restored.
+
+The normal compiled app name defaults to **LightCraft R3D**. The isolated optimized
+test wrapper `r3d/build-update-test.sh` sets **LightCraft R3D 0.18.1 Test** for both
+eframe native application name and viewport, with a separate bundle identifier,
+no file associations and fixed test-only library/config/AI paths. Native packaging
+uses `--dev-app` and ad-hoc signatures. No installation, notarization, release, tag
+or upstream PR is implied; no new cloud photo request is used for acceptance.
+
+Older integration records below are historical.
 
 ## v0.18.0 compatibility integration (2026-11-03)
 
