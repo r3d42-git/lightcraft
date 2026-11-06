@@ -20,7 +20,7 @@ pub const ENV: &str = "LIGHTCRAFT_LENSFUN_DIR";
 /// The database folder a host set up ([`use_dir`]), read when `LIGHTCRAFT_LENSFUN_DIR` is not set.
 static HOST_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
 /// The loaded database and the folder it was read from (`None` inside: nothing usable there).
-static LOADED: RwLock<Option<(PathBuf, Option<Arc<LensDb>>)>> = RwLock::new(None);
+static LOADED: RwLock<Option<(PathBuf, Option<Arc<LensDb>>, u64)>> = RwLock::new(None);
 /// Bumped whenever the database in use changes ([`reload`]): photos looked up before may now find a profile.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// Bumped when the database's files were replaced ([`replaced`]): profiles found before may now be different.
@@ -87,7 +87,7 @@ fn source() -> Option<(PathBuf, bool)> {
 /// folder is missing or it holds no lenses.
 pub fn database() -> Option<Arc<LensDb>> {
     let (dir, downloaded) = source()?;
-    if let Some((d, db)) = LOADED.read().unwrap_or_else(PoisonError::into_inner).as_ref()
+    if let Some((d, db, _)) = LOADED.read().unwrap_or_else(PoisonError::into_inner).as_ref()
         && *d == dir
     {
         return db.clone();
@@ -104,9 +104,30 @@ pub fn database() -> Option<Arc<LensDb>> {
     let mut loaded = LOADED.write().unwrap_or_else(PoisonError::into_inner);
     // a reload while the files were read: they may be the old ones, so they aren't kept (the next call reads again)
     if GENERATION.load(Ordering::Relaxed) == generation {
-        *loaded = Some((dir, db.clone()));
+        let fingerprint = db.as_deref().map_or(0, snapshot_key);
+        *loaded = Some((dir, db.clone(), fingerprint));
     }
     db
+}
+
+/// Stable identity of all parsed database semantics. Computed once per reload, not
+/// once per photo/frame. Legacy R3D decodes use the current database, so their
+/// persistent cache keys must distinguish it across both reloads and restarts.
+pub fn cache_key() -> u64 {
+    let Some(db) = database() else { return 0 };
+    let key = LOADED
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .and_then(|(_, loaded, key)| loaded.as_ref().filter(|loaded| Arc::ptr_eq(loaded, &db)).map(|_| *key));
+    // A concurrent reload can leave this valid Arc unpublished. It still must
+    // not masquerade as 'no database' (zero); compute that rare snapshot directly.
+    key.unwrap_or_else(|| snapshot_key(&db))
+}
+
+fn snapshot_key(db: &LensDb) -> u64 {
+    let h = lightcraft_preview::Hasher128::new().str("lens-db-snapshot-v1").str(&format!("{db:?}")).finish().0;
+    (h as u64) ^ ((h >> 64) as u64) | 1
 }
 
 fn load(dir: &Path, downloaded: bool) -> Option<Arc<LensDb>> {

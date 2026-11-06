@@ -62,7 +62,7 @@ impl crate::Session {
             ^ content.rotate_left(17)
             ^ salt
             ^ lens.rotate_left(29);
-        let cache = thumb_bucket.map(|b| {
+        let cache = thumb_bucket.filter(|_| !legacy_lens(&p)).map(|b| {
             let mut k = Hasher128::new();
             k.str(&content_key).u64(settings_hash).u64(b as u64).u64(RENDER_CACHE_VERSION).u64(crate::camera_profiles::cache_key());
             // (only a render that uses a denoised picture has it in its key, so every other thumbnail stays valid)
@@ -170,7 +170,7 @@ impl crate::Session {
             settings: Arc::new(settings.clone()),
             request: RenderRequest { apply_crop: true, ..RenderRequest::fit(edge, edge) },
             key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64),
-            cache: Some((self.media.rendered.clone(), ck)),
+            cache: (!legacy_lens(&p)).then_some((self.media.rendered.clone(), ck)),
             stages: None,
             view_cache: None,
             display: None,
@@ -225,7 +225,7 @@ impl crate::Session {
             settings: Arc::new(settings),
             request: RenderRequest { apply_crop: true, ..RenderRequest::fit(edge, edge) },
             key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64),
-            cache: Some((self.media.rendered.clone(), ck)),
+            cache: (!legacy_lens(&p)).then_some((self.media.rendered.clone(), ck)),
             stages: None,
             view_cache: None,
             display: None,
@@ -278,7 +278,9 @@ impl crate::Session {
     pub fn loupe_job(&mut self, id: PhotoId, max_w: usize, max_h: usize, apply_crop: bool) -> Option<RenderJob> {
         let mut job = self.render_job(id, max_w, max_h, false, apply_crop)?;
         let p = self.catalog.photo(id)?;
-        job.view_cache = Some((self.media.rendered.clone(), self.view_key(p, apply_crop)));
+        if !legacy_lens(p) {
+            job.view_cache = Some((self.media.rendered.clone(), self.view_key(p, apply_crop)));
+        }
         Some(job)
     }
 
@@ -397,10 +399,17 @@ impl crate::Session {
         let p = self.catalog.photo(id)?.clone();
         let small = self.thumb_job(id, THUMB_SIZES[THUMB_SIZES.len() - 1])?;
         // (the thumbnail job itself starts with the cached thumbnail, after the sharper embedded preview)
-        let cached = vec![(self.media.rendered.clone(), self.view_key(&p, apply_crop))];
+        let cached = if legacy_lens(&p) { Vec::new() } else { vec![(self.media.rendered.clone(), self.view_key(&p, apply_crop))] };
         // (the photo too: a virtual copy shares the file and, unedited, the settings)
-        let h = Hasher128::new().str(&content_key(&p)).str("quick").u64(p.develop.hash64()).u64(apply_crop as u64).u64(id.0).finish();
-        let key = h.0 as u64;
+        let mut h = Hasher128::new();
+        h.str(&content_key(&p)).str("quick").u64(p.develop.hash64()).u64(apply_crop as u64).u64(id.0);
+        // The stand-in may be a freshly developed small source, not only the
+        // camera JPEG. A late quick result must follow the same lens identity.
+        let lens = super::quick::lens_key(&p);
+        if lens != 0 {
+            h.u64(lens);
+        }
+        let key = h.finish().0 as u64;
         let embedded = self.embedded_stand_in_of(&p).map(|(path, l)| (path, l, max_edge.clamp(1, SourceLevel::Preview.max_edge())));
         let embedded_cache = embedded
             .as_ref()
@@ -482,6 +491,7 @@ impl crate::Session {
             self.media.remote_colour.insert(r.photo, (key, source.clone()), cost);
         }
         if let Some(src) = &r.loaded
+            && self.catalog.photo(r.photo).is_some_and(|p| !p.embedded_lens.is_some_and(|l| l.source == lightcraft_develop::LensSource::Legacy))
             && r.source_key.is_none_or(|key| self.catalog.photo(r.photo).is_some_and(|p| super::quick::source_identity(p) == key))
             // Denoise becoming ready or switching model forgets decoded sources, but cannot stop
             // every worker already reading the same RAW. Its original identity alone is not enough:
@@ -608,7 +618,15 @@ impl crate::Session {
         if let Some(info) = &r.info {
             self.learn_as_shot_wb(id, info);
         }
-        self.media.insert_source(id, level, r);
+        if !p.embedded_lens.is_some_and(|l| l.source == lightcraft_develop::LensSource::Legacy) {
+            self.media.insert_source(id, level, r);
+        }
         Ok(image)
     }
+}
+
+/// Legacy R3D profiles follow a runtime DB until classification. Never publish
+/// their render under a persistent key while that DB may change during the job.
+fn legacy_lens(p: &Photo) -> bool {
+    p.embedded_lens.is_some_and(|l| l.source == lightcraft_develop::LensSource::Legacy)
 }

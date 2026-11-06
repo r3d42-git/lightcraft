@@ -724,7 +724,7 @@ pub struct EmbeddedLens {
     pub vignette: Option<EmbeddedVignette>,
     /// Where the correction came from: the file itself, or a lens database looked up by the
     /// lens named in the file (what the Optics panel says is loaded).
-    #[serde(skip_serializing_if = "LensSource::is_file")]
+    #[serde(default = "LensSource::legacy")]
     pub source: LensSource,
     /// A DNG 1.6 `WarpRectilinear2` chain (up to [`WARP_STAGES`] stages, in `OpcodeList3` order; each stage warps
     /// the result of the one before it). When any is set, `warp` is `None`: the chain holds every warp opcode.
@@ -735,6 +735,9 @@ pub struct EmbeddedLens {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LensSource {
+    /// Provenance was not stored by older R3D catalogs or smart previews.
+    /// A fresh decode decides the correction until a background probe classifies it.
+    Legacy,
     /// The file's own correction (DNG opcodes, a camera's correction a raw reader converts).
     #[default]
     File,
@@ -743,8 +746,8 @@ pub enum LensSource {
 }
 
 impl LensSource {
-    pub fn is_file(&self) -> bool {
-        *self == LensSource::File
+    pub fn legacy() -> Self {
+        Self::Legacy
     }
 }
 
@@ -1288,5 +1291,26 @@ impl DevelopSettings {
         s.light.whites = add(s.light.whites, h.sdr_whites);
         s.effects.clarity = add(s.effects.clarity, h.sdr_clarity);
         std::borrow::Cow::Owned(s)
+    }
+}
+
+#[cfg(test)]
+mod lens_source_compatibility_tests {
+    use super::{EmbeddedLens, LensSource};
+
+    #[test]
+    fn missing_lens_source_is_legacy_but_new_file_sources_remain_explicit() {
+        let new = EmbeddedLens::default();
+        assert_eq!(new.source, LensSource::File);
+        let mut value = serde_json::to_value(new).unwrap();
+        assert_eq!(value["source"], "file", "new file provenance cannot become Legacy on reopen");
+        let roundtrip: EmbeddedLens = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(roundtrip.source, LensSource::File);
+        value.as_object_mut().unwrap().remove("source");
+        let legacy: EmbeddedLens = serde_json::from_value(value).unwrap();
+        assert_eq!(legacy.source, LensSource::Legacy);
+        let saved = serde_json::to_value(legacy).unwrap();
+        assert_eq!(saved["source"], "legacy");
+        assert_eq!(serde_json::from_value::<EmbeddedLens>(saved).unwrap().source, LensSource::Legacy);
     }
 }

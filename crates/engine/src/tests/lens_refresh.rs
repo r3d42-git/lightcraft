@@ -289,3 +289,142 @@ fn the_downloaded_database_is_selected_and_read_only_when_whole() {
     lens_profiles::use_dir(before);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// R3D v12 profiles did not record provenance. A real decode keeps the accepted
+/// behavior until a probe classifies them, without weakening explicit File rules.
+#[test]
+fn legacy_lens_uses_the_decoder_until_its_source_is_classified() {
+    use crate::media::DecodedSource;
+    let legacy = EmbeddedLens { source: LensSource::Legacy, ..lens(-0.01) };
+    let decoded = |l| {
+        DecodedSource::new(Arc::new(lightcraft_raster::Rgb32f::new(4, 4)), Some(lightcraft_pipeline::SourceInfo { lens: l, ..Default::default() }))
+    };
+    let header = |l| lightcraft_pipeline::SourceInfo { lens: l, ..Default::default() };
+    assert_eq!(decoded(Some(lens(-0.05))).info_or(header(Some(legacy))).lens, Some(lens(-0.05)));
+    let file = EmbeddedLens { source: LensSource::File, ..lens(-0.04) };
+    assert_eq!(decoded(Some(file)).info_or(header(Some(legacy))).lens, Some(file));
+    assert_eq!(decoded(None).info_or(header(Some(legacy))).lens, None, "legacy follows an actual decode, not a guessed source");
+    assert_eq!(decoded(None).info_or(header(Some(file))).lens, None, "explicit File never resurrects");
+    assert_eq!(decoded(Some(lens(-0.05))).info_or(header(Some(file))).lens, None, "an old explicit file profile cannot turn into a database profile");
+}
+
+#[test]
+fn legacy_profiles_are_probed_once_even_without_a_database_and_classified() {
+    let mut s = Session::new();
+    for id in 1..=3 {
+        let p = with_lens(raw(id, "50mm F1.8", true), Some(EmbeddedLens { source: LensSource::Legacy, ..lens(-0.01) }), true);
+        s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    }
+    let listed = crate::cmd::lens_refresh::missing_available(&s.catalog, None, None, false);
+    assert_eq!(listed.iter().map(|p| p.id.0).collect::<Vec<_>>(), [1, 2, 3]);
+    let old_settings = (1..=3).map(|id| s.develop_of(PhotoId(id)).unwrap()).collect::<Vec<_>>();
+    let results = listed
+        .into_iter()
+        .map(|m| {
+            let found = match m.id.0 {
+                1 => Some(lens(-0.03)),
+                2 => Some(EmbeddedLens { source: LensSource::File, ..lens(-0.04) }),
+                _ => None,
+            };
+            (m, Ok(crate::media::ProbeInfo { embedded_lens: found, ..Default::default() }))
+        })
+        .collect();
+    assert_eq!(crate::cmd::lens_refresh::apply(&mut s, results).unwrap(), [PhotoId(1), PhotoId(2)]);
+    assert_eq!(lens_of(&s, PhotoId(1)).unwrap().source, LensSource::Database);
+    assert_eq!(lens_of(&s, PhotoId(2)).unwrap().source, LensSource::File);
+    assert_eq!(lens_of(&s, PhotoId(3)), None);
+    assert!(crate::cmd::lens_refresh::missing_available(&s.catalog, None, None, false).is_empty());
+    assert!(s.undo.is_empty(), "classification is system bookkeeping");
+    for id in 1..=3 {
+        assert_eq!(s.develop_of(PhotoId(id)).unwrap(), old_settings[id as usize - 1]);
+    }
+}
+
+/// Environment mutation lives only in a child process. Each parsed DB snapshot
+/// must select a different persistent key; late decodes and loaded sources cannot
+/// survive DB replacement or removal while a photo is still unclassified.
+#[test]
+fn legacy_database_cache_switches_and_removal_are_isolated() {
+    const CHILD: &str = "R3D_LEGACY_LENS_CACHE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let root = std::env::temp_dir().join(format!("lc-legacy-lens-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::lens_refresh::legacy_database_cache_switches_and_removal_are_isolated", "--nocapture"])
+            .env(CHILD, "1")
+            .env(crate::lens_profiles::ENV, &root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        std::fs::remove_dir_all(root).unwrap();
+        return;
+    }
+    let dir = std::path::PathBuf::from(std::env::var_os(crate::lens_profiles::ENV).unwrap());
+    let file = dir.join("db.xml");
+    std::fs::write(&file, DB).unwrap();
+    crate::lens_profiles::reload();
+    let mut s = Session::new();
+    let p = with_lens(raw(1, "50mm F1.8", true), Some(EmbeddedLens { source: LensSource::Legacy, ..lens(-0.01) }), true);
+    s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    s.media.file_loader =
+        Some(Arc::new(|_, _| Ok((lightcraft_raster::Rgb32f::from_fn(16, 12, |_, _| [0.2; 3]), lightcraft_pipeline::SourceInfo::default()))));
+    let keys = |s: &mut Session| {
+        let p = s.catalog.photo(PhotoId(1)).unwrap().clone();
+        let render = s.render_job(PhotoId(1), 16, 12, false, true).unwrap();
+        (
+            render.key,
+            render.source_key,
+            Session::variant_key(&p, &p.develop, 128),
+            s.view_key(&p, true),
+            s.quick_view_job(PhotoId(1), 128, true).unwrap().key,
+        )
+    };
+    let fingerprint = crate::lens_profiles::cache_key();
+    crate::lens_profiles::reload();
+    assert_eq!(crate::lens_profiles::cache_key(), fingerprint, "equal DB semantics have the same key after reload/restart");
+    let a = keys(&mut s);
+    assert!(s.thumb_job(PhotoId(1), 128).unwrap().cache.is_none());
+    assert!(s.loupe_job(PhotoId(1), 16, 12, true).unwrap().view_cache.is_none());
+    assert!(s.quick_view_job(PhotoId(1), 128, true).unwrap().cached.is_empty());
+    let settings = s.develop_of(PhotoId(1)).unwrap();
+    assert!(s.variant_job(PhotoId(1), &settings, 128).unwrap().cache.is_none());
+    let mut result = s.render_job(PhotoId(1), 16, 12, false, true).unwrap().run();
+    result.colour_source = Some(lightcraft_pipeline::ColourSource {
+        basis: lightcraft_pipeline::ColourBasis::Neutral,
+        monochrome_tone: false,
+        dro_tone_removed: false,
+        dark_tone: false,
+    });
+    assert!(result.rendered.is_ok());
+    s.accept(&result);
+    assert!(s.source_info(PhotoId(1)).colour_source.is_some());
+    s.source_now(PhotoId(1), crate::media::SourceLevel::Preview).unwrap();
+    assert!(
+        matches!(s.render_job(PhotoId(1), 16, 12, false, true).unwrap().source, crate::media::SourceRef::File { .. }),
+        "Legacy never reuses accepted or synchronous loaded sources"
+    );
+    std::fs::write(&file, DB.replace("-0.01", "-0.03")).unwrap();
+    crate::lens_profiles::reload();
+    let b = keys(&mut s);
+    assert!(s.source_info(PhotoId(1)).colour_source.is_none());
+    assert_ne!(a.0, b.0, "render identity");
+    assert_ne!(a.1, b.1, "source identity");
+    assert_ne!(a.2, b.2, "variant identity");
+    assert_ne!(a.3, b.3, "view identity");
+    assert_ne!(a.4, b.4, "late quick identity");
+    s.accept(&result);
+    assert!(matches!(s.render_job(PhotoId(1), 16, 12, false, true).unwrap().source, crate::media::SourceRef::File { .. }));
+    std::fs::remove_file(file).unwrap();
+    crate::lens_profiles::reload();
+    assert!(crate::lens_profiles::database().is_none());
+    assert_eq!(crate::lens_profiles::cache_key(), 0);
+    let none = keys(&mut s);
+    assert_ne!(b.0, none.0, "render identity after DB removal");
+    assert_ne!(b.1, none.1, "source identity after DB removal");
+    assert_ne!(b.2, none.2, "variant identity after DB removal");
+    assert_ne!(b.3, none.3, "view identity after DB removal");
+    assert_ne!(b.4, none.4, "late quick identity after DB removal");
+    assert!(s.source_info(PhotoId(1)).colour_source.is_none());
+    s.accept(&result);
+    assert!(matches!(s.render_job(PhotoId(1), 16, 12, false, true).unwrap().source, crate::media::SourceRef::File { .. }));
+}

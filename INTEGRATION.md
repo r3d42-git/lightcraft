@@ -17,13 +17,18 @@ default, local/cloud lighting toggles, saved scene-linear retouches and reset
 contracts. Combine upstream reloadable Arc lens databases and named LensSource
 with the existing R3D resolver; the view identity includes both lens and denoise
 products, and late source/remote-colour results must match the lens-aware identity.
+Old R3D profiles without provenance decode as Legacy, retaining accepted decode-owned
+corrections until a background probe classifies File/Database/None. Explicit File
+is saved explicitly and remains fail-closed. While Legacy is unclassified, decoded
+source and persistent-render cache reuse/publication are bypassed; source/view/quick keys include a stable parsed-DB
+snapshot fingerprint; a DB switch/removal cannot reuse old output.
 Retain upstream photo-attached mask conversion beside exact frozen R3D AI brush
 support and corrected AiRemove model input. Do not extrapolate a narrower lens
 calibration to an unknown or wider recorded frame.
 
 Catalog13 is intentional: R3D catalog12 did not contain `Mask.on_photo` or
 `EmbeddedLens.source`; older R3D apps must refuse the new coordinate semantics.
-R3D catalog10/11/12 history is retained. Render82 invalidates previous output for
+R3D catalog10/11/12 history is retained. Render83 invalidates previous output for
 upstream mask/lens/raw changes; camera look14 remains unchanged. Rust1.99.1 and
 the fork-only Ubuntu gate remain pinned; only its new test branch trigger is added.
 No release/platform workflows are restored.

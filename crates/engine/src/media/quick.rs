@@ -151,6 +151,10 @@ pub fn content_key(p: &Photo) -> String {
 /// key covers, so it adds nothing and existing thumbnails stay valid.)
 pub fn lens_key(p: &Photo) -> u64 {
     match &p.embedded_lens {
+        Some(l) if l.source == lightcraft_develop::LensSource::Legacy => {
+            let k = Hasher128::new().str("legacy-lens").str(&format!("{l:?}")).u64(crate::lens_profiles::cache_key()).finish().0;
+            (k as u64) ^ ((k >> 64) as u64) | 1
+        }
         Some(l) if l.source == lightcraft_develop::LensSource::Database => {
             let k = Hasher128::new().str("lens").str(&format!("{l:?}")).finish();
             (k.0 as u64) ^ ((k.0 >> 64) as u64) | 1

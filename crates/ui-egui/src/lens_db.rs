@@ -136,8 +136,8 @@ fn refresh(app: &mut LightcraftApp) {
     let again = ids.is_none() && look_up_again(app.ui.lens_refreshed, key);
     app.ui.lens_refreshed = Some(key);
     let Some(probe) = recheck::file_probe(&app.session) else { return };
-    let Some(db) = lens_profiles::database() else { return };
-    let listed = lens_refresh::missing(&app.session.catalog, &db, ids.as_deref(), again);
+    let db = lens_profiles::database();
+    let listed = lens_refresh::missing_available(&app.session.catalog, db.as_deref(), ids.as_deref(), again);
     if listed.is_empty() {
         return;
     }
@@ -186,6 +186,7 @@ fn database_name(camera: &str, lens: &str) -> Option<String> {
 pub fn readout(app: &LightcraftApp, p: &lightcraft_catalog::Photo) -> String {
     use lightcraft_develop::LensSource;
     match p.embedded_lens.map(|l| l.source) {
+        Some(LensSource::Legacy) => String::new(), // Background classification supplies a truthful source.
         Some(LensSource::File) => crate::i18n::tr("Profile: from the file (the camera's own correction)").to_string(),
         Some(LensSource::Database) => {
             let name = database_name(&p.meta.camera, &p.meta.lens).unwrap_or_else(|| p.meta.lens.trim().to_string());

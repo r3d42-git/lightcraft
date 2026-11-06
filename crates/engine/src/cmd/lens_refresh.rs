@@ -31,6 +31,11 @@ pub struct Missing {
 /// none) and the raws whose file named no lens when they were imported (a newer LightCraft may read their lens).
 /// No file-system calls.
 pub fn missing(cat: &Catalog, db: &lightcraft_lensdb::LensDb, ids: Option<&[PhotoId]>, again: bool) -> Vec<Missing> {
+    missing_available(cat, Some(db), ids, again)
+}
+
+/// Also classifies old R3D profiles when no external database is installed.
+pub fn missing_available(cat: &Catalog, db: Option<&lightcraft_lensdb::LensDb>, ids: Option<&[PhotoId]>, again: bool) -> Vec<Missing> {
     // a photo and its virtual copies list the photo once, in library order
     let mut seen = std::collections::HashSet::new();
     let from_database = |p: &Photo| p.embedded_lens.is_some_and(|l| l.source == LensSource::Database);
@@ -42,7 +47,8 @@ pub fn missing(cat: &Catalog, db: &lightcraft_lensdb::LensDb, ids: Option<&[Phot
             let lens = p.meta.lens.trim();
             match &p.embedded_lens {
                 None if lens.is_empty() => again,
-                None => crate::lens_profiles::profile_name(db, &p.meta.camera, lens).is_some(),
+                None => db.is_some_and(|db| crate::lens_profiles::profile_name(db, &p.meta.camera, lens).is_some()),
+                Some(l) if l.source == LensSource::Legacy => true,
                 Some(_) => again && from_database(p),
             }
         })
@@ -82,7 +88,7 @@ pub fn apply(s: &mut Session, results: Vec<(Missing, std::result::Result<ProbeIn
         for id in family {
             let Some(p) = s.catalog.photo(id) else { continue };
             // nothing found for a photo without a database profile: a file's own correction is Reload's business
-            let from_database = p.embedded_lens.is_some_and(|l| l.source == LensSource::Database);
+            let from_database = p.embedded_lens.is_some_and(|l| matches!(l.source, LensSource::Database | LensSource::Legacy));
             if info.embedded_lens.is_some() || from_database {
                 let mine = crate::cmd::convert::lens_ops(id, p, &info);
                 if !mine.is_empty() {
@@ -132,13 +138,11 @@ fn refresh(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err(bad(C, "all is true or false")),
     };
-    let Some(db) = crate::lens_profiles::database() else {
-        return Ok(json!({"checked": 0, "found": [], "database": false}));
-    };
-    let listed = missing(&s.catalog, &db, ids.as_deref(), again);
+    let db = crate::lens_profiles::database();
+    let listed = missing_available(&s.catalog, db.as_deref(), ids.as_deref(), again);
     let n = listed.len();
     let found = apply(s, probe(&fp, listed))?;
-    Ok(json!({"checked": n, "found": found.iter().map(|i| i.0).collect::<Vec<_>>(), "database": true}))
+    Ok(json!({"checked": n, "found": found.iter().map(|i| i.0).collect::<Vec<_>>(), "database": db.is_some()}))
 }
 
 fn download(s: &mut Session, _: &Value) -> Result<Value> {

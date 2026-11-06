@@ -310,6 +310,9 @@ impl MediaCache {
     }
 
     fn source_ref_plain(&mut self, p: &Photo, level: SourceLevel, cached: bool) -> SourceRef {
+        // An unclassified R3D profile follows the current decoder/database. Until
+        // a probe classifies it, a loaded source must never survive a DB switch.
+        let cached = cached && !p.embedded_lens.is_some_and(|l| l.source == lightcraft_develop::LensSource::Legacy);
         if cached && let Some(a) = self.get_source(p.id, level) {
             return SourceRef::Loaded(Box::new(a));
         }

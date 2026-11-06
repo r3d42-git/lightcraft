@@ -7,7 +7,8 @@ use super::{Arc, Deserialize, DevelopSettings, MediaKind, Photo, Rgb32f, Rgba8, 
 // 79: apply validated embedded distortion for newly decoded Sony ILCE-7M3 sources.
 // 80: v0.16.0 grayscale JPEG XL LinearRaw decoding; invalidate previous R3D output.
 // 81: upstream 0.17.0 color/geometry/grain and merged R3D diagnostic views.
-pub const RENDER_CACHE_VERSION: u64 = 82;
+pub const RENDER_CACHE_VERSION: u64 = 83;
+// 83: retain unclassified R3D lens profiles, then classify their provenance safely.
 // 82: v0.18.1 photo-attached masks, reloadable named lens profiles and raw correction updates.
 
 /// Thumbnails render at one of these long edges (so window/cell size changes reuse the cache).
@@ -232,6 +233,11 @@ pub(crate) fn pinned_lens(
     decoded: Option<lightcraft_develop::EmbeddedLens>,
     catalog: Option<lightcraft_develop::EmbeddedLens>,
 ) -> Option<lightcraft_develop::EmbeddedLens> {
+    // R3D v12 never stored provenance. Preserve its decode-owned behavior until
+    // a real probe classifies the photo; absence must not pretend to be explicit File.
+    if catalog.is_some_and(|l| l.source == lightcraft_develop::LensSource::Legacy) {
+        return decoded;
+    }
     match decoded {
         Some(l) if l.source == lightcraft_develop::LensSource::File => Some(l),
         _ => catalog.filter(|c| c.source == lightcraft_develop::LensSource::Database),
