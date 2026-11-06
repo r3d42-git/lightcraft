@@ -24,7 +24,9 @@ source and persistent-render cache reuse/publication are bypassed; source/view/q
 snapshot fingerprint; a DB switch/removal cannot reuse old output.
 Retouch selection/draft ownership includes the same source/lens identity, and SAM
 input keys include lens-dependent starting colour without enabling its unwarped
-mask geometry. A runtime profile refresh cannot reuse old SAM input or accept a
+mask geometry. Private Remove clicks never migrate saved legacy masks; their
+full corrected render stays distinct from normal Masking SAM coordinate attachment.
+A runtime profile refresh cannot reuse old SAM input or accept a
 late local/cloud draft for another lens frame.
 Retain upstream photo-attached mask conversion beside exact frozen R3D AI brush
 support and corrected AiRemove model input. Do not extrapolate a narrower lens

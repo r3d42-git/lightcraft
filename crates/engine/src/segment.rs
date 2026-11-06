@@ -414,6 +414,23 @@ impl Session {
         Some((h, d))
     }
 
+    /// Normal Masking stores selections on the photo. Private Remove selections
+    /// stay in their corrected frame and must not edit masks or replace the
+    /// develop Arc captured by their owner before this request was queued.
+    #[cfg(any(feature = "sam", test))]
+    fn prepare_segment_masks(&mut self, id: PhotoId, tag: &Tag) -> Result<(), String> {
+        if matches!(tag, Tag::AiRemove { .. }) {
+            return Ok(());
+        }
+        if let Some(cur) = self.develop_of(id).filter(|d| d.masks.iter().any(|m| !m.on_photo)) {
+            let mut on = (*cur).clone();
+            self.attach_masks(id, &cur, &mut on);
+            self.apply_silent(lightcraft_catalog::Op::SetDevelop { id, settings: std::sync::Arc::new(on), label: "Masks".into(), edited: None })
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     /// Clicks (in normalized photo coordinates) for the model.
     #[cfg(feature = "sam")]
     fn model_clicks(clicks: &[Click]) -> Vec<lightcraft_segment::Click> {
@@ -433,13 +450,7 @@ impl Session {
         region: Option<[f64; 4]>,
     ) -> Result<worker::Job, String> {
         let dir = self.segmenter.model_dir()?;
-        // old masks go onto the photo first: the selection that comes back is in its coordinates
-        if let Some(cur) = self.develop_of(id).filter(|d| d.masks.iter().any(|m| !m.on_photo)) {
-            let mut on = (*cur).clone();
-            self.attach_masks(id, &cur, &mut on);
-            self.apply_silent(lightcraft_catalog::Op::SetDevelop { id, settings: std::sync::Arc::new(on), label: "Masks".into(), edited: None })
-                .map_err(|e| e.to_string())?;
-        }
+        self.prepare_segment_masks(id, &tag)?;
         let (mut key, mut d) = self.segment_key(id).ok_or("no such photo")?;
         if matches!(tag, Tag::AiRemove { .. }) {
             d = (*self.develop_of(id).ok_or("no such photo")?).clone();
@@ -837,6 +848,43 @@ mod tests {
             .unwrap();
         s.ai_remove_poll();
         assert_eq!(s.segment_poll().messages, vec!["normal notice".to_string(), "normal masking error".to_string()]);
+    }
+
+    #[test]
+    fn private_remove_keeps_legacy_masks_while_normal_masking_attaches_them() {
+        use lightcraft_develop::{Mask, MaskComponent, MaskShape};
+        let mut s = Session::with_demo();
+        let id = s.active().unwrap();
+        let mut d = (*s.develop_of(id).unwrap()).clone();
+        d.optics.distortion = 15.0;
+        d.masks.push(Mask {
+            id: 7,
+            on_photo: false,
+            components: vec![MaskComponent {
+                name: None,
+                op: Default::default(),
+                invert: false,
+                shape: MaskShape::Linear { start: Point::new(0.2, 0.3), end: Point::new(0.7, 0.8) },
+            }],
+            ..Mask::default()
+        });
+        s.catalog
+            .apply(lightcraft_catalog::Op::SetDevelop { id, settings: std::sync::Arc::new(d), label: "Legacy fixture".into(), edited: None })
+            .unwrap();
+        let before = s.develop_of(id).unwrap();
+        let history = s.catalog.photo(id).unwrap().history.len();
+        let undo = s.undo.len();
+        s.prepare_segment_masks(id, &Tag::AiRemove { revision: 1, detail: false }).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&before, &s.develop_of(id).unwrap()));
+        assert_eq!(s.develop_of(id).unwrap().masks, before.masks);
+        assert_eq!(s.catalog.photo(id).unwrap().history.len(), history);
+        assert_eq!(s.undo.len(), undo);
+        s.prepare_segment_masks(id, &Tag::Prepare).unwrap();
+        let normal = s.develop_of(id).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&before, &normal));
+        assert!(normal.masks[0].on_photo, "normal SAM still uses the upstream photo coordinates");
+        assert_ne!(normal.masks[0].components, before.masks[0].components);
+        assert_eq!(s.undo.len(), undo, "normal coordinate attachment remains bookkeeping");
     }
 
     fn seg_box(side: usize, x0: usize, y0: usize, x1: usize, y1: usize) -> SegMask {
