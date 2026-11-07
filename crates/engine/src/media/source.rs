@@ -1,8 +1,8 @@
 use super::{Arc, DcpProfile, Deserialize, DevelopSettings, MediaKind, Photo, Rgb32f, Rgba8, Serialize, SourceInfo};
 
 /// Bump when the pipeline's output changes, to invalidate cached thumbnails.
-// 85: integrated 0.19 output and retained R3D Sony tone/file-optics corrections.
-pub const RENDER_CACHE_VERSION: u64 = 85;
+// 86: verified external lens/JPEG framing and Sony chroma recovery change fitted RAW colour.
+pub const RENDER_CACHE_VERSION: u64 = 86;
 
 /// Thumbnails render at one of these long edges (so window/cell size changes reuse the cache).
 pub const THUMB_SIZES: [usize; 4] = [128, 256, 384, 512];

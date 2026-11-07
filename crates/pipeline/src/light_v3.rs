@@ -281,7 +281,7 @@ pub const FITS: [&Fit; 2] = [&fitted::CONTRAST, &fitted::BLACKS];
 /// Whether `s` renders `info` with the V4 operators: process V4 or later and a raw with its camera's tone
 /// curve (other sources keep the tone map's own Contrast and Blacks).
 pub fn applies(s: &DevelopSettings, info: &SourceInfo) -> bool {
-    let camera_look = info.raw && info.camera_tone.is_some();
+    let camera_look = info.raw && info.camera_tone.as_ref().is_some_and(|curve| !curve.is_generic());
     match s.process.process() {
         Process::V1 | Process::V2 | Process::V3 => false,
         Process::V4 | Process::V5 | Process::V6 => camera_look,

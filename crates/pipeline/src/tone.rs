@@ -26,6 +26,12 @@ const NO_CHROMA: [f32; CHROMA_N] = [1.0; CHROMA_N];
 pub struct CameraTone {
     knots: [[f32; 2]; 32],
     chroma: [f32; CHROMA_N],
+    #[serde(skip_serializing_if = "is_false")]
+    generic_luminance: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 impl<'de> serde::Deserialize<'de> for CameraTone {
@@ -36,9 +42,12 @@ impl<'de> serde::Deserialize<'de> for CameraTone {
             // absent in smart previews written before the chroma curve existed
             #[serde(default)]
             chroma: Option<[f32; CHROMA_N]>,
+            #[serde(default)]
+            generic_luminance: bool,
         }
         let w = Wire::deserialize(d)?;
-        let tone = Self::new(w.knots).ok_or_else(|| serde::de::Error::custom("invalid camera tone curve"))?;
+        let mut tone = Self::new(w.knots).ok_or_else(|| serde::de::Error::custom("invalid camera tone curve"))?;
+        tone.generic_luminance = w.generic_luminance;
         match w.chroma {
             Some(c) => tone.with_chroma(c).ok_or_else(|| serde::de::Error::custom("invalid camera chroma curve")),
             None => Ok(tone),
@@ -55,7 +64,22 @@ impl CameraTone {
             }
             previous = p;
         }
-        Some(Self { knots, chroma: NO_CHROMA })
+        Some(Self { knots, chroma: NO_CHROMA, generic_luminance: false })
+    }
+
+    /// Carry a file-local chroma curve while retaining the exact generic RAW luminance map.
+    /// The representative SDR knots remain available to consumers that inspect camera curves;
+    /// rendering selects the generic process-specific LUT rather than interpolating these knots.
+    pub fn generic() -> Self {
+        let knots = std::array::from_fn(|i| {
+            let x = GREY * 2f32.powf(-12.0 + 14.0 * i as f32 / 31.0);
+            [x, generic_reference(false).apply(x)]
+        });
+        Self { knots, chroma: NO_CHROMA, generic_luminance: true }
+    }
+
+    pub fn is_generic(&self) -> bool {
+        self.generic_luminance
     }
 
     /// The curve with chroma scales at display luminance 0, 1/7 … 1 (each finite, 0..=4).
@@ -75,6 +99,9 @@ impl CameraTone {
     pub fn apply(&self, y: f32) -> f32 {
         if !y.is_finite() || y <= 0.0 {
             return 0.0;
+        }
+        if self.generic_luminance {
+            return generic_reference(false).apply(y);
         }
         let mut previous = [0.0, 0.0];
         for p in self.knots {
@@ -102,6 +129,9 @@ impl CameraTone {
     /// knot, monotone, finite and at most 1. In real numbers it only approaches white; in `f32` the
     /// gap can round to 0 far up, and within a stop or two for a last knot a few ulps below white.
     pub fn apply_rolloff(&self, y: f32) -> f32 {
+        if self.generic_luminance {
+            return if y.is_finite() && y > 0.0 { generic_reference(true).apply(y) } else { 0.0 };
+        }
         let (a, b) = (self.knots[30], self.knots[31]);
         if !y.is_finite() || y <= b[0] {
             return self.apply(y);
@@ -113,6 +143,13 @@ impl CameraTone {
         // would step the curve down past a knot within it of white)
         rolloff_past(y, b, slope, CAMERA_MIN_SLOPE)
     }
+}
+
+// Shared neutral LUTs avoid allocating a complete generic map for every sampled pixel/DNG point.
+fn generic_reference(rolloff: bool) -> &'static ToneMap {
+    static CLASSIC: std::sync::OnceLock<ToneMap> = std::sync::OnceLock::new();
+    static ROLLOFF: std::sync::OnceLock<ToneMap> = std::sync::OnceLock::new();
+    if rolloff { ROLLOFF.get_or_init(|| ToneMap::rolloff_hdr(0.0, 0.0, 0.0, 1.0)) } else { CLASSIC.get_or_init(|| ToneMap::new(0.0, 0.0, 0.0)) }
 }
 
 /// The pace [`CameraTone::apply_rolloff`] closes on white at least at, as display per unit of scene
@@ -191,12 +228,18 @@ impl ToneMap {
     /// gain map only lifts highlights), then the highlights gain up to `peak − 1` more as in
     /// [`ToneMap::hdr`].
     pub fn camera_hdr(curve: &CameraTone, contrast: f64, whites: f64, blacks: f64, peak: f32) -> ToneMap {
+        if curve.is_generic() {
+            return Self { chroma: curve.chroma, ..Self::hdr(contrast, whites, blacks, peak) };
+        }
         ToneMap::camera_with(|y| curve.apply(y), curve.chroma, contrast, whites, blacks, peak)
     }
 
     /// [`ToneMap::camera_hdr`] of process V5: past its last knot the camera curve rolls off in stops
     /// ([`CameraTone::apply_rolloff`]) instead of closing on white within a stop of the sensor's.
     pub fn camera_rolloff_hdr(curve: &CameraTone, contrast: f64, whites: f64, blacks: f64, peak: f32) -> ToneMap {
+        if curve.is_generic() {
+            return Self { chroma: curve.chroma, ..Self::rolloff_hdr(contrast, whites, blacks, peak) };
+        }
         ToneMap::camera_with(|y| curve.apply_rolloff(y), curve.chroma, contrast, whites, blacks, peak)
     }
 
@@ -375,6 +418,45 @@ fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_chroma_carrier_keeps_exact_adjusted_sdr_hdr_luminance() {
+        let chroma = [1.7, 1.6, 1.4, 1.3, 1.2, 1.1, 1.0, 1.0];
+        let curve = CameraTone::generic().with_chroma(chroma).unwrap();
+        assert!(curve.is_generic());
+        for (c, w, b) in [(0.0, 0.0, 0.0), (60.0, -35.0, -40.0), (-60.0, 70.0, 45.0)] {
+            for peak in [1.0, 2.0, 8.0, f32::NAN] {
+                for (carrier, generic) in [
+                    (ToneMap::camera_hdr(&curve, c, w, b, peak), ToneMap::hdr(c, w, b, peak)),
+                    (ToneMap::camera_rolloff_hdr(&curve, c, w, b, peak), ToneMap::rolloff_hdr(c, w, b, peak)),
+                ] {
+                    assert_eq!(carrier.lut(), generic.lut());
+                    assert_eq!(carrier.chroma_lut(), &chroma);
+                }
+            }
+            assert_eq!(ToneMap::camera(&curve, c, w, b).lut(), ToneMap::new(c, w, b).lut());
+        }
+        for i in 0..200 {
+            let y = GREY * 2f32.powf(-16.0 + i as f32 * 0.15);
+            assert_eq!(curve.apply(y), ToneMap::new(0.0, 0.0, 0.0).apply(y));
+            assert_eq!(curve.apply_rolloff(y), ToneMap::rolloff_hdr(0.0, 0.0, 0.0, 1.0).apply(y));
+        }
+        assert!(CameraTone::new(*curve.knots()).is_some(), "representative samples remain valid camera/DNG input");
+    }
+
+    #[test]
+    fn generic_chroma_marker_survives_smart_style_serde_without_changing_legacy_wire() {
+        let plain = CameraTone::new(knots()).unwrap();
+        let old = serde_json::json!({"knots": plain.knots(), "chroma": plain.chroma()});
+        assert_eq!(serde_json::to_value(plain).unwrap(), old);
+        assert!(!serde_json::from_value::<CameraTone>(old).unwrap().is_generic());
+        let carrier = CameraTone::generic().with_chroma([1.5; CHROMA_N]).unwrap();
+        let header = serde_json::json!({"tone": carrier});
+        let decoded: CameraTone = serde_json::from_value(header["tone"].clone()).unwrap();
+        assert_eq!(decoded, carrier);
+        assert!(decoded.is_generic());
+        assert_eq!(ToneMap::camera(&decoded, 40.0, -20.0, 35.0).lut(), ToneMap::new(40.0, -20.0, 35.0).lut());
+    }
 
     fn knots() -> [[f32; 2]; 32] {
         std::array::from_fn(|i| {

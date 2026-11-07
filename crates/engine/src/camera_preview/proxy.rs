@@ -421,7 +421,18 @@ pub(super) fn align_profile_geometry(
     warp.lens_dist = 1.0;
     let source = |x, y| warp.corrected_to_source(lightcraft_geom::Point::new(x, y), 1);
     let candidate = resample_correspondence(sensor, source);
-    let framing = estimate_framing_against(&candidate, reference, Some(sensor))?;
+    let framing = estimate_framing_against(&candidate, reference, Some(sensor)).or_else(|| {
+        let start = web_time::Instant::now();
+        let framing = estimate_profile_structure(&candidate, reference, sensor);
+        if lightcraft_pipeline::profiling() {
+            eprintln!(
+                "[profile] external lens structural verification {:.1} ms, accepted {}",
+                start.elapsed().as_secs_f64() * 1000.0,
+                framing.is_some()
+            );
+        }
+        framing
+    })?;
     let mask = resample_correspondence(clipped, source);
     let frame = |x: f64, y: f64| {
         let (x, y) = framing.source(x as f32, y as f32, sensor.width, sensor.height);
@@ -566,4 +577,137 @@ pub(super) fn sensor_proxy(raw: &RawImage, k: usize, edge: usize) -> Option<Rgb3
         }
         None => return None,
     })
+}
+
+/// A second, independent verifier for an external lens proposal. High-frequency edge directions
+/// can disagree on foliage or lack contrast in the uncorrected source. Three-pixel-smoothed log
+/// luminance instead tests large-scale scene structure. Both sides use the same finite support;
+/// held-out samples and every quadrant must confirm the improvement. No RGB error trains it.
+pub(super) fn estimate_profile_structure(sensor: &Rgb32f, reference: &Rgb32f, original: &Rgb32f) -> Option<Cr3Framing> {
+    if [sensor, reference, original].iter().any(|im| im.width.checked_mul(im.height) != Some(im.data.len()))
+        || (sensor.width, sensor.height) != (original.width, original.height)
+        || sensor.width < 16
+        || sensor.height < 16
+        || reference.width < 16
+        || reference.height < 16
+        || (reference.width as f64 / reference.height as f64 / (sensor.width as f64 / sensor.height as f64) - 1.0).abs() > 0.02
+    {
+        return None;
+    }
+    let sensor = fit(sensor, PROXY, PROXY, Filter::Box);
+    let reference = reference_at(reference, &sensor);
+    let original = reference_at(original, &sensor);
+    let (w, h) = (sensor.width, sensor.height);
+    if w < 16 || h < 16 {
+        return None;
+    }
+    let smooth_log = |image: &Rgb32f| {
+        let mut logs = image.clone();
+        logs.map_in_place(|p| {
+            let l = luminance_2020(p);
+            [if l.is_finite() { l.max(1e-4).ln() } else { f32::NAN }; 3]
+        });
+        let mut out = Rgb32f::new(w, h);
+        out.data.fill([f32::NAN; 3]);
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                let mut sum = 0.0;
+                for yy in y - 1..=y + 1 {
+                    for xx in x - 1..=x + 1 {
+                        sum += logs.data[yy * w + xx][0];
+                    }
+                }
+                out.data[y * w + x] = [sum / 9.0; 3];
+            }
+        }
+        out
+    };
+    let (sensor, reference, original) = (smooth_log(&sensor), smooth_log(&reference), smooth_log(&original));
+    let score = |framing: Cr3Framing, held: bool, quadrant: Option<usize>| -> Option<(f64, f64)> {
+        let (mut total, mut n) = (0usize, 0usize);
+        let (mut target, mut before, mut after, mut tt, mut bb, mut aa, mut tb, mut ta) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        for y in 2..h - 2 {
+            for x in 2..w - 2 {
+                if ((x * 17 + y * 11) % 3 == 0) != held || quadrant.is_some_and(|q| q != usize::from(x >= w / 2) + 2 * usize::from(y >= h / 2)) {
+                    continue;
+                }
+                total += 1;
+                let (sx, sy) = framing.source(x as f32 + 0.5, y as f32 + 0.5, w, h);
+                if sx < 1.5 || sy < 1.5 || sx > w as f32 - 1.5 || sy > h as f32 - 1.5 {
+                    continue;
+                }
+                let (t, b, a) = (reference.data[y * w + x][0], original.data[y * w + x][0], sensor.sample_bilinear(sx, sy)[0]);
+                if !t.is_finite() || !b.is_finite() || !a.is_finite() {
+                    continue;
+                }
+                let (t, b, a) = (f64::from(t), f64::from(b), f64::from(a));
+                n += 1;
+                target += t;
+                before += b;
+                after += a;
+                tt += t * t;
+                bb += b * b;
+                aa += a * a;
+                tb += t * b;
+                ta += t * a;
+            }
+        }
+        if n < if quadrant.is_some() { 64 } else { 256 } || n * 5 < total * 4 {
+            return None;
+        }
+        let n = n as f64;
+        let corr = |s: f64, ss: f64, ts: f64| {
+            let variance = (tt - target * target / n) * (ss - s * s / n);
+            (variance > 1e-8).then(|| (ts - target * s / n) / variance.sqrt())
+        };
+        Some((corr(before, bb, tb)?, corr(after, aa, ta)?))
+    };
+    if score(Cr3Framing::IDENTITY, false, None).is_some_and(|(before, _)| before >= 0.90) {
+        return None;
+    }
+    let mut best = (-1.0, Cr3Framing::IDENTITY);
+    let consider = |framing, best: &mut (f64, Cr3Framing)| {
+        if let Some((before, after)) = score(framing, false, None)
+            && after >= 0.95
+            && after >= before + 0.10
+            && after > best.0
+        {
+            *best = (after, framing);
+        }
+    };
+    for s in -10..=10 {
+        for tx in -4..=4 {
+            for ty in -4..=4 {
+                consider(Cr3Framing { scale: 1.0 + s as f32 * 0.01, offset: [tx as f32 * 0.5 / w as f32, ty as f32 * 0.5 / h as f32] }, &mut best);
+            }
+        }
+    }
+    let coarse = best.1;
+    for s in -5..=5 {
+        for tx in -4..=4 {
+            for ty in -4..=4 {
+                let framing = Cr3Framing {
+                    scale: coarse.scale + s as f32 * 0.002,
+                    offset: [coarse.offset[0] + tx as f32 * 0.125 / w as f32, coarse.offset[1] + ty as f32 * 0.125 / h as f32],
+                };
+                if (0.9..=1.1).contains(&framing.scale) && framing.offset[0].abs() <= 2.0 / w as f32 && framing.offset[1].abs() <= 2.0 / h as f32 {
+                    consider(framing, &mut best);
+                }
+            }
+        }
+    }
+    let (before, after) = score(best.1, true, None)?;
+    if best.0 < 0.95 || after < 0.95 || after < before + 0.10 {
+        return None;
+    }
+    for q in 0..4 {
+        let (before, after) = score(best.1, true, Some(q))?;
+        if after < 0.90 || after < before + 0.04 {
+            return None;
+        }
+    }
+    if lightcraft_pipeline::profiling() {
+        eprintln!("[profile] external lens structure {:?}, held-out log-luminance {before:.4} -> {after:.4}", best.1);
+    }
+    Some(best.1)
 }

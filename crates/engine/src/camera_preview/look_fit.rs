@@ -27,6 +27,7 @@ pub(crate) fn fit_preview(
     // Sony's Dynamic Range Optimizer (on by default) brightens the camera JPEG's darker regions,
     // not the raw: keep the colour fitted to the JPEG, take the tone curve without DRO.
     let dro = lightcraft_raw::embedded_preview_dynamic_range_optimized(bytes) == Some(true);
+    let sony_colour = raw.format == super::RawFormat::Arw && !black_and_white && profile.is_none();
     let look = match fit_look_with(&sensor, &reference, &clipped, colour.clone(), dro) {
         Some(look) => look,
         // A black-and-white JPEG has no colour to fit: the profile's colour and the JPEG's tone curve
@@ -37,10 +38,22 @@ pub(crate) fn fit_preview(
             let Some(look) = fit_tone_only_with(unclipped.as_ref().unwrap_or(&sensor), &reference, colour, &bright) else { return (None, true) };
             look
         }
+        // The neutral fallback has no calibrated hue or saturation. Reserve the larger proxy
+        // for this case: detail in coloured subjects can vanish inside the ordinary 96 px fit.
+        None if sony_colour
+            && raw.metadata.model.as_deref().and_then(|model| lightcraft_raw::spectral::find(raw.metadata.make.as_deref(), model)).is_none() =>
+        {
+            let recovered = proxies(raw, bytes, transform, 256, MIN_PREVIEW_FRACTION, lens, embedded)
+                .and_then(|(sensor, reference, clipped)| super::sony::recover_fallback(&sensor, &reference, &clipped));
+            return (recovered, false);
+        }
         None => return (None, black_and_white),
     };
     let mut look = if dro { with_dro_off_tone(look) } else { look };
     look.tone = super::tone::repair_pooled_tone(look.tone);
+    if sony_colour && let Some(tone) = super::sony::recover_chroma(&look, &sensor, &reference, &clipped) {
+        look.tone = tone;
+    }
     if lightcraft_pipeline::profiling() {
         eprintln!(
             "[profile] {:?} camera look: {:?}, {:?}, hue/sat table {}, camera profile available {}, DRO tone replaced {dro}",

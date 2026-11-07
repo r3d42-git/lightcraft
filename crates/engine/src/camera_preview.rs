@@ -23,6 +23,7 @@ mod look_fit;
 mod mono;
 mod pairs;
 mod proxy;
+mod sony;
 mod tone;
 
 #[cfg(test)]
@@ -87,7 +88,9 @@ use tone::{HighlightCheck, ToneFit, fit_tone, fit_tone_conditional, highlights};
 /// RAF; other makes with a lens database), so the render no longer applies it twice, at the position a lens warp samples;
 /// the warped candidate's alignment leaves out the pixels outside the sensor instead of reading them as black.
 /// 14: combined geometry, source-position vignetting, Canon metadata and tone-slope semantics.
-pub const LOOK_VERSION: u32 = 15;
+/// 15: repair pooled intervals of file-local tone curves.
+/// 16: verify external lens/JPEG framing and recover Sony chroma against the file preview.
+pub const LOOK_VERSION: u32 = 16;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CameraLook {

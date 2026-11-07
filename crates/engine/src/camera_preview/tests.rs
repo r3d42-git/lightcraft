@@ -1,4 +1,4 @@
-use super::proxy::{align_profile_geometry, resample_correspondence};
+use super::proxy::{align_profile_geometry, estimate_profile_structure, resample_correspondence};
 use super::tone::{ELASTICITY_BLACK, MAX_TONE_ELASTICITY, TONE_REPAIR_ELASTICITY, limit_elasticity};
 use super::*;
 
@@ -3069,4 +3069,38 @@ fn flat_camera_tone_gets_generic_luminance_without_losing_chroma() {
     let fixed = super::tone::repair_pooled_tone(tone);
     assert!(fixed.knots().windows(2).all(|p| p[0][1] < p[1][1]));
     assert_eq!(fixed.chroma(), tone.chroma());
+}
+
+#[test]
+fn external_structure_verifier_registers_only_coherent_held_out_scene() {
+    let original = profile_geometry_scene(384, 256);
+    let lens = synthetic_profile_lens();
+    let candidate = profile_geometry_target(&original, &lens, Cr3Framing::IDENTITY);
+    let expected = profile_geometry_target(&original, &lens, Cr3Framing { scale: 0.95, offset: [0.006, -0.004] });
+    let mut jpeg = expected.clone();
+    jpeg.map_in_place(|p| p.map(|v| v.powf(0.7)));
+    let framing = estimate_profile_structure(&candidate, &jpeg, &original).expect("independent scene structure registers the lens proposal");
+    assert!((framing.scale - 0.95).abs() < 0.008);
+    assert!(estimate_profile_structure(&candidate, &original, &original).is_none(), "already aligned original cannot improve");
+    let mut unrelated = jpeg.clone();
+    unrelated.data.rotate_left(7919);
+    assert!(estimate_profile_structure(&candidate, &unrelated, &original).is_none(), "unrelated preview fails held-out scene agreement");
+    let mut partial = jpeg.clone();
+    for y in 0..partial.height / 2 {
+        for x in 0..partial.width / 2 {
+            partial.data[y * partial.width + x] = [0.25; 3];
+        }
+    }
+    assert!(estimate_profile_structure(&candidate, &partial, &original).is_none(), "an uncorrelated quadrant cannot be discarded");
+}
+
+#[test]
+fn external_structure_verifier_rejects_flat_and_extreme_aspect_inputs() {
+    let mut flat = Rgb32f::new(384, 256);
+    flat.data.fill([0.25; 3]);
+    assert!(estimate_profile_structure(&flat, &flat, &flat).is_none());
+    let panorama = Rgb32f::new(4096, 16);
+    assert!(estimate_profile_structure(&panorama, &panorama, &panorama).is_none(), "proxy shorter than16 cannot underflow sampling ranges");
+    let scene = profile_geometry_scene(384, 256);
+    assert!(estimate_profile_structure(&scene, &Rgb32f::new(384, 384), &scene).is_none(), "different-aspect content is refused");
 }

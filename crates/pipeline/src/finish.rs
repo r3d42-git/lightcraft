@@ -334,6 +334,12 @@ impl FinishParams {
 /// lifts its highlights past white ([`ToneMap::camera_hdr`]), so it matches the SDR render below them.
 pub fn base_tone(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
     let l = &s.light;
+    if let Some(curve) = info.camera_tone.as_ref().filter(|curve| info.raw && curve.is_generic()) {
+        return match s.process.process() {
+            Process::V1 | Process::V2 | Process::V3 | Process::V4 => ToneMap::camera_hdr(curve, l.contrast, l.whites, l.blacks, peak),
+            Process::V5 | Process::V6 => ToneMap::camera_rolloff_hdr(curve, l.contrast, l.whites, l.blacks, peak),
+        };
+    }
     match s.process.process() {
         // V2 changes the Highlights/Shadows base (`local::tone_base`), not the tone map
         Process::V1 | Process::V2 | Process::V3 => match info.camera_tone.as_ref().filter(|_| info.raw) {
@@ -903,6 +909,28 @@ fn enc(v: f32, dither: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_chroma_carrier_preserves_every_process_light_mapping() {
+        let chroma = [1.6, 1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 1.0];
+        let plain = SourceInfo { raw: true, ..Default::default() };
+        let carrier = SourceInfo { camera_tone: Some(crate::tone::CameraTone::generic().with_chroma(chroma).unwrap()), ..plain.clone() };
+        for process in [Process::V1, Process::V2, Process::V3, Process::V4, Process::V5, Process::V6] {
+            for (contrast, whites, blacks) in [(0.0, 0.0, 0.0), (60.0, -35.0, -40.0), (-60.0, 70.0, 45.0)] {
+                let mut settings = DevelopSettings { process: process.version(), ..Default::default() };
+                settings.light.contrast = contrast;
+                settings.light.whites = whites;
+                settings.light.blacks = blacks;
+                for peak in [1.0, 2.0, 8.0] {
+                    let expected = base_tone(&settings, &plain, peak);
+                    let actual = base_tone(&settings, &carrier, peak);
+                    assert_eq!(actual.lut(), expected.lut(), "{process:?} {contrast}/{whites}/{blacks}, peak {peak}");
+                    assert_eq!(actual.chroma_lut(), &chroma);
+                    assert!(!crate::light_v3::applies(&settings, &carrier), "generic Contrast/Blacks must not be applied again");
+                }
+            }
+        }
+    }
 
     #[test]
     fn grain_noise_is_finite_for_degenerate_coordinates() {
