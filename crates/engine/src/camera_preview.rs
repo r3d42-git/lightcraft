@@ -17,12 +17,14 @@ use lightcraft_raw::{
     profile::{HsvTable, ProfileLook, ToneCurve},
 };
 
+mod calibrated;
 mod colour;
 mod hue_sat;
 mod look_fit;
 mod mono;
 mod pairs;
 mod proxy;
+mod reference_geometry;
 mod sony;
 mod tone;
 
@@ -90,7 +92,8 @@ use tone::{HighlightCheck, ToneFit, fit_tone, fit_tone_conditional, highlights};
 /// 14: combined geometry, source-position vignetting, Canon metadata and tone-slope semantics.
 /// 15: repair pooled intervals of file-local tone curves.
 /// 16: verify external lens/JPEG framing and recover Sony chroma against the file preview.
-pub const LOOK_VERSION: u32 = 16;
+/// 17: calibrated camera colour and independently validated scene tone in matched framing.
+pub const LOOK_VERSION: u32 = 17;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CameraLook {

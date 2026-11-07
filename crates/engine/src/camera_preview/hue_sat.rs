@@ -135,6 +135,11 @@ const SHRINK_WEIGHT: f64 = 5.0;
 /// saturation) node, kernel-weighted and shrunk toward identity where the photo has few samples.
 /// Saturation 0 stays identity, so neutrals are never tinted.
 pub(super) fn fit_hue_sat(pairs: &[([f64; 3], [f64; 3])], matrix: &Mat3) -> Option<HsvTable> {
+    fit_hue_sat_prior(pairs, matrix, None)
+}
+
+pub(super) fn fit_hue_sat_prior(pairs: &[([f64; 3], [f64; 3])], matrix: &Mat3, prior: Option<&HsvTable>) -> Option<HsvTable> {
+    let prior = prior.filter(|t| t.hue_divisions == TABLE_HUES && t.sat_divisions == TABLE_SATS && t.val_divisions == TABLE_VALS && t.srgb_value);
     let to = to_prophoto();
     let samples: Vec<(f64, f64, f64, f64, f64)> = pairs
         .iter()
@@ -189,6 +194,13 @@ pub(super) fn fit_hue_sat(pairs: &[([f64; 3], [f64; 3])], matrix: &Mat3) -> Opti
                     shift += k * dh;
                     log_scale += k * ls;
                 }
+            }
+            if let Some(node) = prior.and_then(|t| t.data.get(index)) {
+                let mass = SHRINK_WEIGHT;
+                shift += mass * f64::from(node[0]);
+                log_scale += mass * f64::from(node[1]).max(0.01).ln();
+                let shrink = 1.0 / (weight + mass);
+                return [(shift * shrink) as f32, (log_scale * shrink).exp() as f32, 1.0];
             }
             if weight <= 0.0 {
                 return [0.0, 1.0, 1.0];

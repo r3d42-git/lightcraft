@@ -19,11 +19,35 @@ pub(crate) fn fit_preview(
     if !transform.matrix_is_fallback || !file_local_look(raw.format) {
         return (None, false);
     }
+    let profile = raw.metadata.model.as_deref().and_then(crate::camera_profiles::get);
+    let (calibration, ordinary) = match profile {
+        Some(p) if p.reference_calibration => (Some(p), None),
+        p => (None, p),
+    };
+    let legacy = fit_file(raw, bytes, transform, lens, embedded, recover_sony_colour, ordinary);
+    if recover_sony_colour
+        && !legacy.1
+        && let Some(profile) = calibration
+        && let Some(result) = super::calibrated::with_reference(raw, bytes, transform, lens, embedded, &profile, legacy.0.as_ref())
+    {
+        return (Some(result), false);
+    }
+    legacy
+}
+
+fn fit_file(
+    raw: &RawImage,
+    bytes: &[u8],
+    transform: &CameraTransform,
+    lens: Option<&LensGeometry>,
+    embedded: Option<&lightcraft_develop::EmbeddedLens>,
+    recover_sony_colour: bool,
+    profile: Option<std::sync::Arc<crate::camera_profiles::CameraProfile>>,
+) -> (Option<CameraLook>, bool) {
     let Some((sensor, reference, clipped)) = look_proxies(raw, bytes, transform, lens, embedded) else { return (None, false) };
     let black_and_white = monochrome(&reference);
     // A camera profile pooled from many photos knows colours this photo shows too little of;
     // try its colour first and fit tone/chroma per photo (picture styles vary).
-    let profile = raw.metadata.model.as_deref().and_then(crate::camera_profiles::get);
     let colour = profile.as_ref().and_then(|p| Some((p.matrix().mul(&transform.matrix.inverse()?), p.hue_sat.clone())));
     // Sony's Dynamic Range Optimizer (on by default) brightens the camera JPEG's darker regions,
     // not the raw: keep the colour fitted to the JPEG, take the tone curve without DRO.

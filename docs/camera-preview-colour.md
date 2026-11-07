@@ -3,6 +3,10 @@
 ARW, NEF, RW2, RAF, CR3, CR2, CRW, PEF, SRW, ORF, ERF and MRW decoding supply sensor data and camera white-balance multipliers (CRW only on the D60/10D/300D; on the other CRW bodies the fitted matrix absorbs the white balance), but currently no measured camera colour matrix — with one exception: the Canon EOS D60, whose matrices we measured on a ColorChecker (`crates/raw/src/chart_table.rs`). They give a D60 CRW its colour when its JPEG look cannot be fitted, and its white balance in Kelvin (below); an accepted fit still wins. Treating camera RGB as linear sRGB produces a dark, muted default rendering. The loader now estimates a file-local starting look from that file's embedded camera JPEG, only when a usable camera matrix is absent. All output pixels still come from the RAW sensor data; there is no JPEG replacement or uniform saturation boost.
 
 <!-- R3D integration note retained from accepted fork -->
+## Local R3D camera calibration
+
+The private macOS build can embed a JSON array of pooled camera measurements through `R3D_CAMERA_CALIBRATIONS`. The local build scripts pick up `calibrations/camera-models.json` next to the checkout. The measurements contain sensor matrices and hue/saturation tables. A profile with `reference_calibration` set uses an unclipped sensor proxy, tests the resolved lens warp and framing against the camera JPEG, and fits a monotone luminance response. Held-out image regions compare colour and luminance separately. The candidate must improve the corresponding error before replacing the existing rendition. The normal RAW controls operate on the resulting scene data. Explicit colour profiles keep their selected colour response.
+
 ## Colour source diagnostic (fork integration, 2026-10-23)
 
 The readout under the creative profile in Edit and the profile browser reports the

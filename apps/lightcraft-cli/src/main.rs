@@ -222,7 +222,7 @@ fn optics_inspect(args: &[String]) -> Result<(), String> {
 /// folders exponentially often before its depth limit cut it off (CWE-400).
 fn raw_files(path: &Path, out: &mut Vec<std::path::PathBuf>) {
     let is_raw = |p: &Path| {
-        p.extension().and_then(|e| e.to_str()).is_some_and(|e| ["arw", "nef", "nrw", "raf", "crw"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+        p.extension().and_then(|e| e.to_str()).is_some_and(|e| ["arw", "nef", "nrw", "raf", "crw", "cr2"].iter().any(|x| e.eq_ignore_ascii_case(x)))
     };
     if path.is_file() {
         if is_raw(path) {

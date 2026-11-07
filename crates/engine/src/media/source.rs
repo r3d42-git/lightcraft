@@ -2,7 +2,7 @@ use super::{Arc, DcpProfile, Deserialize, DevelopSettings, MediaKind, Photo, Rgb
 
 /// Bump when the pipeline's output changes, to invalidate cached thumbnails.
 // 86: verified external lens/JPEG framing and Sony chroma recovery change fitted RAW colour.
-pub const RENDER_CACHE_VERSION: u64 = 86;
+pub const RENDER_CACHE_VERSION: u64 = 87;
 
 /// Thumbnails render at one of these long edges (so window/cell size changes reuse the cache).
 pub const THUMB_SIZES: [usize; 4] = [128, 256, 384, 512];

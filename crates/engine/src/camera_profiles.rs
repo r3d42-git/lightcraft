@@ -22,6 +22,9 @@ const VERSION: u32 = 1;
 /// Largest profile file read (a 5 × 72 × 5 table is ~60 KB of JSON).
 const MAX_FILE: u64 = 4 << 20;
 
+/// Per-model sensor measurements supplied to this private build. Ordinary builds embed an empty array.
+const LOCAL_CALIBRATIONS: &str = include_str!(concat!(env!("OUT_DIR"), "/r3d-camera-models.json"));
+
 /// Profiles built into LightCraft (`assets/camera-profiles/`, see `assets/ATTRIBUTION.md`):
 /// `(model, JSON)`.
 pub const BUNDLED: &[(&str, &str)] = &[
@@ -40,6 +43,9 @@ pub const BUNDLED: &[(&str, &str)] = &[
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CameraProfile {
     pub version: u32,
+    /// Pooled sensor calibration paired with an independently measured camera reference.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reference_calibration: bool,
     /// The camera model as the files report it (Exif `Model`), e.g. `ILCE-7M4`.
     pub model: String,
     /// Photos and colour pairs the profile was fitted on.
@@ -53,7 +59,7 @@ pub struct CameraProfile {
 
 impl CameraProfile {
     pub fn new(model: &str, files: usize, samples: usize, matrix: Mat3, hue_sat: Option<HsvTable>) -> CameraProfile {
-        CameraProfile { version: VERSION, model: model.to_owned(), files, samples, matrix: matrix.0, hue_sat }
+        CameraProfile { reference_calibration: false, version: VERSION, model: model.to_owned(), files, samples, matrix: matrix.0, hue_sat }
     }
 
     pub fn matrix(&self) -> Mat3 {
@@ -107,6 +113,15 @@ fn parse(json: &[u8], origin: &str) -> Result<CameraProfile, String> {
 
 /// The built-in profile for `model`, if any.
 fn bundled(model: &str) -> Option<CameraProfile> {
+    static CALIBRATIONS: OnceLock<Vec<CameraProfile>> = OnceLock::new();
+    let models = CALIBRATIONS.get_or_init(|| {
+        serde_json::from_str::<Vec<CameraProfile>>(LOCAL_CALIBRATIONS)
+            .inspect_err(|e| eprintln!("lightcraft: invalid local-build camera calibration: {e}"))
+            .unwrap_or_default()
+    });
+    if let Some(p) = models.iter().find(|p| p.model == model && p.reference_calibration && p.valid()) {
+        return Some(p.clone());
+    }
     let (_, json) = BUNDLED.iter().find(|(m, _)| *m == model)?;
     parse(json.as_bytes(), &format!("built-in profile {model}")).inspect_err(|e| eprintln!("lightcraft: ignoring camera profile {e}")).ok()
 }
@@ -197,6 +212,9 @@ fn cache_key_for(directory: Option<&Path>) -> u64 {
     let mut h = lightcraft_preview::Hasher128::new();
     for (name, len, modified) in &files {
         h.str(name).u64(*len).u64(modified.as_secs()).u64(u64::from(modified.subsec_nanos()));
+    }
+    if LOCAL_CALIBRATIONS != "[]" {
+        h.str(LOCAL_CALIBRATIONS);
     }
     for (model, json) in BUNDLED {
         h.str(model).str(json);

@@ -93,6 +93,29 @@ pub(super) fn proxies(
     lens: Option<&LensGeometry>,
     embedded: Option<&lightcraft_develop::EmbeddedLens>,
 ) -> Option<(Rgb32f, Rgb32f, Vec<bool>)> {
+    build_proxies(raw, bytes, transform, Some(size), min_fraction, lens, embedded)
+}
+
+pub(super) fn photometric_proxies(
+    raw: &RawImage,
+    bytes: &[u8],
+    transform: &CameraTransform,
+    lens: Option<&LensGeometry>,
+    embedded: Option<&lightcraft_develop::EmbeddedLens>,
+) -> Option<(Rgb32f, Rgb32f, Vec<bool>)> {
+    build_proxies(raw, bytes, transform, None, MIN_PREVIEW_FRACTION, lens, embedded)
+}
+
+fn build_proxies(
+    raw: &RawImage,
+    bytes: &[u8],
+    transform: &CameraTransform,
+    legacy_size: Option<usize>,
+    min_fraction: f64,
+    lens: Option<&LensGeometry>,
+    embedded: Option<&lightcraft_develop::EmbeddedLens>,
+) -> Option<(Rgb32f, Rgb32f, Vec<bool>)> {
+    let size = legacy_size.unwrap_or(384);
     let edge = (2 * size).max(384) as u32;
     let decoded = crate::files::decode_raw_preview(
         bytes,
@@ -125,8 +148,21 @@ pub(super) fn proxies(
     }
     // Fixed, bounded proxy: the selected look cannot depend on thumbnail/export resolution.
     let k = (crop.width.max(crop.height).div_ceil(edge as usize).max(2)).div_ceil(2) * 2;
-    let mut sensor = sensor_proxy(raw, k, edge as usize)?;
-    let mut clipped = clip_mask(&sensor);
+    let measured = legacy_size.is_none().then(|| raw.develop_binned_masked(k, SENSOR_CLIP).ok().flatten()).flatten();
+    let (mut sensor, mut clipped) = match measured {
+        Some((sensor, mask)) => {
+            let mut clipped = Rgb32f::new(sensor.width, sensor.height);
+            for (p, b) in clipped.data.iter_mut().zip(mask) {
+                *p = [f32::from(b != 0); 3];
+            }
+            (sensor, clipped)
+        }
+        None => {
+            let sensor = sensor_proxy(raw, k, edge as usize)?;
+            let mask = clip_mask(&sensor);
+            (sensor, mask)
+        }
+    };
     correct_vignetting(&mut sensor, embedded, raw.orientation);
     // The camera may have corrected its JPEG with the lens warp the file carries (Nikon Z lenses always, at up to 9 %
     // zoom; other cameras when their correction setting is on): the sensor moved into that geometry is a candidate,
@@ -146,7 +182,11 @@ pub(super) fn proxies(
         .and_then(|correction| {
             let mut working = sensor.clone();
             working.map_in_place(to_working);
-            align_profile_geometry(&working, &clipped, &reference, correction, raw.orientation)
+            if legacy_size.is_none() {
+                super::reference_geometry::measured_geometry(&working, &clipped, &reference, correction, raw.orientation)
+            } else {
+                align_profile_geometry(&working, &clipped, &reference, correction, raw.orientation)
+            }
         });
     let external_applied = aligned_external.is_some();
     if let Some((aligned, mask)) = aligned_external {

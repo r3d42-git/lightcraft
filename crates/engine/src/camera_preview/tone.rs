@@ -296,3 +296,68 @@ pub(super) fn fit_tone_conditional(mut pairs: Vec<(f64, f64)>) -> Option<CameraT
     }
     CameraTone::new(limit_elasticity(knots, &pairs)?)
 }
+
+/// Use low-gradient correspondences over the observed exposure range. Equal-population
+/// knots alone leave a small dark subject outside the sampled part of a high-key frame.
+pub(super) fn fit_registered(clean: &[(f64, f64)], fallback: CameraTone) -> Option<CameraTone> {
+    if clean.len() < 256 {
+        return None;
+    }
+    let mut xs: Vec<_> = clean.iter().map(|p| p.0.ln()).collect();
+    xs.sort_by(f64::total_cmp);
+    let lo = xs[xs.len() / 1000];
+    let hi = xs[xs.len() - 1 - xs.len() / 1000];
+    if hi - lo < 0.7 {
+        return None;
+    }
+    let step = (hi - lo) / 31.;
+    let mut bins: [Vec<f64>; 32] = Default::default();
+    let logit = |y: f64| {
+        let y = y.clamp(0.00001, 0.99999);
+        (y / (1. - y)).ln()
+    };
+    for &(x, y) in clean {
+        let index = ((x.ln() - lo) / step).round().clamp(0., 31.) as usize;
+        let center = lo + index as f64 * step;
+        if (center - x.ln()).abs() < step {
+            bins[index].push(logit(y) - logit(f64::from(fallback.apply(x as f32))));
+        }
+    }
+    let mut residual = [0.; 32];
+    let mut weights = [0.; 32];
+    for (i, bin) in bins.iter_mut().enumerate() {
+        if let Some(med) = median(bin) {
+            let mass = bin.len() as f64;
+            residual[i] = med;
+            weights[i] = mass / (mass + 12.);
+        }
+    }
+    let mut knots = [[0.; 2]; 32];
+    let mut levels = [0.; 32];
+    for i in 0..32 {
+        let x = (lo + i as f64 * step).exp();
+        let mut adj = 0.;
+        let mut total = 0.;
+        for (j, &w) in weights.iter().enumerate() {
+            let kernel = (-0.5 * ((i as f64 - j as f64) / 1.05).powi(2)).exp();
+            adj += w * kernel * residual[j];
+            total += kernel;
+        }
+        let output = logit(f64::from(fallback.apply(x as f32))) + adj / total;
+        levels[i] = output;
+        knots[i][0] = x as f32;
+    }
+    // Anchor the bounds in the populated middle of the curve. A noisy point at the toe
+    // must not push every subsequent tone toward white.
+    let anchor = 16;
+    for i in (0..anchor).rev() {
+        levels[i] = levels[i].clamp(levels[i + 1] - 3.8 * step, levels[i + 1] - 0.15 * step);
+    }
+    for i in anchor + 1..32 {
+        levels[i] = levels[i].clamp(levels[i - 1] + 0.15 * step, levels[i - 1] + 3.8 * step);
+    }
+    for (k, level) in knots.iter_mut().zip(levels) {
+        k[1] = (1. / (1. + (-level).exp())) as f32;
+    }
+    CameraTone::new(knots)
+}

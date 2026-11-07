@@ -13,6 +13,19 @@ fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_DIR");
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_REQUIRED");
+    println!("cargo::rerun-if-env-changed=R3D_CAMERA_CALIBRATIONS");
+    let target = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join("r3d-camera-models.json");
+    let calibrations = match std::env::var_os("R3D_CAMERA_CALIBRATIONS") {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            println!("cargo::rerun-if-changed={}", path.display());
+            std::fs::copy(path, &target).map(|_| ())
+        }
+        None => std::fs::write(&target, b"[]"),
+    };
+    if let Err(e) = calibrations {
+        println!("cargo::error=reading or staging local camera calibrations: {e}");
+    }
     let required = std::env::var_os("CRAFT_FONTS_REQUIRED").is_some();
     let mut src = String::from("pub static CRAFT_FONTS: &[CraftFont] = &[\n");
     let mut embedded = 0;

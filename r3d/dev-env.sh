@@ -2,6 +2,10 @@
 # Source this file; no global shell configuration is changed.
 R3D_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 R3D_PROJECT="$(dirname "$R3D_SOURCE")"
+# Private sensor measurements are compiled into local app and CLI builds.
+if [[ -z "${R3D_CAMERA_CALIBRATIONS:-}" && -f "$R3D_PROJECT/calibrations/camera-models.json" ]]; then
+  export R3D_CAMERA_CALIBRATIONS="$R3D_PROJECT/calibrations/camera-models.json"
+fi
 # Runtime defaults follow the checkout name; explicit caller overrides survive.
 R3D_INSTANCE="${R3D_INSTANCE:-$(basename "$R3D_SOURCE")}"
 export CARGO_HOME="${CARGO_HOME:-$R3D_PROJECT/.tools/cargo}"

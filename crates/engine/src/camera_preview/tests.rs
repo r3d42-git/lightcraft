@@ -3104,3 +3104,28 @@ fn external_structure_verifier_rejects_flat_and_extreme_aspect_inputs() {
     let scene = profile_geometry_scene(384, 256);
     assert!(estimate_profile_structure(&scene, &Rgb32f::new(384, 384), &scene).is_none(), "different-aspect content is refused");
 }
+
+#[test]
+fn photometric_geometry_verifies_the_lens_crop_without_reframing_an_already_aligned_pair() {
+    let sensor = profile_geometry_scene(384, 256);
+    let mask = Rgb32f::new(sensor.width, sensor.height);
+    let lens = synthetic_profile_lens();
+    let reference = profile_geometry_target(&sensor, &lens, Cr3Framing { scale: 0.9225, offset: [0.0, 0.001] });
+    let align = |target| super::reference_geometry::measured_geometry(&sensor, &mask, target, &lens, lightcraft_geom::Orientation::Normal);
+    let (aligned, _) = align(&reference).expect("warp and crop should be found on independent tiles");
+    assert!(geometry_rms(&aligned, &reference) < 0.02);
+    assert!(align(&sensor).is_none());
+}
+
+#[test]
+fn registered_tone_does_not_pool_a_measured_shadow_range_into_one_level() {
+    let mut pairs = Vec::new();
+    for i in 1..4097 {
+        let x = 0.0005 * (1500_f64).powf(i as f64 / 4096.0);
+        pairs.push((x, x / (0.28 + x)));
+    }
+    let tone = super::tone::fit_registered(&pairs, CameraTone::generic()).unwrap();
+    assert!(tone.knots().windows(2).all(|p| p[1][0] > p[0][0] && p[1][1] > p[0][1]));
+    assert!((tone.apply(0.05) - 0.05 / 0.33).abs() < 0.012);
+    assert!(super::tone::fit_registered(&[(0.08, 0.17); 512], CameraTone::generic()).is_none());
+}
