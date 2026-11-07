@@ -36,7 +36,7 @@ fn culling(n: u64) -> (Headless, Decodes) {
     let held = Arc::new(Mutex::new(held));
     let first = Arc::new(Mutex::new(None));
     let f = first.clone();
-    s.media.file_loader = Some(Arc::new(move |_, _| {
+    s.media.file_loader = Some(Arc::new(move |_, _, _| {
         f.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(Instant::now);
         // a 45 MP raw: held (one decode at a time here; the others queue behind the lock)
         let _ = held.lock().map(|r| r.recv_timeout(Duration::from_secs(30)));
@@ -107,7 +107,7 @@ fn the_loupe_shows_the_camera_preview_at_once_while_the_raw_renders() {
     for step in 0..4 {
         let id = h.app.session.active();
         let shown = frames_until(&mut h, Duration::from_secs(3), |h| {
-            h.app.loupe_shown.is_some_and(|(p, s)| Some(p) == h.app.session.active() && crate::loupe_timing::is_full_size(s))
+            h.app.loupe_shown.is_some_and(|(p, s)| Some(p) == h.app.session.active() && crate::loupe_timing::full_size(s))
         });
         assert!(shown.is_some(), "step {step}: the loupe showed {:?} for {id:?}, not the camera preview", h.app.loupe_shown);
         assert_eq!(h.app.loupe_shown.map(|(_, s)| s), Some("embedded"), "the raw itself is still being decoded");

@@ -2,10 +2,10 @@
 # Optimized isolated update test; native packaging, no install or publication.
 set -euo pipefail
 source "$(dirname "$0")/dev-env.sh"
-R3D_TEST_ROOT="${R3D_TEST_ROOT:-$R3D_SCRATCH_ROOT/lightcraft/update-0.18.1-test-20261106}"
-R3D_TEST_NAME='LightCraft R3D 0.18.1 Test'
+R3D_TEST_ROOT="${R3D_TEST_ROOT:-$R3D_SCRATCH_ROOT/lightcraft/update-0.19.0-test-20261107}"
+R3D_TEST_NAME='LightCraft R3D 0.19.0 Test'
 export LIGHTCRAFT_R3D_APP_NAME="$R3D_TEST_NAME"
-export LIGHTCRAFT_VERSION='0.18.1-r3d-test'
+export LIGHTCRAFT_VERSION='0.19.0-r3d-test'
 export LIGHTCRAFT_BUILD_SHA="$(git -C "$R3D_SOURCE" rev-parse HEAD)"
 export LIGHTCRAFT_BUILD_DATE="$(date -u +%Y-%m-%d)"
 export LIGHTCRAFT_R3D_LIBRARY="$R3D_TEST_ROOT/fixture/library"
@@ -41,7 +41,7 @@ python3 - "$R3D_PACKAGED_APP/Contents/Info.plist" "$R3D_TEST_NAME" <<'PY'
 import os,plistlib,sys
 p=sys.argv[1]
 with open(p,'rb') as f: info=plistlib.load(f)
-info.update(CFBundleName=sys.argv[2],CFBundleDisplayName=sys.argv[2],CFBundleIdentifier='local.r3d.lightcraft.update-0181-test')
+info.update(CFBundleName=sys.argv[2],CFBundleDisplayName=sys.argv[2],CFBundleIdentifier='local.r3d.lightcraft.update-0190-test')
 for k in ('CFBundleDocumentTypes','UTExportedTypeDeclarations','UTImportedTypeDeclarations','CFBundleURLTypes'):
     info.pop(k,None)
 info['LSEnvironment']={k:os.environ[k] for k in ('LIGHTCRAFT_R3D_LIBRARY','LIGHTCRAFT_R3D_CONFIG_DIR','LIGHTCRAFT_AI_HOME','LIGHTCRAFT_SAM3_DIR','LIGHTCRAFT_LENSFUN_DIR','LIGHTCRAFT_R3D_EXIFTOOL','PYTHONDONTWRITEBYTECODE')}

@@ -1,7 +1,9 @@
 use super::widgets::{check, choices, heading, hint, row};
 #[cfg(not(target_arch = "wasm32"))]
 use super::widgets::{label_width, path_label};
-use super::{CACHE_SIZES, LABEL_W, LightcraftApp, PREVIEW_LIMITS, RichText, Tokens, Value, json, register};
+use super::{
+    CACHE_SIZES, HOT_PIXEL_LIMIT_DEFAULT, HOT_PIXEL_LIMITS, LABEL_W, LightcraftApp, PREVIEW_LIMITS, RichText, Tokens, Value, json, register,
+};
 
 // --------------------------------------------------------------------------------- Performance
 
@@ -49,22 +51,34 @@ pub(super) fn performance_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &To
         let opts = [(0u32, auto.as_str()), (512, "512 MB"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB")];
         choices(ui, "settingsMemory", &opts, &mut app.ui.settings.memory_mb);
     });
+    row(ui, t, crate::i18n::tr("Hot pixel limit"), |ui| {
+        let opts: Vec<(f32, String)> = HOT_PIXEL_LIMITS
+            .iter()
+            .map(|p| (*p, if *p == HOT_PIXEL_LIMIT_DEFAULT { format!("{p} % ({})", crate::i18n::tr("default")) } else { format!("{p} %") }))
+            .collect();
+        let opts: Vec<(f32, &str)> = opts.iter().map(|(p, l)| (*p, l.as_str())).collect();
+        choices(ui, "settingsHotPixels", &opts, &mut app.ui.settings.hot_pixel_limit);
+    });
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "Remove Hot Pixels (Detail) leaves a raw unchanged when more than this share of its photosites would be replaced: such a photo doesn't look like hot pixels on a sensor.",
+        ),
+    );
     heading(ui, t, crate::i18n::tr("Preview cache"));
     let cur = app.session.cache_mb;
     row(ui, t, crate::i18n::tr("Size limit"), |ui| {
         let gb = lightcraft_engine::media::default_disk_cache_bytes(app.session.catalog.len()).div_ceil(1 << 30);
         let auto = format!("{} ({gb} GB)", crate::i18n::tr("Automatic"));
-        let opts = [
-            (512u32, "512 MB"),
-            (1024, "1 GB"),
-            (2048, "2 GB"),
-            (4096, "4 GB"),
-            (8192, "8 GB"),
-            (51_200, "50 GB"),
-            (204_800, "200 GB"),
-            (0, auto.as_str()),
-        ];
-        let mut v = if CACHE_SIZES.contains(&cur) { cur } else { 0 };
+        let custom = custom_cache_option(cur);
+        let mut opts =
+            vec![(512u32, "512 MB"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB"), (8192, "8 GB"), (51_200, "50 GB"), (204_800, "200 GB")];
+        opts.extend(custom.as_ref().map(|(mb, l)| (*mb, l.as_str())));
+        opts.push((0, auto.as_str()));
+        // (a saved size the list doesn't offer shows as its own option, not as Automatic: picking
+        // Automatic then changes it; CodeRabbit on #3583)
+        let mut v = if CACHE_SIZES.contains(&cur) || custom.is_some() { cur } else { 0 };
         if choices(ui, "settingsCache", &opts, &mut v) {
             let _ = app.run("library.preferences", json!({"cacheMb": v}));
         }
@@ -311,5 +325,26 @@ pub(crate) fn smart_previews_changed(app: &mut LightcraftApp, ctx: &egui::Contex
             app.toast(ctx, if failed > 0 { crate::i18n::tr_format!("{msg} ({failed} failed)", failed = failed, msg = msg) } else { msg });
         }
         Err(e) => app.toast(ctx, e),
+    }
+}
+
+/// The cache size limit saved in the settings, as an option of its own when the list doesn't offer
+/// it (set through `library.preferences`, or by an older version): its value and label.
+fn custom_cache_option(cur: u32) -> Option<(u32, String)> {
+    if cur == 0 || CACHE_SIZES.contains(&cur) {
+        return None;
+    }
+    let label = if cur.is_multiple_of(1024) { format!("{} GB", cur / 1024) } else { format!("{cur} MB") };
+    Some((cur, label))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_saved_cache_size_the_list_does_not_offer_is_an_option() {
+        assert_eq!(super::custom_cache_option(0), None, "Automatic");
+        assert_eq!(super::custom_cache_option(51_200), None, "offered");
+        assert_eq!(super::custom_cache_option(10_240), Some((10_240, "10 GB".to_string())));
+        assert_eq!(super::custom_cache_option(3000), Some((3000, "3000 MB".to_string())));
     }
 }

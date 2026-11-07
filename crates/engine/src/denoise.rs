@@ -36,6 +36,7 @@ use crate::merge::ByteReader;
 use crate::model_download::Downloads;
 use crate::{Selection, Session};
 
+mod builtin;
 mod gpu;
 mod model;
 mod products;
@@ -50,8 +51,6 @@ use gpu::{GPU_CRASHED, GPU_MAX_FALLBACKS, GPU_PARALLEL, SETTING_UP, card_is_fast
 pub use model::RunOn;
 #[cfg(all(feature = "denoise", test))]
 pub(crate) use model::default_loader;
-#[cfg(all(test, feature = "denoise"))]
-use model::{BUILTIN_AGREE_MEAN, BUILTIN_AGREE_WORST, BuiltinModel, CHECK_NOISE, builtin_check_tile, forget_builtin_card};
 #[cfg(all(feature = "denoise", test))]
 use model::{GpuSide, Network, RemoteSide, network, worth_retrying};
 pub(crate) use model::{Loader, Model};
@@ -67,7 +66,10 @@ pub(crate) use settings::{Settings, forget_gpu_set_ups, installed_models, read_c
 pub(crate) use state::State;
 pub use state::{Pace, PhotoState};
 
-#[cfg(all(test, feature = "denoise"))]
+// Two stacked cfgs (not `all(test, feature = …)`): clippy only recognises a plain `cfg(test)`
+// module as test code, so the `allow-*-in-tests` settings in clippy.toml apply to its helpers.
+#[cfg(test)]
+#[cfg(feature = "denoise")]
 mod gpu_tests;
 
 /// Read the immutable pre-feature identity; callers that migrate must first persist it with `capture_legacy_pin`.

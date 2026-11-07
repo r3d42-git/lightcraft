@@ -46,7 +46,7 @@ fn hdr_merge_command_creates_and_imports_a_dng() {
     assert_eq!(p.kind, lightcraft_catalog::MediaKind::Raw);
     assert_eq!(s.selection.active, Some(id));
     let d = s.develop_of(id).unwrap();
-    assert!(d.light.exposure != 0.0 || d.light.highlights != 0.0, "auto settings applied");
+    assert!(d.auto_tone_active(), "merge applies and marks Auto even when clipping protection keeps some or all controls neutral");
     let img = s.render_now(id, 256, 256).unwrap();
     assert_eq!(img.image.width, 256);
     // Create Stack: the result tops a collapsed stack of its sources, so the grid shows the result
@@ -60,6 +60,9 @@ fn hdr_merge_command_creates_and_imports_a_dng() {
     assert!(r2["path"].as_str().unwrap().ends_with("IMG_0-HDR-2.dng"));
     let id2 = lightcraft_catalog::PhotoId(r2["id"].as_u64().unwrap());
     assert!(s.catalog.stack_of(id2).is_none(), "no stack without the option");
+    assert!(s.develop_of(id2).unwrap().auto_tone.is_none(), "autoSettings=false must not mark Auto");
+    let expected = super::expected_adaptive_auto(&mut s, id2);
+    assert_eq!(d.as_ref(), &expected, "Auto on the merged file matches all eight adaptive controls and preserves the same import settings");
     // the type filter finds merge results (and only them)
     s.execute("library.filter", &json!({"merged": "hdr"})).unwrap();
     let found: std::collections::HashSet<_> = s.catalog.query(&s.filter, &Default::default()).into_iter().collect();

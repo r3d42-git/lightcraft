@@ -8,8 +8,8 @@ use std::sync::{
 
 type Reply = std::result::Result<JobResult, String>;
 fn pending(s: &mut Session) -> (Sender<Reply>, Sender<Phase>, crate::activity::TaskGuard, AiEdit) {
-    tests::draft(s);
-    let edit = s.ai_remove.draft.take().unwrap();
+    s.ai_remove.draft = None;
+    let edit = tests::pending_edit(s);
     let (tx, reply) = channel();
     let (stages, phases) = channel();
     let cancel = Arc::new(AtomicBool::new(false));

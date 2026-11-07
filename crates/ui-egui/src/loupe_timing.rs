@@ -59,14 +59,18 @@ impl StepTiming {
 pub struct LoupeTiming {
     current: Option<(f64, StepTiming)>,
     done: VecDeque<StepTiming>,
+    /// Steps finished since the app started (never lowered when old ones leave `done`): a driver's
+    /// cursor for the steps made after it looked.
+    total: u64,
+    /// Whether the loupe drew a photo in the frame being drawn ([`LoupeTiming::end_frame`]).
+    drawn: bool,
+    /// How long the photo before the current one stayed (ms), when the loupe stepped to it from
+    /// that photo; `None` when the loupe opened on it (from the grid, or coming back to the loupe).
+    stepped_from: Option<f64>,
 }
 
 /// Sources that show the photo at full size: the camera's JPEG, a cached or a fresh render.
-pub fn is_full_size(source: &str) -> bool {
-    full_size(source)
-}
-
-fn full_size(source: &str) -> bool {
+pub(crate) fn full_size(source: &str) -> bool {
     matches!(source, "embedded" | "cached" | "render" | "preview")
 }
 
@@ -74,8 +78,11 @@ impl LoupeTiming {
     /// The loupe drew `photo` from `source` (what [`crate::panels::detail`] reports in
     /// `loupe_shown`) in the frame that started at `now` (s).
     pub fn observe(&mut self, photo: PhotoId, source: &'static str, now: f64) {
+        self.drawn = true;
         if self.current.as_ref().is_none_or(|(_, t)| t.photo != photo) {
+            let stepped = self.current.is_some();
             self.finish(now);
+            self.stepped_from = if stepped { self.done.back().map(|t| t.dwell_ms) } else { None };
             let t = StepTiming { photo, any_ms: None, any_source: "none", full_ms: None, full_source: "none", sharp_ms: None, dwell_ms: 0.0 };
             self.current = Some((now, t));
         }
@@ -104,7 +111,9 @@ impl LoupeTiming {
         let (since, prev_dwell) = match &self.current {
             // the first frame of a step: `observe` has not seen this photo yet
             Some((since, t)) if t.photo != photo => (now, (now - since) * 1000.0),
-            Some((since, _)) => (*since, self.done.back().map(|t| t.dwell_ms).unwrap_or(f64::INFINITY)),
+            // (a photo the loupe opened on, not stepped to, never settles: the step that ended by
+            // leaving the loupe is not its predecessor)
+            Some((since, _)) => (*since, self.stepped_from.unwrap_or(f64::INFINITY)),
             None => return false,
         };
         prev_dwell.is_finite() && prev_dwell < FAST_STEP_SECS * 1000.0 && now - since < SETTLE_SECS
@@ -113,6 +122,15 @@ impl LoupeTiming {
     /// The loupe is not showing a photo any more (the grid is up).
     pub fn left(&mut self, now: f64) {
         self.finish(now);
+    }
+
+    /// A frame (started at `now`) was drawn: when the loupe drew no photo in it (the grid, Compare, Survey,
+    /// Reference, People or the slideshow is up), the photo it showed was left then, so time away from the
+    /// loupe never counts as time on that photo.
+    pub fn end_frame(&mut self, now: f64) {
+        if !std::mem::take(&mut self.drawn) {
+            self.left(now);
+        }
     }
 
     fn finish(&mut self, now: f64) {
@@ -125,13 +143,15 @@ impl LoupeTiming {
                 self.done.pop_front();
             }
             self.done.push_back(t);
+            self.total = self.total.saturating_add(1);
         }
     }
 
-    /// The finished steps, oldest first, and the photo on screen now.
+    /// The finished steps, oldest first (the latest [`KEEP`]), how many have finished in all, and the photo on screen now.
     pub fn to_json(&self) -> Value {
         json!({
             "steps": self.done.iter().map(|t| t.to_json()).collect::<Vec<_>>(),
+            "total": self.total,
             "current": self.current.as_ref().map(|(_, t)| t.to_json()),
         })
     }
@@ -184,6 +204,51 @@ mod tests {
         assert!(!l.settling(PhotoId(3), 2.033 + SETTLE_SECS + 0.001));
     }
 
+    /// Leaving the loupe soon after a step and coming back on another photo is not a fast step
+    /// (CodeRabbit on #3077): the photo the loupe opens on renders at once, on every frame.
+    #[test]
+    fn coming_back_to_the_loupe_on_another_photo_is_not_a_fast_step() {
+        let mut l = LoupeTiming::default();
+        l.observe(PhotoId(1), "embedded", 0.0);
+        l.end_frame(0.0);
+        // the grid is up after 100 ms on the photo
+        l.end_frame(0.1);
+        assert!(!l.settling(PhotoId(2), 0.2), "the first frame back");
+        l.observe(PhotoId(2), "thumb", 0.2);
+        l.end_frame(0.2);
+        assert!(!l.settling(PhotoId(2), 0.25), "nor the frames after it");
+        // a fast step from there still settles
+        l.observe(PhotoId(2), "embedded", 0.25);
+        assert!(l.settling(PhotoId(3), 0.3));
+        l.observe(PhotoId(3), "thumb", 0.3);
+        assert!(l.settling(PhotoId(3), 0.35));
+    }
+
+    /// A frame without the loupe finishes the photo it showed: coming back to it later starts a new step, and
+    /// neither counts the time away (CodeRabbit on #3055).
+    #[test]
+    fn leaving_the_loupe_finishes_its_photo() {
+        let mut l = LoupeTiming::default();
+        l.observe(PhotoId(1), "embedded", 10.0);
+        l.end_frame(10.0);
+        l.observe(PhotoId(1), "embedded", 10.5);
+        l.end_frame(10.5);
+        assert!(l.steps().is_empty(), "frames that draw the loupe keep the step open");
+        // the grid is up from 11 s to 60 s
+        l.end_frame(11.0);
+        l.end_frame(60.0);
+        let s = l.steps();
+        assert_eq!(s.len(), 1);
+        assert!((s[0].dwell_ms - 1000.0).abs() < 0.01, "dwell ends when the loupe went: {}", s[0].dwell_ms);
+        // back in the loupe on the same photo: a new step, timed from its return
+        l.observe(PhotoId(1), "render", 60.0);
+        l.observe(PhotoId(1), "render", 60.2);
+        l.end_frame(60.2);
+        assert_eq!(l.steps().len(), 1);
+        assert_eq!(l.to_json()["current"]["sharpMs"], 0.0);
+        assert!((l.to_json()["current"]["dwellMs"].as_f64().unwrap() - 200.0).abs() < 0.01);
+    }
+
     #[test]
     fn a_photo_stepped_past_has_no_sharp_time_and_the_list_is_bounded() {
         let mut l = LoupeTiming::default();
@@ -193,6 +258,8 @@ mod tests {
         l.left(1000.0);
         let s = l.steps();
         assert_eq!(s.len(), KEEP);
+        // the count of steps goes on past the kept list: a driver's cursor (CodeRabbit on #3077)
+        assert_eq!(l.to_json()["total"], KEEP as u64 + 10);
         assert!(s.iter().all(|t| t.sharp_ms.is_none() && t.full_ms.is_none()));
         // a non-finite clock never poisons the record
         l.observe(PhotoId(9999), "render", f64::NAN);

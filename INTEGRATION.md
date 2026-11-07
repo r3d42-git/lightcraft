@@ -1,3 +1,27 @@
+## v0.19.0 R3D integration (2026-11-07)
+
+The integration parents are the installed 0.18.1 source, including its Sony tone
+and α7C optics patch (c73741e2), and official v0.19.0 (16636c45).
+The official release supplies culling and background preparation, reusable
+full-source thumbnails, BM3D, sharpen masking and SDR pixel clipping.
+Their R3D extensions remain in the shared paths. They include visible-thumbnail
+priority, per-photo denoiser pins and RawNIND selection, pixel-preserving loupe
+magnification on native textures and in software captures, and HDR clipping.
+
+R3D catalog 14 shares stored segmentation grids across history and versions.
+Format 13 belongs to the deployed R3D line. Older settings retain their saved
+process. New photos use upstream V6. Render cache 85 separates the changed
+rendering from 0.18.1. Camera-look revision 15 retains the measured Sony fixes.
+The α7C calibration still applies only in the measured full-frame RAW mode.
+Private SAM selections, local and cloud retouch drafts and late colour facts
+track the decoded source including lens, DCP contents and hot-pixel settings.
+Stored scene-linear edits remain independent of the model installation.
+
+The fork retains its local model store, optional cloud processing, protected
+exports, adaptive Auto, edit-panel reset, macOS controls, optical database
+provenance and Ubuntu CI with Rust 1.99.1. The acceptance evidence is under
+`../evidence/update-0.19.0-20261107/`.
+
 # R3D optics integration
 
 This separate test branch integrates exact upstream LightCraft `v0.18.1`,

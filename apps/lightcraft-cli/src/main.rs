@@ -114,8 +114,11 @@ USAGE:
       take their colour from the profile and only their tone from their own JPEG.
   lightcraft-cli optics-inspect FILE   read-only optical metadata and correction report
   lightcraft-cli bench-cull FOLDER [--files K] [--n N] [--copy M] [--work DIR] [--json FILE]
-      Measure browse, thumbnails, camera previews, renders and import on isolated libraries.
-      The source photos remain untouched; --files K samples a slow folder.
+      Time what culling a shoot costs on its own files: reading the folder (browse), the first
+      screen of grid thumbnails, camera previews at loupe sizes and full size, a loupe render,
+      rating, and importing N files in place (default 2000) and copying M (default 200). Libraries
+      are made in a new folder under DIR (default: the temp folder); nothing is written next to the
+      photos. --files K reads only the first K files by name (a sample of a slow network folder).
   lightcraft-cli --version | --help
 ";
 

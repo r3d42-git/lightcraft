@@ -23,16 +23,40 @@ pub struct LookAhead {
     last: Option<PhotoId>,
     /// +1 forward (the default), -1 backward.
     dir: i8,
-    /// (photo, direction, catalog revision, visible list generation, edge, crop) the requests
-    /// were made for: a new source, filter or sort changes the neighbours without an edit.
-    made_for: Option<(PhotoId, i8, u64, u64, usize, bool)>,
+    /// (photo, direction, catalog revision, visible list generation, edge, crop, which photos) the
+    /// requests were made for: a new source, filter or sort changes the neighbours without an edit,
+    /// and a change of the preparation settings what may be made.
+    made_for: Option<(PhotoId, i8, u64, u64, usize, bool, Prepare, u64)>,
+}
+
+/// Which photos the look-ahead may prepare, from Settings ▸ Performance for what the user is doing
+/// ([`lightcraft_engine::prep::Mode`]): none when its "Photos ahead" is 0 or it prepares only the photo
+/// on screen, else the photos of its "which photos".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Prepare {
+    Nothing,
+    Photos(lightcraft_engine::prep::Scope),
+}
+
+impl Prepare {
+    /// For `ahead` photos ahead (the mode's count, 0 for the photo on screen only) of `scope`.
+    pub(crate) fn of(ahead: usize, scope: lightcraft_engine::prep::Scope) -> Prepare {
+        if ahead == 0 || scope == lightcraft_engine::prep::Scope::OnScreen { Prepare::Nothing } else { Prepare::Photos(scope) }
+    }
 }
 
 impl LookAhead {
     /// The photos to prepare around `id` at position `i` of `ids`: [`AHEAD`] in the direction of
-    /// travel, nearest first, then [`BEHIND`] the other way.
-    fn targets(&self, ids: &[PhotoId], i: usize) -> Vec<PhotoId> {
-        self.targets_n(ids, i, AHEAD, BEHIND)
+    /// travel, nearest first, then [`BEHIND`] the other way, of those `prepare` allows. (The
+    /// stand-ins are cheap: as many as [`AHEAD`] whatever the mode's count, which is for the full
+    /// renders made ahead.)
+    fn targets(&self, app: &LightcraftApp, ids: &[PhotoId], i: usize, prepare: Prepare) -> Vec<PhotoId> {
+        let Prepare::Photos(scope) = prepare else { return Vec::new() };
+        let mut targets = self.targets_n(ids, i, AHEAD, BEHIND);
+        if scope == lightcraft_engine::prep::Scope::Marked {
+            targets.retain(|t| lightcraft_engine::prep::marked(&app.session, *t));
+        }
+        targets
     }
 
     /// `ahead` photos in the direction of travel from position `i` of `ids`, nearest first, then
@@ -55,7 +79,9 @@ impl LookAhead {
 /// Culling: make the loupe's stand-ins (the camera JPEG of an unedited raw, or a cached render) of
 /// the next photos in the direction of travel, so that a step shows the next one at once instead
 /// of after reading and decoding it (see [`Slot::QuickAhead`]).
-pub(crate) fn look_ahead(app: &mut LightcraftApp, id: PhotoId, edge: usize, crop: bool) {
+/// Only the photos `prepare` allows (Settings ▸ Performance): none at all asks for nothing, and drops the
+/// stand-ins still queued.
+pub(crate) fn look_ahead(app: &mut LightcraftApp, id: PhotoId, edge: usize, crop: bool, prepare: Prepare) {
     let rev = app.session.catalog.revision;
     if app.look_ahead.last != Some(id) {
         let ids = app.session.visible_cloned();
@@ -68,13 +94,14 @@ pub(crate) fn look_ahead(app: &mut LightcraftApp, id: PhotoId, edge: usize, crop
         app.look_ahead.last = Some(id);
     }
     let (visible_gen, ids) = app.session.visible_shared();
-    let want = (id, app.look_ahead.dir, rev, visible_gen, edge, crop);
+    // (the renderer's epoch: a reset drops the stand-ins made, which are then asked for again)
+    let want = (id, app.look_ahead.dir, rev, visible_gen, edge, crop, prepare, app.renderer.epoch());
     if app.look_ahead.made_for == Some(want) {
         return;
     }
     app.look_ahead.made_for = Some(want);
     let Some(i) = ids.iter().position(|p| *p == id) else { return };
-    let targets = app.look_ahead.targets(&ids, i);
+    let targets = app.look_ahead.targets(app, &ids, i, prepare);
     // stepping through a whole wedding in the loupe would keep every thumbnail it ever drew: keep
     // the ones around the photo (what the filmstrip can show) once there are many
     if app.renderer.thumb_textures() > MAX_LOUPE_THUMBS {

@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&out)?;
     for file in args {
         let name = Path::new(&file).file_stem().ok_or("missing file stem")?.to_string_lossy();
-        let (src, info) = lightcraft_engine::files::load_vec(std::fs::read(&file)?, 1600)?;
+        let (src, info) = lightcraft_engine::files::load_vec(std::fs::read(&file)?, 1600, Default::default())?;
         let before = DevelopSettings::default();
         // Same 512 px input size as the command; assess at a larger independent size.
         let proxy = lightcraft_raster::resample::fit(&src, 512, 512, lightcraft_raster::resample::Filter::Box);

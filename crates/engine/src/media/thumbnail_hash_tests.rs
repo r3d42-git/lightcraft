@@ -85,6 +85,77 @@ fn a_virtual_copy_has_its_own_stand_in_keys() {
     assert_ne!(full(&mut s, 1), full(&mut s, 2));
 }
 
+/// Settings saved by a newer LightCraft (a process number this build doesn't know) render with
+/// this build's latest process, and a build that resolved the number to an older process
+/// cached other pixels under the same settings hash: the persistent keys (thumbnails, the
+/// loupe's view render, variants) name the process the settings render with, so those are
+/// never served (review of 5a7016c8: a catalog saved with a newer process kept main's V2 thumbnails).
+#[test]
+fn persistent_keys_name_the_process_the_settings_render_with() {
+    use lightcraft_develop::ProcessVersion;
+    let mut s = session();
+    let newer = DevelopSettings { process: ProcessVersion(ProcessVersion::LATEST.0 + 1), ..DevelopSettings::default() };
+    s.catalog.apply(Op::SetDevelop { id: PhotoId(1), settings: Arc::new(newer.clone()), label: "newer".into(), edited: None }).unwrap();
+    let p = s.catalog.photo(PhotoId(1)).unwrap().clone();
+    let unnamed = |kind: Option<&str>, size: u64| {
+        let mut h = Hasher128::new();
+        h.str(&content_key(&p));
+        if let Some(k) = kind {
+            h.str(k);
+        }
+        h.u64(newer.hash64()).u64(size).u64(RENDER_CACHE_VERSION).u64(crate::camera_profiles::cache_key()).finish()
+    };
+    let named = |kind: Option<&str>, size: u64, process: u64| {
+        let mut h = Hasher128::new();
+        h.str(&content_key(&p));
+        if let Some(k) = kind {
+            h.str(k);
+        }
+        h.u64(newer.hash64()).u64(size).u64(RENDER_CACHE_VERSION).u64(process).u64(crate::camera_profiles::cache_key()).finish()
+    };
+    let resolved = u64::from(lightcraft_develop::Process::LATEST.version().0);
+    let keys = [
+        (s.thumb_job(PhotoId(1), 256).unwrap().cache.unwrap().1, None, 256),
+        (s.view_key(&p, true), Some("view"), 1),
+        (crate::Session::variant_key(&p, &newer, 256, 0), Some("variant"), 256),
+    ];
+    for (key, kind, size) in keys {
+        assert_ne!(key, unnamed(kind, size), "old builds did not name their resolved process");
+        assert_eq!(key, named(kind, size, resolved), "the key names the process used for rendering");
+        assert_ne!(key, named(kind, size, u64::from(newer.process.0)), "the saved future number is not the resolved process");
+    }
+}
+
+/// Photos on V1 and V2 keep the persistent keys builds before process V3 gave them (no process
+/// in them), so their cached thumbnails, view renders and variants stay valid after upgrading
+/// (review of 26cd2df1: every V1/V2 photo rendered again, and offline ones without smart
+/// previews lost their thumbnails); V3 and later name their process.
+#[test]
+fn v1_and_v2_photos_keep_the_render_cache_keys_they_had() {
+    use lightcraft_develop::Process;
+    let mut s = session();
+    for process in [Process::V1, Process::V2, Process::V3] {
+        let settings = DevelopSettings { process: process.version(), ..DevelopSettings::default() };
+        s.catalog.apply(Op::SetDevelop { id: PhotoId(1), settings: Arc::new(settings.clone()), label: "p".into(), edited: None }).unwrap();
+        let p = s.catalog.photo(PhotoId(1)).unwrap().clone();
+        let before_v3 = |kind: Option<&str>, size: u64| {
+            let mut h = Hasher128::new();
+            h.str(&content_key(&p));
+            if let Some(k) = kind {
+                h.str(k);
+            }
+            h.u64(settings.hash64()).u64(size).u64(RENDER_CACHE_VERSION).u64(crate::camera_profiles::cache_key()).finish()
+        };
+        let keys = [
+            s.thumb_job(PhotoId(1), 256).unwrap().cache.unwrap().1 == before_v3(None, 256),
+            s.view_key(&p, true) == before_v3(Some("view"), 1),
+            crate::Session::variant_key(&p, &settings, 256, 0) == before_v3(Some("variant"), 256),
+        ];
+        let old = process <= Process::V2;
+        assert_eq!(keys, [old; 3], "{process:?}: thumbnail, view and variant keys");
+    }
+}
+
 #[test]
 fn hashes_match_uncached_keys_and_are_not_recomputed_for_sizes_metadata_or_before() {
     let mut s = session();
@@ -100,6 +171,7 @@ fn hashes_match_uncached_keys_and_are_not_recomputed_for_sizes_metadata_or_befor
             .u64(settings)
             .u64(b as u64)
             .u64(RENDER_CACHE_VERSION)
+            .u64(u64::from(p.develop.process.process().version().0))
             .u64(crate::camera_profiles::cache_key())
             .finish();
         let job = s.thumb_job(p.id, edge).unwrap();
@@ -149,7 +221,7 @@ fn hash_cache_is_bounded_weak_and_shared_settings_remain_independent() {
 #[test]
 fn source_from_before_content_reload_is_not_accepted() {
     let mut s = session();
-    s.media.file_loader = Some(Arc::new(|_, _| Ok((Rgb32f::new(8, 8), SourceInfo::default()))));
+    s.media.file_loader = Some(Arc::new(|_, _, _| Ok((Rgb32f::new(8, 8), SourceInfo::default()))));
     let old = s.thumb_job(PhotoId(1), 256).unwrap().run();
     assert!(old.loaded.is_some());
     s.catalog
@@ -173,7 +245,7 @@ fn source_from_before_content_reload_is_not_accepted() {
 #[test]
 fn source_from_before_a_lens_profile_change_is_not_accepted() {
     let mut s = session();
-    s.media.file_loader = Some(Arc::new(|_, _| Ok((Rgb32f::new(8, 8), SourceInfo::default()))));
+    s.media.file_loader = Some(Arc::new(|_, _, _| Ok((Rgb32f::new(8, 8), SourceInfo::default()))));
     let old = s.thumb_job(PhotoId(1), 256).unwrap().run();
     assert!(old.loaded.is_some());
     let lens = lightcraft_develop::EmbeddedLens { source: lightcraft_develop::LensSource::Database, ..Default::default() };
@@ -211,7 +283,7 @@ fn a_hover_preview_key_follows_the_lens_profile() {
 #[test]
 fn a_render_that_panics_fails_instead_of_never_answering() {
     let mut s = session();
-    s.media.file_loader = Some(Arc::new(|_, _| panic!("decoder bug")));
+    s.media.file_loader = Some(Arc::new(|_, _, _| panic!("decoder bug")));
     let mut job = s.thumb_job(PhotoId(1), 256).unwrap();
     job.request_id = 42;
     let (key, level, source_key) = (job.key, job.level, job.source_key);
@@ -250,7 +322,7 @@ fn cached_small_camera_preview_does_not_bypass_import_render_size() {
         key: 1,
         cached: Vec::new(),
         embedded: Some(("cached.cr3".into(), Arc::new(|_: &str, _: usize| -> Option<Rgba8> { panic!("cached preview should avoid decoding") }), 96)),
-        embedded_cache: Some((cache, key)),
+        embedded_cache: Some((cache.clone(), key, cache.generation())),
         embedded_on_disk: false,
         minimum_embedded_edge: Some(96),
         small: Some(Box::new(small)),
@@ -262,4 +334,122 @@ fn cached_small_camera_preview_does_not_bypass_import_render_size() {
     let culling = QuickJob { minimum_embedded_edge: None, small: None, ..job }.run();
     assert_eq!(culling.quick, Some(QuickSource::Embedded));
     assert_eq!(culling.rendered.unwrap().image.width, 4);
+}
+
+/// A raw photo's smart preview has no mosaic left: it stands in with the box on or off, so an offline raw keeps
+/// reusing the decoded proxy instead of reading the file again for every render.
+#[test]
+fn a_smart_preview_fits_either_hot_pixel_setting() {
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    let decoded = DecodedSource::new(Arc::new(Rgb32f::new(8, 8)), Some(raw));
+    assert!(decoded.fits_outliers(false) && !decoded.fits_outliers(true), "a raw decode must match the box");
+    let proxy = DecodedSource { from_proxy: true, ..decoded };
+    assert!(proxy.fits_outliers(false) && proxy.fits_outliers(true));
+}
+
+/// The Remove Hot Pixels box decides how a raw is decoded (#1345): the loader is told, and a source decoded with
+/// the other setting is not reused. A rendered file has no mosaic, so its source stays.
+#[test]
+fn hot_pixel_box_decodes_the_raw_again() {
+    let mut s = session();
+    let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = asked.clone();
+    let raw = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let is_raw = raw.clone();
+    s.media.file_loader = Some(Arc::new(move |_, _, with: crate::media::RawDecode<'_>| {
+        log.lock().unwrap().push(with.outliers);
+        Ok((Rgb32f::new(8, 8), SourceInfo { raw: is_raw.load(std::sync::atomic::Ordering::Relaxed), ..Default::default() }))
+    }));
+    let set = |s: &mut crate::Session, on: bool| {
+        let mut d = (*s.catalog.photo(PhotoId(1)).unwrap().develop).clone();
+        d.detail.nr_outliers = on;
+        // a new edit each time, so a render cached for earlier settings is not simply shown again
+        d.light.exposure += 0.1;
+        s.catalog.apply(Op::SetDevelop { id: PhotoId(1), settings: Arc::new(d), label: "box".into(), edited: None }).unwrap();
+    };
+    let render = |s: &mut crate::Session| {
+        let r = s.thumb_job(PhotoId(1), 256).unwrap().run();
+        s.accept(&r);
+    };
+    render(&mut s);
+    render(&mut s);
+    assert_eq!(*asked.lock().unwrap(), [false], "decoded once, then cached");
+    set(&mut s, true);
+    render(&mut s);
+    render(&mut s);
+    assert_eq!(*asked.lock().unwrap(), [false, true], "switched on: decoded again with the filter, then cached");
+    set(&mut s, false);
+    render(&mut s);
+    assert_eq!(*asked.lock().unwrap(), [false, true, false]);
+    // not a raw: the box changes nothing, the cached source is kept
+    raw.store(false, std::sync::atomic::Ordering::Relaxed);
+    s.media.forget(PhotoId(1));
+    set(&mut s, false);
+    render(&mut s);
+    set(&mut s, true);
+    render(&mut s);
+    assert_eq!(*asked.lock().unwrap(), [false, true, false, false]);
+}
+
+/// With the Detail section's eye off, Remove Hot Pixels contributes nothing either: the raw is decoded without it.
+#[test]
+fn detail_eye_off_decodes_the_raw_without_hot_pixel_removal() {
+    let mut s = session();
+    let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = asked.clone();
+    s.media.file_loader = Some(Arc::new(move |_, _, with: crate::media::RawDecode<'_>| {
+        log.lock().unwrap().push(with.outliers);
+        Ok((Rgb32f::new(8, 8), SourceInfo { raw: true, ..Default::default() }))
+    }));
+    for eye in [true, false] {
+        let mut d = (*s.catalog.photo(PhotoId(1)).unwrap().develop).clone();
+        d.detail.nr_outliers = true;
+        d.set_section_enabled("detail", eye);
+        d.light.exposure += 0.1;
+        s.catalog.apply(Op::SetDevelop { id: PhotoId(1), settings: Arc::new(d), label: "eye".into(), edited: None }).unwrap();
+        let r = s.thumb_job(PhotoId(1), 256).unwrap().run();
+        s.accept(&r);
+    }
+    assert_eq!(*asked.lock().unwrap(), [true, false]);
+}
+
+/// CodeRabbit on #3544: a stand-in job decoding a camera JPEG when Discard Preview Cache clears the
+/// cache doesn't put the picture back: it writes for the generation it was made in (memory and
+/// disk alike), as render jobs do.
+#[test]
+fn a_camera_jpeg_decoded_across_a_cache_clear_is_not_kept() {
+    for on_disk in [false, true] {
+        let cache = Arc::new(PreviewCache::memory(64 << 20));
+        let made_in = cache.generation();
+        let key = Hash128(5);
+        let quick = QuickJob {
+            request_id: 1,
+            photo: PhotoId(1),
+            key: 2,
+            cached: Vec::new(),
+            embedded: Some(("x.arw".into(), Arc::new(|_: &str, _: usize| Some(Rgba8::new(16, 16))), 256)),
+            embedded_cache: Some((cache.clone(), key, made_in)),
+            embedded_on_disk: on_disk,
+            minimum_embedded_edge: None,
+            small: None,
+        };
+        // the user discards the cache while the job is on its way
+        cache.clear();
+        assert!(quick.run().rendered.is_ok(), "the stand-in is still shown");
+        assert!(cache.get_memory(key).is_none(), "on disk {on_disk}: nothing kept in the cleared cache");
+        // a job made after the clear keeps it as before
+        let quick = QuickJob {
+            request_id: 1,
+            photo: PhotoId(1),
+            key: 2,
+            cached: Vec::new(),
+            embedded: Some(("x.arw".into(), Arc::new(|_: &str, _: usize| Some(Rgba8::new(16, 16))), 256)),
+            embedded_cache: Some((cache.clone(), key, cache.generation())),
+            embedded_on_disk: on_disk,
+            minimum_embedded_edge: None,
+            small: None,
+        };
+        assert!(quick.run().rendered.is_ok());
+        assert!(cache.get_memory(key).is_some(), "on disk {on_disk}: kept when made after the clear");
+    }
 }

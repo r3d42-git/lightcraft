@@ -202,6 +202,8 @@ impl Mode {
 /// Photos the user steps through in the loupe before the whole view is prepared: a library opened
 /// to look at one photo starts nothing.
 pub const STEPS_BEFORE_BUILD: usize = 3;
+/// How long a view whose build couldn't start waits before trying again.
+pub const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The background preparation's state in a session.
 #[derive(Default)]
@@ -215,6 +217,13 @@ pub struct PrepState {
     /// The view (its signature) whose build was started, or that the user stopped.
     started_for: Option<u64>,
     declined_for: Option<u64>,
+    /// A build that couldn't start: the view (its signature), and when it may try again (not on
+    /// every tick while the cause lasts; CodeRabbit on #3080).
+    pub retry_at: Option<(u64, web_time::Instant)>,
+    /// Tests: the next starts to fail, as a build thread that can't be spawned does.
+    #[cfg(test)]
+    pub(crate) fail_starts: usize,
+
     /// The view the steps were counted in, the photo last seen, and the steps.
     steps_in: Option<u64>,
     last_at: Option<PhotoId>,
@@ -287,29 +296,30 @@ pub fn wait_for_pictures(stop: &dyn Fn() -> bool, max: std::time::Duration) -> b
     stop()
 }
 
-/// Whether the photo on screen is being made now, or something on screen lacks its first picture.
+/// Whether the photo on screen is being made now, or a visible picture is still missing.
 pub fn foreground_busy() -> bool {
     #[cfg(test)]
-    if TEST_HOLD.load(Ordering::Relaxed) {
+    if TEST_HOLD.load(Ordering::Relaxed) > 0 {
         return true;
     }
-    let now = clock_ms();
-    now < FOREGROUND_UNTIL.load(Ordering::Relaxed) || now < PICTURES_UNTIL.load(Ordering::Relaxed)
+    clock_ms() < FOREGROUND_UNTIL.load(Ordering::Relaxed) || pictures_busy()
 }
 
 /// Tests: hold every background build at its foreground wait until released (a synchronization
-/// point that doesn't depend on the hold's 250 ms).
+/// point that doesn't depend on the hold's 250 ms). A count, not a switch: tests running side by
+/// side each hold until their own release, and one test's release doesn't free another's build.
 #[cfg(test)]
-static TEST_HOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static TEST_HOLD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Holds background builds while it lives (also when the test fails).
+/// Holds background builds while it lives (also when the test fails), whatever other holds do.
 #[cfg(test)]
 pub(crate) struct TestHold;
 
 #[cfg(test)]
 impl TestHold {
     pub(crate) fn new() -> Self {
-        TEST_HOLD.store(true, Ordering::Relaxed);
+        TEST_HOLD.fetch_add(1, Ordering::Relaxed);
+
         TestHold
     }
 }
@@ -317,7 +327,8 @@ impl TestHold {
 #[cfg(test)]
 impl Drop for TestHold {
     fn drop(&mut self) {
-        TEST_HOLD.store(false, Ordering::Relaxed);
+        // (one release per hold made: never below 0)
+        TEST_HOLD.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -361,6 +372,17 @@ pub fn marked(s: &Session, id: PhotoId) -> bool {
 }
 
 impl Session {
+    /// How long until a view whose build couldn't start tries again ([`RETRY_AFTER`]), while one
+    /// waits: the app asks for a frame then, so the retry doesn't wait for the next input
+    /// (CodeRabbit on #3077/#3080). `None` once the time has come.
+    pub fn prep_retry_in(&self) -> Option<std::time::Duration> {
+        // (a deadline that has passed asks for nothing: the pass at it tried again, or the view
+        // can't be tried now and a frame at once on every pass would keep an idle window drawing:
+        // CodeRabbit on #3077 / #3080)
+        let wait = self.prep.retry_at.map(|(_, at)| at.saturating_duration_since(web_time::Instant::now()))?;
+        (!wait.is_zero()).then_some(wait)
+    }
+
     /// The background preparation settings in use (this library's own, else the app-wide ones).
     pub fn prep_settings(&self) -> PrepSettings {
         self.prep.settings()
@@ -422,6 +444,7 @@ impl Session {
             || self.prep.steps < STEPS_BEFORE_BUILD
             || self.prep.started_for == Some(sig)
             || self.prep.declined_for == Some(sig)
+            || self.prep.retry_at.is_some_and(|(view, at)| view == sig && web_time::Instant::now() < at)
             || self.library.as_ref().is_none_or(|l| !l.on_disk)
         {
             return;
@@ -435,9 +458,27 @@ impl Session {
             return;
         }
         let p = json!({"ids": ids, "background": true, "from": at.0, "backward": backward});
-        match self.execute("library.buildPreviews", &p) {
-            Ok(_) => self.prep.build = self.preview_build.clone(),
-            Err(e) => log::info!("background preparation: {e}"),
+        // (tests: a start made to fail, as a build thread that can't be spawned fails)
+        #[cfg(test)]
+        let fail = self.prep.fail_starts.checked_sub(1).map(|left| self.prep.fail_starts = left).is_some();
+        #[cfg(not(test))]
+        let fail = false;
+        let started = if fail {
+            Err(crate::EngineError::Disabled("library.buildPreviews".into(), "test: the build couldn't start".into()))
+        } else {
+            self.execute("library.buildPreviews", &p)
+        };
+        match started {
+            Ok(_) => {
+                self.prep.build = self.preview_build.clone();
+                self.prep.retry_at = None;
+            }
+            Err(e) => {
+                // not started: this view tries again after a while (not on every tick)
+                self.prep.started_for = None;
+                self.prep.retry_at = web_time::Instant::now().checked_add(RETRY_AFTER).map(|at| (sig, at));
+                log::info!("background preparation: {e}");
+            }
         }
     }
 
@@ -446,17 +487,35 @@ impl Session {
     pub fn set_prep_settings(&mut self, settings: PrepSettings, library: bool) -> crate::Result<()> {
         let settings = settings.sanitized();
         if library {
+            let previous = self.prep.library;
             self.prep.library = Some(settings);
+            self.save_library_prep(previous)
         } else {
+            let previous = self.prep.app;
             self.prep.app = settings;
+            let saved = self.save_prefs();
+            if saved.is_err() {
+                self.prep.app = previous;
+            }
+            saved
         }
-        self.save_prefs()
     }
 
     /// Back to the app-wide settings for this library.
     pub fn clear_library_prep(&mut self) -> crate::Result<()> {
+        let previous = self.prep.library;
         self.prep.library = None;
-        self.save_prefs()
+        self.save_library_prep(previous)
+    }
+
+    /// Save this library's preparation settings; when that fails, `previous` is put back, so the
+    /// session doesn't go on with settings the command reported as not changed (CodeRabbit on #3544).
+    fn save_library_prep(&mut self, previous: Option<PrepSettings>) -> crate::Result<()> {
+        let saved = self.save_prefs();
+        if saved.is_err() {
+            self.prep.library = previous;
+        }
+        saved
     }
 
     pub(crate) fn prep_json(&self) -> Value {
@@ -483,6 +542,16 @@ mod tests {
         assert_eq!(p.develop.scope, Scope::OnScreen);
         assert_eq!(p.ahead(Mode::Develop), 0);
         assert!(PrepSettings::default().patched(&json!({"culling": {"scope": "sometimes"}})).is_err());
+    }
+
+    /// Tests side by side: one test's release doesn't free the build another test holds (CodeRabbit on #3077).
+    #[test]
+    fn one_tests_release_does_not_free_another_tests_hold() {
+        let a = TestHold::new();
+        let b = TestHold::new();
+        drop(a);
+        assert!(TEST_HOLD.load(Ordering::Relaxed) > 0 && foreground_busy(), "the other hold still holds");
+        drop(b);
     }
 
     #[test]

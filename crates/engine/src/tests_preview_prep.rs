@@ -171,12 +171,14 @@ fn failing_preview_source(loads: std::sync::Arc<std::sync::atomic::AtomicUsize>)
     crate::media::SourceRef::File {
         path: "must-not-decode.png".into(),
         max_edge: 600,
-        loader: Some(std::sync::Arc::new(move |_, _| {
+        loader: Some(std::sync::Arc::new(move |_, _, _| {
             loads.fetch_add(1, Ordering::Relaxed);
             Err("unexpected preview decode".into())
         })),
         fallback: None,
         denoise: None,
+        camera_profile: None,
+        outliers: false,
         reduced: None,
     }
 }
@@ -221,14 +223,23 @@ fn a_small_view_and_forced_previews_really_call_the_loader() {
     loads.store(0, Ordering::Relaxed);
     s.media.file_loader = Some(Arc::new({
         let loads = loads.clone();
-        move |_, _| {
+        move |_, _, _| {
             loads.fetch_add(1, Ordering::Relaxed);
             Err("forced decode".into())
+        }
+    }));
+    let grid_loads = Arc::new(AtomicUsize::new(0));
+    s.media.reduced_loader = Some(Arc::new({
+        let grid_loads = grid_loads.clone();
+        move |_, _, _| {
+            grid_loads.fetch_add(1, Ordering::Relaxed);
+            Err("forced grid decode".into())
         }
     }));
     let r = s.execute("library.buildPreviews", &json!({"ids": [ids[0].0], "edge": 300, "wait": true, "force": true})).unwrap();
     assert_eq!(r["failed"], 1, "{r}");
     assert_eq!(loads.load(Ordering::Relaxed), 1, "force renders the view despite its cached pixels");
+    assert_eq!(grid_loads.load(Ordering::Relaxed), 1, "force renders the thumbnail despite its cached pixels");
     drop(s);
     let _ = std::fs::remove_dir_all(root);
 }

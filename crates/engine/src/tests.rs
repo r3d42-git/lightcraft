@@ -7,10 +7,13 @@ mod album_missing;
 mod album_order;
 mod album_remove;
 mod albums_local;
+mod autosync_wb;
 mod color;
 mod constrain_crop;
 mod crop_angle;
 mod crop_aspect;
+mod dcp;
+mod dcp_corpus;
 mod denoise;
 mod export;
 mod face_models;
@@ -41,6 +44,7 @@ mod organize;
 mod persist;
 mod prefs;
 mod presets_scale;
+mod preview_prep;
 mod print;
 mod process;
 mod recheck;
@@ -50,6 +54,8 @@ mod settings_files;
 mod shelved_folder;
 mod slide;
 mod slideshow_export;
+#[cfg(not(target_arch = "wasm32"))]
+mod slow_drive;
 mod spots;
 mod sync;
 mod view_follow;
@@ -494,6 +500,74 @@ fn masks_crop_and_render() {
     s.execute("develop.wbPick", &json!({"x": 0.5, "y": 0.5})).unwrap();
 }
 
+/// The exact per-photo reference for the command's integration with adaptive Auto.
+/// This uses each photo's own decode, source facts and pre-existing settings, not a fixed look.
+fn expected_adaptive_auto(s: &mut Session, id: lightcraft_catalog::PhotoId) -> lightcraft_develop::DevelopSettings {
+    let src = s.source_now(id, crate::media::SourceLevel::Thumb).unwrap();
+    let info = s.source_info(id);
+    let mut d = (*s.develop_of(id).unwrap()).clone();
+    lightcraft_pipeline::auto::auto_tone(&src, &info, &d).apply_to(&mut d);
+    d.mark_auto_tone();
+    d
+}
+
+/// Auto applies independently to every selected photo, in one undo step (#2184).
+#[test]
+fn auto_applies_to_every_selected_photo() {
+    use lightcraft_catalog::PhotoId;
+    let mut s = demo();
+    let ids: Vec<PhotoId> = s.catalog.photos().take(4).map(|p| p.id).collect();
+    assert_eq!(ids.len(), 4, "the demo has both selected and untouched photos");
+    let before: Vec<_> = ids.iter().map(|id| s.develop_of(*id).unwrap()).collect();
+    let expected: Vec<_> = ids[..3].iter().map(|id| expected_adaptive_auto(&mut s, *id)).collect();
+    assert!(expected.windows(2).any(|p| p[0].light != p[1].light), "the fixture must distinguish per-photo Auto from copying one look");
+    let selected: Vec<_> = ids[..3].iter().map(|id| id.0).collect();
+    s.execute("library.select", &json!({"ids": selected, "active": ids[1].0})).unwrap();
+    let result = s.execute("develop.auto", &json!({})).unwrap();
+    assert_eq!(result["exposure"].as_f64(), Some(expected[0].light.exposure), "return the first readable target's result");
+    for (id, expected) in ids[..3].iter().zip(&expected) {
+        assert_eq!(
+            s.develop_of(*id).unwrap().as_ref(),
+            expected,
+            "photo {} gets all eight own controls, its own stamp, and preserves other edits",
+            id.0
+        );
+        assert!(s.develop_of(*id).unwrap().auto_tone_active());
+    }
+    assert_eq!(s.develop_of(ids[3]).unwrap(), before[3], "unselected photo remains untouched");
+    s.undo_step().unwrap();
+    for (id, before) in ids.iter().zip(&before) {
+        assert_eq!(&s.develop_of(*id).unwrap(), before);
+    }
+    s.redo_step().unwrap();
+    for (id, expected) in ids[..3].iter().zip(&expected) {
+        assert_eq!(s.develop_of(*id).unwrap().as_ref(), expected);
+    }
+}
+
+/// An unreadable target is left unchanged; readable targets still receive their exact adaptive result.
+#[test]
+fn auto_skips_a_selected_photo_it_cannot_read() {
+    use lightcraft_catalog::{Op, Photo, Source};
+    let mut s = demo();
+    let good = s.catalog.photos().next().unwrap().id;
+    let expected = expected_adaptive_auto(&mut s, good);
+    let missing = s.catalog.alloc_photo_id();
+    let photo = Photo::new(missing, Source::File { path: "/lightcraft-test/missing.jpg".into() }, "missing.jpg", "JPEG", 100, 100, "");
+    let unreadable = photo.develop.clone();
+    s.catalog.apply(Op::AddPhoto { photo: Box::new(photo) }).unwrap();
+    s.execute("library.select", &json!({"ids": [missing.0, good.0], "active": good.0})).unwrap();
+    let result = s.execute("develop.auto", &json!({})).unwrap();
+    assert_eq!(s.develop_of(good).unwrap().as_ref(), &expected, "readable target gets its complete own adaptive result");
+    assert_eq!(result["exposure"].as_f64(), Some(expected.light.exposure), "skip the failed target when choosing the returned result");
+    assert_eq!(s.develop_of(missing).unwrap(), unreadable, "failed target and its metadata remain unchanged");
+    s.execute("library.select", &json!({"ids": [missing.0], "active": missing.0})).unwrap();
+    assert!(s.execute("develop.auto", &json!({})).is_err(), "with nothing readable the error is reported");
+    let good_before_invalid = s.develop_of(good).unwrap();
+    assert!(s.execute("develop.auto", &json!({"ids": [good.0, 999_999]})).is_err(), "wrong ids are refused before any target is edited");
+    assert_eq!(s.develop_of(good).unwrap(), good_before_invalid);
+}
+
 #[test]
 fn adaptive_auto_preserves_other_edits_and_is_one_undo_step() {
     let mut s = demo();
@@ -555,16 +629,28 @@ fn auto_sync_copies_controls_without_auto_application_metadata() {
     let mut s = demo();
     let first = s.active().unwrap();
     let other = s.catalog.photos().map(|p| p.id).find(|id| *id != first).unwrap();
+    let expected_first = expected_adaptive_auto(&mut s, first);
+    let expected_other = expected_adaptive_auto(&mut s, other);
+    assert_ne!(expected_first.light, expected_other.light, "the fixture must detect copying Auto instead of evaluating each target");
     s.execute("library.select", &json!({"ids": [first.0, other.0], "active": first.0})).unwrap();
     s.execute("develop.autoSync", &json!({"on": true})).unwrap();
     s.execute("develop.auto", &json!({})).unwrap();
-    let applied = active_dev(&s);
-    let synced = s.develop_of(other).unwrap();
-    assert!(applied.auto_tone_active());
-    assert_eq!(synced.light, applied.light);
-    assert_eq!(synced.color, applied.color);
-    assert!(synced.auto_tone.is_none());
-    assert!(!synced.auto_tone_active());
+    assert_eq!(active_dev(&s), expected_first);
+    assert_eq!(s.develop_of(other).unwrap().as_ref(), &expected_other);
+    assert!(s.develop_of(other).unwrap().auto_tone_active(), "Multi-Auto marks each photo's independently computed result");
+    // A subsequent ordinary slider edit uses Auto Sync's delta contract. Carry the control,
+    // preserving the target's own earlier stamp rather than copying the active photo's stamp.
+    let exposure = expected_first.light.exposure + 0.25;
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": exposure})).unwrap();
+    let mut synced = expected_other.clone();
+    synced.light.exposure = exposure;
+    assert_eq!(s.develop_of(other).unwrap().as_ref(), &synced, "only the changed slider crosses to the target");
+    assert_eq!(s.develop_of(other).unwrap().auto_tone, expected_other.auto_tone);
+    assert!(!s.develop_of(other).unwrap().auto_tone_active(), "changed controls invalidate the target's own Auto stamp");
+    s.undo_step().unwrap();
+    assert_eq!(active_dev(&s), expected_first);
+    assert_eq!(s.develop_of(other).unwrap().as_ref(), &expected_other);
+    assert!(s.develop_of(other).unwrap().auto_tone_active());
 }
 
 #[test]
@@ -1120,6 +1206,48 @@ fn auto_sync_carries_only_the_changed_settings() {
     s.execute("develop.autoSync", &json!({"on": false})).unwrap();
     s.execute("develop.set", &json!({"control": "light.exposure", "value": -1})).unwrap();
     assert_eq!(s.develop_of(PhotoId(ids[1])).unwrap().light.exposure, 0.7);
+}
+
+#[test]
+fn auto_sync_carries_remove_hot_pixels_off() {
+    use lightcraft_catalog::PhotoId;
+    let mut s = demo();
+    let ids: Vec<PhotoId> = s.catalog.photos().take(2).map(|p| p.id).collect();
+    for id in &ids {
+        let mut d = (*s.develop_of(*id).unwrap()).clone();
+        d.detail.nr_outliers = true;
+        s.set_develop(*id, d, "Setup").unwrap();
+    }
+    s.execute("library.select", &json!({"ids": [ids[0].0, ids[1].0], "active": ids[0].0})).unwrap();
+    s.execute("develop.autoSync", &json!({"on": true})).unwrap();
+    // off is omitted from the stored JSON: switching it off is still a change Auto Sync carries
+    let mut d = (*s.develop_of(ids[0]).unwrap()).clone();
+    d.detail.nr_outliers = false;
+    s.set_develop(ids[0], d, "Remove Hot Pixels").unwrap();
+    assert!(!s.develop_of(ids[1]).unwrap().detail.nr_outliers);
+}
+
+#[test]
+fn the_hot_pixel_limit_renders_afresh_only_the_photos_that_remove_hot_pixels() {
+    use lightcraft_catalog::PhotoId;
+    let mut s = demo();
+    let ids: Vec<PhotoId> = s.catalog.photos().take(2).map(|p| p.id).collect();
+    let mut d = (*s.develop_of(ids[0]).unwrap()).clone();
+    d.detail.nr_outliers = true;
+    s.set_develop(ids[0], d, "Setup").unwrap();
+    let keys = |s: &mut crate::Session| ids.iter().map(|id| s.thumb_job(*id, 256).unwrap().cache.unwrap().1).collect::<Vec<_>>();
+    let before = keys(&mut s);
+    assert_eq!(s.execute("app.hotPixelLimit", &json!({})).unwrap()["default"], 0.2);
+    assert!(s.execute("app.hotPixelLimit", &json!({"percent": 0})).is_err());
+    assert!(s.execute("app.hotPixelLimit", &json!({"percent": "1"})).is_err());
+    let r = s.execute("app.hotPixelLimit", &json!({"percent": 1.5}));
+    let after = keys(&mut s);
+    // (process-wide: back to the default before anything can fail)
+    s.execute("app.hotPixelLimit", &json!({"percent": 0.2f32})).unwrap();
+    assert_eq!(r.unwrap()["percent"], 1.5);
+    assert_ne!(after[0], before[0], "a photo that removes hot pixels renders with the new limit");
+    assert_eq!(after[1], before[1], "the other photo's thumbnail stays valid");
+    assert_eq!(keys(&mut s), before, "the default limit keeps the keys it always had");
 }
 
 #[test]

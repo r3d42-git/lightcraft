@@ -5206,6 +5206,57 @@ fn the_loupe_shows_built_previews_without_rendering_again() {
     assert!(r["result"]["perf"]["previewCache"]["memEntries"].as_u64().unwrap_or(0) > 0, "{}", r["result"]["perf"]["previewCache"]);
 }
 
+/// Editing, the loupe renders the photo from its source even when a built preview of it is cached
+/// (CodeRabbit on #3077): the cached view would show at once but leave the source undecoded, and
+/// the first slider draft would wait for it.
+#[test]
+fn editing_renders_the_loupe_from_its_source_not_a_built_preview() {
+    use crate::render::Slot;
+    use lightcraft_engine::media::QuickSource;
+    let mut h = demo([1000.0, 700.0]);
+    let t = Duration::from_secs(10);
+    h.request(
+        "engine.execute",
+        json!({"command": "prefs.setBackgroundPrep", "params": {"settings": {"library": {"ahead": 0, "previews": false}, "develop": {"ahead": 0}}}}),
+        t,
+    );
+    h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
+    h.settle(SETTLE);
+    let edge = h.app.session.loupe_edge;
+    let ids = h.app.session.visible_cloned();
+    let all: Vec<u64> = ids.iter().map(|i| i.0).collect();
+    let r = h.request("engine.execute", json!({"command": "library.buildPreviews", "params": {"wait": true, "edge": edge, "ids": all}}), t);
+    assert_eq!(r["result"]["done"], ids.len(), "{r}");
+    h.request("ui.set", json!({"right": "edit"}), t);
+    let next = ids.get(1).copied().expect("a second photo");
+    h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [next.0], "active": next.0}}), t);
+    assert!(h.step_until(SETTLE, |h| h.app.renderer.textures.get(&Slot::Main).is_some_and(|t| t.photo == next)));
+    let main = h.app.renderer.textures.get(&Slot::Main).unwrap();
+    assert_ne!(main.quick, Some(QuickSource::Cached), "rendered from the source while editing");
+}
+
+/// The loupe holds background preparation back only while its render is on the way (CodeRabbit on
+/// #3077): once the photo is shown, the frames that follow don't renew the hold.
+#[test]
+fn a_shown_loupe_render_does_not_hold_background_preparation() {
+    use crate::render::Slot;
+    let mut h = demo([1000.0, 700.0]);
+    let t = Duration::from_secs(10);
+    h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
+    let id = h.app.session.active().expect("an active photo");
+    let signals = || crate::panels::detail::FOREGROUND_SIGNALS.with(std::cell::Cell::get);
+    let before = signals();
+    assert!(
+        h.step_until(SETTLE, |h| h.app.renderer.textures.get(&Slot::Main).is_some_and(|t| t.photo == id) && !h.app.renderer.is_pending(Slot::Main))
+    );
+    assert!(signals() > before, "the hold was asked for while the render was on its way");
+    let shown = signals();
+    for _ in 0..10 {
+        h.step();
+    }
+    assert_eq!(signals(), shown, "no hold while the render is on screen");
+}
+
 /// The app-wide background preparation settings are kept with the app settings (`ui.json`):
 /// the saved ones reach the session at launch, and a change made through the command is saved.
 #[test]

@@ -1,8 +1,8 @@
+#[cfg(feature = "denoise")]
+use super::builtin::{builtin_card, builtin_marker};
 #[cfg(doc)]
 use super::model::Model;
 use super::model::STACK;
-#[cfg(feature = "denoise")]
-use super::model::{builtin_card, builtin_marker};
 use super::products::{Active, JobSpec, MakeError, Progress, eligible, make_product, product_key, product_path, products_in};
 use super::settings::{DIR, SETTINGS_TTL, installed_models, read_settings};
 use super::settings::{Installed, ensure_legacy_settings};
@@ -450,8 +450,7 @@ impl Session {
         self.denoise_evict_to(self.denoise_cache_limit(), keep);
     }
 
-    /// The cache's limit in bytes. Without a models folder the built-in denoiser still makes products, so the default
-    /// limit applies.
+    /// The cache's size limit in bytes (the default without a models folder).
     pub(crate) fn denoise_cache_limit(&self) -> u64 {
         self.denoise.models_dir.as_deref().map(read_settings).unwrap_or_default().cache_bytes()
     }

@@ -405,12 +405,10 @@ impl Session {
         for b in content.bytes() {
             h = mix(h, u64::from(b));
         }
-        // RAW starting colour also depends on database vignetting. Remove then
-        // mixes its full corrected settings below; ordinary mask geometry stays off.
-        let lens = crate::media::lens_key(p);
-        if lens != 0 {
-            h = mix(h, lens);
-        }
+        // Decode-dependent facts can change without a develop edit (DCP replacement).
+        let source = self.media.source_identity(p);
+        h = mix(h, (source.0 >> 64) as u64);
+        h = mix(h, source.0 as u64);
         Some((h, d))
     }
 
@@ -915,7 +913,7 @@ mod tests {
     fn no_region_for_nothing_or_most_of_the_photo() {
         assert!(detail_region(&seg_box(50, 0, 0, 0, 0), 1.0).is_none());
         assert!(detail_region(&seg_box(50, 2, 2, 48, 48), 1.0).is_none());
-        let damaged = SegMask { side: 50, data: "?".into(), rect: None };
+        let damaged = SegMask { side: 50, data: "?".into(), rect: None, grid: None };
         assert!(detail_region(&damaged, 1.0).is_none());
     }
 }

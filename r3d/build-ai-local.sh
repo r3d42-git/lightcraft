@@ -3,12 +3,12 @@
 set -euo pipefail
 source "$(dirname "$0")/dev-env.sh"
 R3D_AI_INSTALLED="${R3D_AI_INSTALLED:-/Applications/LightCraft R3D.app}"
-R3D_AI_ARTIFACTS="${R3D_AI_ARTIFACTS:-$R3D_PROJECT/artifacts/ai-retouch-install-20261030}"
+R3D_AI_ARTIFACTS="${R3D_AI_ARTIFACTS:-$R3D_PROJECT/artifacts/$R3D_INSTANCE}"
 R3D_AI_STAGING="${R3D_AI_STAGING:-$R3D_SCRATCH_ROOT/lightcraft/packaging-$R3D_INSTANCE}"
 R3D_AI_APP="${R3D_AI_APP:-$R3D_SCRATCH_ROOT/lightcraft/apps-$R3D_INSTANCE/LightCraft R3D.app}"
 R3D_AI_DIST="${R3D_AI_DIST:-$R3D_SCRATCH_ROOT/lightcraft/dist-$R3D_INSTANCE}"
 r3d_validate_scratch_paths "$R3D_AI_STAGING" "$R3D_AI_APP" "$R3D_AI_DIST"
-export LIGHTCRAFT_VERSION="${LIGHTCRAFT_VERSION:-0.18.0-r3d-ai-all-native}"
+export LIGHTCRAFT_VERSION="${LIGHTCRAFT_VERSION:-0.19.0-r3d}"
 export LIGHTCRAFT_BUILD_SHA="$(git -C "$R3D_SOURCE" rev-parse HEAD)"
 export LIGHTCRAFT_BUILD_DATE="$(date -u +%Y-%m-%d)"
 export MACOSX_DEPLOYMENT_TARGET=11.0

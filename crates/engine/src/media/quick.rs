@@ -27,8 +27,10 @@ pub struct QuickJob {
     pub embedded: Option<(String, PreviewLoader, usize)>,
     /// Where a decoded [`Self::embedded`] preview is kept in memory, so stepping back to a photo
     /// shows its camera JPEG again without reading and decoding it (culling goes back and forth):
-    /// the cache (memory only, never its disk) and the key for this photo and edge.
-    pub embedded_cache: Option<(Arc<PreviewCache>, Hash128)>,
+    /// the cache (memory only, never its disk), the key for this photo and edge, and the cache's
+    /// generation when the job was made (a Discard Preview Cache since then keeps the picture out).
+    pub embedded_cache: Option<(Arc<PreviewCache>, Hash128, u64)>,
+
     /// Whether [`Self::embedded_cache`] keeps the decoded preview on disk too: a grid thumbnail,
     /// so a folder seen before fills in from small files at once instead of every raw being read
     /// and its camera JPEG decoded again (the loupe's large stand-ins stay in memory).
@@ -58,6 +60,7 @@ impl QuickJob {
             colour_source: None,
             quick: None,
             display: None,
+            frame: None,
         })
     }
 
@@ -76,6 +79,7 @@ impl QuickJob {
             colour_source: None,
             quick,
             display: None,
+            frame: None,
         };
         let rendered = |image: Rgba8| {
             let histogram = Histogram::of_srgb8(&image);
@@ -88,15 +92,24 @@ impl QuickJob {
         }
         let mut embedded_fallback = None;
         if let Some((path, loader, edge)) = &self.embedded {
-            let cached = self.embedded_cache.as_ref().and_then(|(cache, k)| if self.embedded_on_disk { cache.get(*k) } else { cache.get_memory(*k) });
-            if let Some(image) = cached.map(Arc::unwrap_or_clone).or_else(|| loader(path, *edge)) {
-                if let Some((cache, k)) = &self.embedded_cache {
-                    if self.embedded_on_disk {
-                        cache.put_deferred(*k, Arc::new(image.clone()));
-                    } else {
-                        cache.put_memory(*k, Arc::new(image.clone()));
+            let kept =
+                self.embedded_cache.as_ref().and_then(|(cache, k, _)| if self.embedded_on_disk { cache.get(*k) } else { cache.get_memory(*k) });
+            let image = match kept {
+                Some(img) => Some(Arc::unwrap_or_clone(img)),
+                None => {
+                    let image = loader(path, *edge);
+                    // written for the generation the job was made in: a cache cleared meanwhile stays clear
+                    if let (Some(image), Some((cache, k, generation))) = (&image, &self.embedded_cache) {
+                        if self.embedded_on_disk {
+                            cache.put_deferred_at(*generation, *k, Arc::new(image.clone()));
+                        } else {
+                            cache.put_memory_at(*generation, *k, Arc::new(image.clone()));
+                        }
                     }
+                    image
                 }
+            };
+            if let Some(image) = image {
                 if self.minimum_embedded_edge.is_none_or(|minimum| image.width.max(image.height) >= minimum) {
                     return done(rendered(image), Some(QuickSource::Embedded));
                 }

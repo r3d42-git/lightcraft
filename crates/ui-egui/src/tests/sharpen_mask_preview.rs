@@ -174,7 +174,7 @@ fn generic_alt_previews_retire_on_focus_loss_and_restore_persistent_clipping() {
         h.app.logic(&h.view.ctx);
         assert!(h.app.ui.dragging_control.is_none(), "{control}");
         let d = h.app.session.develop_of(h.app.session.active().unwrap()).unwrap();
-        assert_eq!(crate::panels::detail::view_overlay(&h.app, &d), Overlay::Clipping);
+        assert_eq!(crate::panels::detail::view_overlay(&h.app, &d), Overlay::ClipWarnings);
         h.view.ctx.input_mut(|i| i.raw.focused = true);
         h.app.logic(&h.view.ctx);
         assert_eq!(slider_mask_preview(&h.app, &h.view.ctx), None, "{control}: focus cannot revive the owner");

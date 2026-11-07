@@ -237,7 +237,7 @@ fn a_new_database_profile_changes_the_render_and_cache_keys() {
         let render = s.render_job(id, 800, 600, false, true).unwrap().key;
         let thumb = s.thumb_job(id, 256).unwrap().cache.unwrap().1;
         let p = s.catalog.photo(id).unwrap().clone();
-        (render, thumb, Session::variant_key(&p, &p.develop, 128), s.view_key(&p, true))
+        (render, thumb, Session::variant_key(&p, &p.develop, 128, 0), s.view_key(&p, true))
     };
     let before = keys(&mut s);
     s.catalog.apply(Op::SetEmbeddedLens { id, lens: Some(Box::new(lens(-0.03))) }).unwrap();
@@ -367,14 +367,14 @@ fn legacy_database_cache_switches_and_removal_are_isolated() {
     let p = with_lens(raw(1, "50mm F1.8", true), Some(EmbeddedLens { source: LensSource::Legacy, ..lens(-0.01) }), true);
     s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
     s.media.file_loader =
-        Some(Arc::new(|_, _| Ok((lightcraft_raster::Rgb32f::from_fn(16, 12, |_, _| [0.2; 3]), lightcraft_pipeline::SourceInfo::default()))));
+        Some(Arc::new(|_, _, _| Ok((lightcraft_raster::Rgb32f::from_fn(16, 12, |_, _| [0.2; 3]), lightcraft_pipeline::SourceInfo::default()))));
     let keys = |s: &mut Session| {
         let p = s.catalog.photo(PhotoId(1)).unwrap().clone();
         let render = s.render_job(PhotoId(1), 16, 12, false, true).unwrap();
         (
             render.key,
             render.source_key,
-            Session::variant_key(&p, &p.develop, 128),
+            Session::variant_key(&p, &p.develop, 128, 0),
             s.view_key(&p, true),
             s.quick_view_job(PhotoId(1), 128, true).unwrap().key,
         )

@@ -210,7 +210,7 @@ impl Session {
     fn ai_remove_tag(&self) -> Option<RemoveTag> {
         let id = self.active()?;
         let d = self.develop_of(id)?;
-        let source = crate::media::source_identity(self.catalog.photo(id)?);
+        let source = self.media.source_identity(self.catalog.photo(id)?);
         Some((id, d, self.library_generation(), source))
     }
     pub fn ai_remove_poll(&mut self) {
@@ -774,7 +774,7 @@ mod lifecycle_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    pub(super) fn draft(s: &mut Session) {
+    pub(super) fn pending_edit(s: &mut Session) -> AiEdit {
         let edit = AiEdit::from_pixels(
             AiEdit {
                 id: 0,
@@ -793,8 +793,12 @@ mod tests {
         )
         .unwrap();
         s.ai_remove.tag = s.ai_remove_tag();
-        s.ai_remove.draft = Some(edit);
         s.ai_remove.spot = Some(0);
+        edit
+    }
+
+    pub(super) fn draft(s: &mut Session) {
+        s.ai_remove.draft = Some(pending_edit(s));
     }
     #[test]
     fn lens_change_invalidates_selection_and_draft_without_a_develop_edit() {
@@ -817,6 +821,28 @@ mod tests {
             assert_eq!(s.ai_remove.selection.is_none(), changed);
             assert_eq!(s.ai_remove.draft.is_none(), changed);
         }
+    }
+
+    #[test]
+    fn dcp_reload_invalidates_private_selection_draft_and_sam_input_without_editing_settings() {
+        let mut s = Session::with_demo();
+        let id = s.active().unwrap();
+        let mut d = (*s.develop_of(id).unwrap()).clone();
+        d.profile.id = "dcp:test".into();
+        s.catalog.apply(lightcraft_catalog::Op::SetDevelop { id, settings: std::sync::Arc::new(d), label: "Profile".into(), edited: None }).unwrap();
+        let profile = std::sync::Arc::new(crate::media::DcpProfile { name: "Test".into(), camera_model: "Test".into(), color: Default::default() });
+        s.media.camera_profiles.insert("dcp:test".into(), crate::media::LoadedCameraProfile { profile: profile.clone(), fingerprint: 1 });
+        s.execute("aiRemove.select", &json!({"points":[[0.5,0.5]]})).unwrap();
+        draft(&mut s);
+        let develop = s.develop_of(id).unwrap();
+        let key = s.segment_key(id).unwrap().0;
+        s.ai_remove_poll();
+        assert!(s.ai_remove.selection.is_some() && s.ai_remove.draft.is_some());
+        s.media.camera_profiles.insert("dcp:test".into(), crate::media::LoadedCameraProfile { profile, fingerprint: 2 });
+        assert!(std::sync::Arc::ptr_eq(&develop, &s.develop_of(id).unwrap()));
+        assert_ne!(s.segment_key(id).unwrap().0, key);
+        s.ai_remove_poll();
+        assert!(s.ai_remove.selection.is_none() && s.ai_remove.draft.is_none());
     }
 
     #[test]

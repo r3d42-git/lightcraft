@@ -1,3 +1,5 @@
+#[cfg(feature = "denoise")]
+use super::builtin::{builtin_marker, forget_builtin_card};
 use super::gpu::GPU_SETUP_MARKER;
 use super::model::RunOn;
 use super::{DenoiseModelPin, DenoiserManifest, Deserialize, Duration, Path, PathBuf, Serialize, Value, legacy_pin, legacy_pin_from_settings};
@@ -172,5 +174,5 @@ pub(crate) fn forget_gpu_set_ups(dir: &Path) {
         let _ = std::fs::remove_file(i.onnx.with_file_name(GPU_SETUP_MARKER));
     }
     #[cfg(feature = "denoise")]
-    super::model::forget_builtin_card(&super::model::builtin_marker(&dir.join(lightcraft_denoise::builtin::ID)));
+    forget_builtin_card(&builtin_marker(&dir.join(lightcraft_denoise::builtin::ID)));
 }

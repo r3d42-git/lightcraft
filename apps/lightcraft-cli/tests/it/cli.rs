@@ -112,8 +112,13 @@ fn bench_cull_times_a_folder_and_leaves_it_untouched() {
         let png = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&img), &Default::default()).unwrap();
         std::fs::write(dir.join(name), png).unwrap();
     }
+    // every file's name and bytes: nothing added, and no photo written into (CodeRabbit on #3577)
     let listing = |d: &std::path::Path| {
-        let mut v: Vec<String> = std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+        let mut v: Vec<(String, Vec<u8>)> = std::fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap())
+            .map(|e| (e.file_name().to_string_lossy().to_string(), std::fs::read(e.path()).unwrap()))
+            .collect();
         v.sort();
         v
     };
@@ -137,7 +142,25 @@ fn bench_cull_times_a_folder_and_leaves_it_untouched() {
     assert_eq!(v["importAdd"]["photos"], 3);
     assert_eq!(v["importCopy"]["photos"], 1);
     assert_eq!(v["rate"]["n"], 3);
+    // a folder smaller than the samples is measured on the photos it has, not reported empty
+    for stage in ["camera1280", "camera2560", "cameraFull", "loupeRender"] {
+        assert_eq!(v[stage]["n"], 3, "{stage}: {}", v[stage]);
+    }
     assert_eq!(listing(&dir), before, "nothing written next to the photos");
+    // results asked for in the source folder: refused, the photo untouched
+    let photo = std::fs::read(dir.join("a.png")).unwrap();
+    let r = Command::new(binary())
+        .arg("bench-cull")
+        .arg(&dir)
+        .args(["--n", "0", "--work"])
+        .arg(&work)
+        .arg("--json")
+        .arg(dir.join("a.png"))
+        .output()
+        .unwrap();
+    assert!(!r.status.success() && String::from_utf8_lossy(&r.stderr).contains("--json"), "{}", String::from_utf8_lossy(&r.stderr));
+    assert_eq!(std::fs::read(dir.join("a.png")).unwrap(), photo);
+    assert_eq!(listing(&dir), before);
     // a sample of the folder, no import
     let r = Command::new(binary()).arg("bench-cull").arg(&dir).args(["--files", "2", "--n", "0", "--work"]).arg(&work).output().unwrap();
     let stdout = String::from_utf8_lossy(&r.stdout);

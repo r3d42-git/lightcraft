@@ -239,8 +239,8 @@ fn op_variants_are_versioned() {
             Op::SetDenoiseState { .. } => 10,
         }
     }
-    /// v13: Mask.on_photo and EmbeddedLens.source; v12 retains frozen AI brush geometry.
-    const NEWEST_FIELDS: u32 = 13;
+    /// R3D v14: shared mask grids in snapshots and history.
+    const NEWEST_FIELDS: u32 = 14;
     let newest = since(&Op::SetHistoryCursor { id: PhotoId(1), cursor: None });
     assert_eq!(newest.max(NEWEST_FIELDS), VERSION, "the newest op's or fields' version must be the current format version");
 }
@@ -262,7 +262,7 @@ fn r3d_v12_upgrades_without_reinterpreting_legacy_masks() {
     m.set(LOG, Vec::new());
     let (_, loaded, report) = Journal::open(Box::new(m.clone())).unwrap();
     assert_eq!(report.upgraded_from, Some(12));
-    assert_eq!(snapshot_version(&m), 13);
+    assert_eq!(snapshot_version(&m), u64::from(VERSION));
     assert_eq!(loaded.to_snapshot(), base.to_snapshot());
     let mask = &loaded.photo(PhotoId(1)).unwrap().develop.masks[0];
     assert!(!mask.on_photo, "an old mask cannot move to the unwarped photo without conversion");

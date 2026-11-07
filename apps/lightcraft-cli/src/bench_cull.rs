@@ -2,7 +2,7 @@
 //!
 //! What a wedding photographer does most is open a folder of a few thousand raws, look at each
 //! one, rate it and move on. This times the engine side of each step on the files themselves (the
-//! desktop app's own frame timings come from `ui.inspect` → `perf.loupeSteps`, see
+//! desktop app's own frame timings come from `ui.inspect` â†’ `perf.loupeSteps`, see
 //! `tools/cull-bench.py`):
 //!
 //! - browse: reading the folder into the Local view (`library.browse`, the whole folder);
@@ -34,7 +34,7 @@ use serde_json::{Value, json};
 
 const USAGE: &str = "lightcraft-cli bench-cull FOLDER [--files K] [--n N] [--copy M] [--work DIR] [--json FILE]";
 
-/// Threads the app renders thumbnails with (`Renderer::default`: cores − 1, at most 6).
+/// Threads the app renders thumbnails with (`Renderer::default`: cores âˆ’ 1, at most 6).
 fn render_threads() -> usize {
     std::thread::available_parallelism().map(|n| n.get().saturating_sub(1)).unwrap_or(2).clamp(2, 6)
 }
@@ -84,6 +84,79 @@ fn run_dir(work: &Path) -> Result<PathBuf, String> {
     Ok(d)
 }
 
+/// `take` items of `v` after the first `skip` (photos the stages before have read, so cold in the
+/// file cache), or, when `v` has no more than `skip`, its first `take`: a small folder is measured
+/// on photos already read rather than not at all.
+fn sample_after<T>(v: &[T], skip: usize, take: usize) -> &[T] {
+    let from = if v.len() > skip { skip } else { 0 };
+    let rest = v.get(from..).unwrap_or_default();
+    rest.get(..take.min(rest.len())).unwrap_or_default()
+}
+
+/// Whether `path` names a file in `folder` (the source folder, which a run only reads), checked
+/// twice: where its own entry sits (the folder holding it, the final link not followed: writing the
+/// results replaces that entry, so a link to a file elsewhere that sits in the source folder, maybe
+/// standing for a photo, would be replaced; CodeRabbit on #3080), and where it resolves to: a file
+/// that is there by itself (a link to a photo there is the photo), a link that points nowhere yet
+/// by where writing through it would create the file, and anything else by its nearest folder that
+/// exists (a `--work` folder may not be there yet).
+fn inside_source(path: &Path, folder: &Path) -> bool {
+    let Ok(folder) = std::fs::canonicalize(folder) else { return false };
+    entry_inside(path, &folder) || resolves_inside(path, &folder, 0)
+}
+
+/// Whether the folder holding `path`'s own entry (its nearest folder that exists, resolved) is in
+/// `folder` (already resolved). The entry itself is not followed.
+fn entry_inside(path: &Path, folder: &Path) -> bool {
+    let mut p = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    loop {
+        if let Ok(c) = std::fs::canonicalize(p) {
+            return c.starts_with(folder);
+        }
+        match p.parent() {
+            Some(up) if !up.as_os_str().is_empty() => p = up,
+            Some(_) => p = Path::new("."),
+            None => return false,
+        }
+    }
+}
+
+/// [`inside_source`] for a `folder` already resolved; `hops`: links followed so far (a loop of
+/// links counts as inside: refused).
+fn resolves_inside(path: &Path, folder: &Path, hops: u32) -> bool {
+    if let Ok(c) = std::fs::canonicalize(path) {
+        return c.starts_with(folder);
+    }
+    if let Ok(target) = std::fs::read_link(path) {
+        if hops >= 40 {
+            return true;
+        }
+        let target = path.parent().map_or_else(|| target.clone(), |dir| dir.join(&target));
+        return resolves_inside(&target, folder, hops + 1);
+    }
+    entry_inside(path, folder)
+}
+
+/// Refuse `--json` or `--work` in the folder being measured: nothing is written next to the photos,
+/// the results and the run's libraries included. Checked before anything is made.
+fn check_outputs(folder: &Path, json: Option<&Path>, work: &Path) -> Result<(), String> {
+    // a `..` after a folder not made yet can't be resolved now, and the run makes that folder:
+    // `--json NEW/../FOLDER/r.json` would pass the checks below and land in the source folder
+    // (CodeRabbit on #3544)
+    for (name, p) in [("--json", json), ("--work", Some(work))] {
+        if let Some(p) = p.filter(|p| p.components().any(|c| c == std::path::Component::ParentDir)) {
+            return Err(format!("{}: {name} must not contain \"..\"; give the folder without it", p.display()));
+        }
+    }
+    if let Some(j) = json.filter(|j| inside_source(j, folder)) {
+        return Err(format!("{}: --json must not be in the folder being measured", j.display()));
+    }
+    if inside_source(&work.join("run"), folder) {
+        return Err(format!("{}: --work must not be in the folder being measured", work.display()));
+    }
+    Ok(())
+}
+
 fn library(dir: &Path) -> Result<Session, String> {
     let mut s = Session::new().with_fs().with_system_clock();
     s.open_library(dir, false).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -128,6 +201,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 return Ok(());
             }
             a if a.starts_with("--") => return Err(format!("unknown option {a}\n{USAGE}")),
+            // (a second folder would replace the first and be timed in its place: CodeRabbit on #3583)
+            a if folder.is_some() => return Err(format!("{a}: one FOLDER only\n{USAGE}")),
             a => folder = Some(PathBuf::from(a)),
         }
         i += 1;
@@ -137,6 +212,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         return Err(format!("{}: not a folder", folder.display()));
     }
     let work = work.unwrap_or_else(|| std::env::temp_dir().join(format!("lightcraft-bench-cull-{}", std::process::id())));
+    check_outputs(&folder, json_out.as_deref(), &work)?;
     let work = run_dir(&work)?;
     let mut out = json!({"folder": folder.display().to_string(), "threads": render_threads()});
 
@@ -211,7 +287,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     out["thumbs"] = json!({"firstMs": round(first), "allMs": round(all), "count": per.len(), "each": each});
 
     // --- camera previews at loupe sizes, one at a time (what a step costs without look-ahead) -----
-    let sample: Vec<&String> = paths.iter().skip(if paths.len() > 48 { 48 } else { 0 }).take(20).collect();
+    let sample = sample_after(&paths, 48, 20);
     for edge in [1280usize, 2560, usize::MAX] {
         let ms: Vec<f64> = sample
             .iter()
@@ -228,10 +304,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
 
     // --- LightCraft's loupe render (2560 px) from a cold source --------------------------------
-    let ms: Vec<f64> = ids
+    let ms: Vec<f64> = sample_after(&ids, 80, 5)
         .iter()
-        .skip(if ids.len() > 80 { 80 } else { 0 })
-        .take(5)
         .filter_map(|id| {
             let job = s.loupe_job(*id, 2560, 1708, true)?;
             let a = Instant::now();
@@ -295,15 +369,45 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
 fn finish(out: Value, json_out: Option<PathBuf>) -> Result<(), String> {
     if let Some(p) = json_out {
-        std::fs::write(&p, serde_json::to_string_pretty(&out).unwrap_or_default()).map_err(|e| format!("{}: {e}", p.display()))?;
+        write_replacing(&p, serde_json::to_string_pretty(&out).unwrap_or_default().as_bytes())?;
     }
     println!("{}", serde_json::to_string(&out).unwrap_or_default());
+    Ok(())
+}
+
+/// Write `bytes` to `path` through a new file next to it, renamed over `path`: an existing `path`
+/// is replaced as a name, never written into. A hard link there shares its data with another file
+/// (maybe a photo in the source folder, which [`inside_source`] can't tell), and writing into it
+/// would overwrite that file too (CodeRabbit on #3077). The temporary file is removed on error.
+fn write_replacing(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let err = |e: std::io::Error| format!("{}: {e}", path.display());
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let name = path.file_name().ok_or_else(|| format!("{}: not a file name", path.display()))?;
+    static TEMPS: AtomicUsize = AtomicUsize::new(0);
+    let n = TEMPS.fetch_add(1, Ordering::Relaxed);
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!(".{}-{n}.tmp", std::process::id()));
+    let tmp = dir.join(tmp_name);
+    let written =
+        std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()));
+    if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err(e));
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_second_folder_is_an_error() {
+        let e = run(&["a".to_string(), "b".to_string()]).unwrap_err();
+        assert!(e.starts_with("b: one FOLDER only"), "{e}");
+    }
 
     /// `--work` may hold anything: a run makes a new folder of its own there and never deletes
     /// what is already in it (it used to remove `lib-browse`, `lib-add` and `lib-copy` there).
@@ -320,6 +424,162 @@ mod tests {
         fresh_dir(&a, "lib-browse").unwrap();
         assert!(fresh_dir(&a, "lib-browse").is_err(), "an existing folder is never reused");
         assert_eq!(std::fs::read(&keep).unwrap(), b"mine");
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// A folder too small for the disjoint samples is measured on the photos it has (CodeRabbit on #3077).
+    #[test]
+    fn a_small_folder_is_sampled_from_its_start() {
+        let v: Vec<u32> = (0..100).collect();
+        assert_eq!(sample_after(&v, 48, 20), &v[48..68]);
+        assert_eq!(sample_after(&v, 90, 20), &v[90..100]);
+        assert_eq!(sample_after(&v[..3], 48, 20), &v[..3]);
+        assert_eq!(sample_after(&v[..48], 48, 5), &v[..5]);
+        assert!(sample_after::<u32>(&[], 48, 20).is_empty());
+    }
+
+    /// A file link at `at` to `target`.
+    #[cfg(unix)]
+    fn link(target: &Path, at: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, at)
+    }
+
+    /// A file link at `at` to `target` (Windows: needs Developer Mode or the right to make links).
+    #[cfg(windows)]
+    fn link(target: &Path, at: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, at)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn link(_: &Path, _: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::other("no file links here"))
+    }
+
+    /// `--json` naming a link (made elsewhere) to a file in the source folder is refused: writing
+    /// the results would follow it and overwrite a photo (CodeRabbit on #3080). So is a link that
+    /// points to a file not made yet in the source folder, and a loop of links.
+    #[test]
+    fn a_json_link_into_the_source_folder_is_refused() {
+        let work = run_dir(&std::env::temp_dir()).unwrap();
+        let src = fresh_dir(&work, "src").unwrap();
+        let photo = src.join("a.jpg");
+        std::fs::write(&photo, b"photo").unwrap();
+        let to_photo = work.join("report.json");
+        if let Err(e) = link(&photo, &to_photo) {
+            let _ = std::fs::remove_dir_all(&work);
+            lightcraft_testkit::skip!(System, "can't make a file link here ({e}); Windows needs Developer Mode");
+            return;
+        }
+        assert!(inside_source(&to_photo, &src), "a link to a photo in the source folder");
+        let e = check_outputs(&src, Some(&to_photo), &work.join("elsewhere")).unwrap_err();
+        assert!(e.contains("--json"), "{e}");
+        let to_new = work.join("new.json");
+        link(&src.join("not-yet.json"), &to_new).unwrap();
+        assert!(inside_source(&to_new, &src), "a link to a file not made yet in the source folder");
+        let (x, y) = (work.join("x.json"), work.join("y.json"));
+        link(&y, &x).unwrap();
+        link(&x, &y).unwrap();
+        assert!(inside_source(&x, &src), "a loop of links");
+        let to_elsewhere = work.join("fine.json");
+        link(&work.join("out.json"), &to_elsewhere).unwrap();
+        assert!(!inside_source(&to_elsewhere, &src), "a link to a file outside is fine");
+        assert_eq!(std::fs::read(&photo).unwrap(), b"photo");
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// `--json` naming a link that sits in the source folder and points to a file outside it is
+    /// refused: writing the results would replace the link itself, an entry of the source folder
+    /// (CodeRabbit on #3080). The link stays as it was.
+    #[test]
+    fn a_json_link_in_the_source_folder_to_a_file_outside_is_refused() {
+        let work = run_dir(&std::env::temp_dir()).unwrap();
+        let src = fresh_dir(&work, "src").unwrap();
+        let outside = work.join("out.json");
+        std::fs::write(&outside, b"outside").unwrap();
+        let in_src = src.join("a.jpg");
+        if let Err(e) = link(&outside, &in_src) {
+            let _ = std::fs::remove_dir_all(&work);
+            lightcraft_testkit::skip!(System, "can't make a file link here ({e}); Windows needs Developer Mode");
+            return;
+        }
+        assert!(inside_source(&in_src, &src), "a link in the source folder, wherever it points");
+        let e = check_outputs(&src, Some(&in_src), &work.join("elsewhere")).unwrap_err();
+        assert!(e.contains("--json"), "{e}");
+        assert!(std::fs::symlink_metadata(&in_src).unwrap().file_type().is_symlink(), "the link stays");
+        assert_eq!(std::fs::read_link(&in_src).unwrap(), outside);
+        assert_eq!(std::fs::read(&outside).unwrap(), b"outside");
+        // a new file in the source folder (nothing there yet) is refused too
+        assert!(check_outputs(&src, Some(&src.join("new.json")), &work.join("elsewhere")).is_err());
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// `--json` naming a hard link (made elsewhere) to a photo in the source folder passes
+    /// [`inside_source`] (a hard link has no target to resolve), so the results replace the link
+    /// instead of writing into it: the photo keeps its bytes (CodeRabbit on #3077).
+    #[test]
+    fn a_json_hard_link_to_a_photo_leaves_the_photo_alone() {
+        let work = run_dir(&std::env::temp_dir()).unwrap();
+        let src = fresh_dir(&work, "src").unwrap();
+        let photo = src.join("a.jpg");
+        std::fs::write(&photo, b"photo").unwrap();
+        let report = work.join("report.json");
+        if let Err(e) = std::fs::hard_link(&photo, &report) {
+            let _ = std::fs::remove_dir_all(&work);
+            lightcraft_testkit::skip!(System, "can't make a hard link here ({e})");
+            return;
+        }
+        finish(json!({"browse": 1}), Some(report.clone())).unwrap();
+        assert_eq!(std::fs::read(&photo).unwrap(), b"photo", "the photo is unchanged");
+        let written: Value = serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+        assert_eq!(written["browse"], 1);
+        let left: Vec<_> = std::fs::read_dir(&work).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 2, "no temporary file is left: {left:?}");
+        // a folder that isn't there: an error, nothing panics
+        assert!(write_replacing(&work.join("missing").join("r.json"), b"x").is_err());
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// `--json` naming a file in the source folder is refused (CodeRabbit on #3077); elsewhere it is fine.
+    #[test]
+    fn the_results_never_go_in_the_source_folder() {
+        let work = run_dir(&std::env::temp_dir()).unwrap();
+        let src = fresh_dir(&work, "src").unwrap();
+        let sub = fresh_dir(&src, "sub").unwrap();
+        assert!(inside_source(&src.join("a.png"), &src));
+        assert!(inside_source(&sub.join("x.json"), &src));
+        assert!(inside_source(&src.join("sub").join("..").join("a.png"), &src));
+        assert!(!inside_source(&work.join("out.json"), &src));
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// `--work` in the source folder is refused before anything is made there, also when it doesn't
+    /// exist yet (CodeRabbit on #3077); elsewhere it is fine.
+    #[test]
+    fn the_work_folder_never_goes_in_the_source_folder() {
+        let work = run_dir(&std::env::temp_dir()).unwrap();
+        let src = fresh_dir(&work, "src").unwrap();
+        let inside = src.join("out").join("deeper");
+        let e = check_outputs(&src, None, &inside).unwrap_err();
+        assert!(e.contains("--work"), "{e}");
+        assert!(check_outputs(&src, None, &src).is_err(), "the source folder itself");
+        assert!(!src.join("out").exists(), "nothing was made in the source folder");
+        assert!(check_outputs(&src, None, &work.join("elsewhere")).is_ok());
+        assert!(check_outputs(&src, Some(&src.join("r.json")), &work.join("elsewhere")).is_err());
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// A `..` in `--json` or `--work` is refused: after a folder the run hasn't made yet it can't be
+    /// resolved now, and would lead into the source folder once the run makes it (CodeRabbit on #3544).
+    #[test]
+    fn a_dot_dot_in_the_outputs_is_refused() {
+        let work = run_dir(&std::env::temp_dir()).unwrap();
+        let src = fresh_dir(&work, "src").unwrap();
+        let sneaky = work.join("new").join("..").join("src").join("r.json");
+        let e = check_outputs(&src, Some(&sneaky), &work.join("elsewhere")).unwrap_err();
+        assert!(e.contains("--json") && e.contains(".."), "{e}");
+        let e = check_outputs(&src, None, &work.join("new").join("..").join("src")).unwrap_err();
+        assert!(e.contains("--work"), "{e}");
+        assert!(!work.join("new").exists(), "nothing was made");
         let _ = std::fs::remove_dir_all(&work);
     }
 }

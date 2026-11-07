@@ -364,6 +364,7 @@ impl TitleCompose {
             quick: None,
             display: None,
             gpu_fallback: None,
+            frame: None,
         }
     }
 }

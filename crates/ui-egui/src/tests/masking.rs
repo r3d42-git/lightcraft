@@ -2252,7 +2252,7 @@ fn clipping_defers_to_tool_diagnostics_and_fullscreen_suppresses_it() {
     exec(&mut h, "view.clipping", json!({}));
     assert!(matches!(crate::panels::detail::view_overlay(&h.app, &d), Overlay::Mask { .. }));
     h.app.ui.mask_overlay = false;
-    assert_eq!(crate::panels::detail::view_overlay(&h.app, &d), Overlay::Clipping);
+    assert_eq!(crate::panels::detail::view_overlay(&h.app, &d), Overlay::ClipWarnings);
     assert_eq!(develop(&h), d);
     h.app.ui.fullscreen = true;
     assert_eq!(crate::panels::detail::view_overlay(&h.app, &d), Overlay::None);

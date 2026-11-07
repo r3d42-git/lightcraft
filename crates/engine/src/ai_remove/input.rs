@@ -338,8 +338,8 @@ mod tests {
     fn empty_or_corrupt_segment_masks_are_rejected() {
         for seg in [
             SegMask::from_logits(1, &[-8.]),
-            SegMask { side: 1025, data: String::new(), rect: None },
-            SegMask { side: 1, data: "bad".into(), rect: None },
+            SegMask { side: 1025, data: String::new(), rect: None, grid: None },
+            SegMask { side: 1, data: "bad".into(), rect: None, grid: None },
         ] {
             assert!(prepare_segmented(source(Default::default()), Default::default(), Default::default(), seg, 0, &AtomicBool::new(false)).is_err());
         }

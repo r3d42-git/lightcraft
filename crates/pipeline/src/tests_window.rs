@@ -422,6 +422,46 @@ fn auto_mask_strokes_match_the_whole_render() {
     check_noisy("auto mask", &s, PixelWindow { x: 400, y: 300, w: 300, h: 250 }, 2, 0.1);
 }
 
+// Given the joint colour NR, a window is filtered with the whole frame's noise model: a quiet part of
+// the frame does not make a window of its noisy part (or the other way round) smooth differently
+#[test]
+fn joint_colour_nr_measures_the_noise_of_the_whole_frame() {
+    let mut s = DevelopSettings::default();
+    s.detail.nr_color = 25.0;
+    s.detail.nr_color_smoothness = 0.0;
+    // a frame that is one noise tile, and one of many tiles (`nrc_joint::tiles`)
+    for (w, h, win) in [(768, 128, PixelWindow { x: 640, y: 32, w: 64, h: 64 }), (1664, 1536, PixelWindow { x: 1400, y: 700, w: 128, h: 128 })] {
+        let src = crate::tests::colour_noise_scene(w, h, w * 2 / 3);
+        let req = RenderRequest::fit(w, h);
+        let f = render(&src, &SourceInfo::default(), &s, &req).image;
+        let part = render(&src, &SourceInfo::default(), &s, &RenderRequest { window: Some(win), ..req }).image;
+        let (max, mean) = compare_inset(&f, &part, win, win.w / 4);
+        assert!(max <= 2 && mean <= 0.1, "{w}×{h}: max {max}, mean {mean:.3}");
+    }
+}
+
+// Given a 16-bit or float render of a window with the joint colour NR, then its edges are the whole
+// render's too: the window is grown by the filter's reach and cut back
+#[test]
+fn a_deep_window_with_colour_noise_reduction_matches_the_whole_render() {
+    use crate::OutputDepth;
+    let (w, h, win) = (768, 128, PixelWindow { x: 600, y: 32, w: 96, h: 64 });
+    let src = crate::tests::colour_noise_scene(w, h, w * 2 / 3);
+    let mut s = DevelopSettings::default();
+    s.detail.nr_color = 25.0;
+    s.detail.nr_color_smoothness = 0.0;
+    for depth in [OutputDepth::U16, OutputDepth::F32Linear] {
+        let req = RenderRequest { depth, ..RenderRequest::fit(w, h) };
+        let deep = |req: &RenderRequest| render(&src, &SourceInfo::default(), &s, req).deep.map(|d| d.to_rgba8());
+        let (Some(f), Some(part)) = (deep(&req), deep(&RenderRequest { window: Some(win), ..req })) else {
+            panic!("{depth:?}: no deep image");
+        };
+        assert_eq!((part.width, part.height), (win.w, win.h), "{depth:?}: the window's own size");
+        let (max, mean) = compare_inset(&f, &part, win, 0);
+        assert!(max <= 1 && mean <= 0.01, "{depth:?}: max {max}, mean {mean:.3}");
+    }
+}
+
 /// The margin the loupe's windows carry around what they show at this size (`region::margin_for`:
 /// 4.5 % of the long edge).
 const OVERLAY_INSET: usize = W * 45 / 1000;
@@ -453,7 +493,7 @@ fn diagnostic_overlays_in_a_window_match_the_full_render() {
     }
     let mut clipped = DevelopSettings::default();
     clipped.light.exposure = 4.0;
-    check_overlay("clipping", &clipped, Overlay::Clipping, MID, 255, 0.1);
+    check_overlay("clipping", &clipped, Overlay::ClipWarnings, MID, 255, 0.1);
     let mut pc = DevelopSettings::default();
     pc.point_colors.push(lightcraft_develop::PointColor { lum: 0.6, chroma: 0.08, hue: 60.0, hue_shift: 40.0, ..Default::default() });
     check_overlay("point colour range", &pc, Overlay::PointColorRange(0), MID, 1, 0.1);
@@ -463,5 +503,5 @@ fn diagnostic_overlays_in_a_window_match_the_full_render() {
     hdr.light.exposure = 1.5;
     check_overlay("hdr range", &hdr, Overlay::HdrRange, MID, 1, 0.1);
     hdr.light.exposure = 6.0;
-    check_overlay("hdr clipping", &hdr, Overlay::Clipping, MID, 255, 0.1);
+    check_overlay("hdr clipping", &hdr, Overlay::ClipWarnings, MID, 255, 0.1);
 }

@@ -24,6 +24,7 @@ pub mod dialogs;
 pub mod docking;
 mod drop_overlay;
 pub mod export_task;
+mod find_similar;
 mod focus_scan;
 mod frame_rate;
 pub mod headless;
@@ -45,6 +46,7 @@ pub mod shortcuts;
 pub mod sidebar;
 pub mod softpaint;
 pub mod space_hand;
+pub mod startup;
 pub mod state;
 pub mod sync;
 pub mod tasks;
@@ -87,6 +89,7 @@ pub use widgets::rating;
 pub use widgets::text_field;
 
 mod app;
+mod auto_settings;
 mod caches;
 mod clock;
 mod services;
@@ -222,6 +225,9 @@ pub struct LightcraftApp {
     /// effects (which the global shortcut guard also hides).
     #[cfg(test)]
     pub(crate) library_passes: Vec<panels::library_problem::LibraryPass>,
+    /// Test-only: how many times background preparation was advanced (once per logic pass).
+    #[cfg(test)]
+    pub(crate) prep_ticks: u32,
     /// Test-only: a delay for the sidebar's Missing Photos count worker (a slow disk). Kept here,
     /// not in `ui`, because `ui.set` rebuilds `ui` and would drop it.
     #[cfg(test)]
@@ -326,6 +332,9 @@ pub struct LightcraftApp {
     pub import: Option<import::ImportTask>,
     /// A folder scan in progress (feeds the import review).
     pub scan: Option<import::ScanTask>,
+    /// Scans stopped without waiting for their workers: each channel is kept until its worker ends, so
+    /// the probes it took from the session come back.
+    pub(crate) scans_stopping: import::StoppingScans,
     /// Files that waited for a library and wait for the running import or Synchronize Folder too.
     pub waiting_import: panels::library_problem::WaitingImport,
     /// A Synchronize Folder scan in progress (feeds its dialog).
@@ -362,8 +371,18 @@ pub struct LightcraftApp {
     /// Say once, when the GPU device has been tried, that no graphics processor was found
     /// ([`panels::notices::gpu_notice`]). The desktop app sets it; headless sessions and tests don't.
     pub gpu_notice: bool,
+    /// Tell the user once per session when the drive holding the preview cache runs low
+    /// ([`panels::notices::disk_space_notice`]). The desktop app sets it; headless sessions and tests
+    /// don't (their drive is whatever the machine has).
+    pub disk_space_notice: bool,
+    /// The low-disk notice's text while it is queued in [`LightcraftApp::notices`]: it is shown with a
+    /// button to Settings ▸ Performance. With the library it was raised for
+    /// ([`lightcraft_engine::Session::library_generation`]): another library open drops it.
+    pub(crate) disk_notice: Option<(u64, String)>,
     /// The memory budget setting last applied (MB, 0 = automatic).
     memory_applied: Option<u32>,
+    /// The hot pixel limit last applied (percent).
+    hot_pixels_applied: Option<f32>,
     /// The display profile setting last applied (`app.displayProfile`).
     pub(crate) display_applied: Option<String>,
     /// Why the display profile setting could not be applied (shown in Settings ▸ Display).
@@ -559,7 +578,7 @@ pub fn is_model_file(path: &str) -> bool {
 /// Files dropped on the window that are presets rather than photos.
 pub fn is_preset_file(path: &str) -> bool {
     let ext = std::path::Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    ["lcpreset", "lrtemplate", "xmp", "zip", "cube", "lmp", "mplumpack", "lceffect"].contains(&ext.as_str())
+    ["lcpreset", "lrtemplate", "xmp", "zip", "cube", "dcp", "lmp", "mplumpack", "lceffect"].contains(&ext.as_str())
 }
 
 /// Splits dropped files into presets and everything else. An `.xmp` dropped next to a photo with the same

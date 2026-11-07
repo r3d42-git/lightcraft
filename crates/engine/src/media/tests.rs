@@ -77,7 +77,7 @@ fn late_decoded_sources_cannot_restore_plain_or_previous_denoise_products() {
     let mut raw = Photo::new(id, Source::File { path: "synthetic-in-memory.dng".into() }, "synthetic-in-memory.dng", "DNG", 8, 8, "2026-10-27");
     raw.kind = MediaKind::Raw;
     s.catalog.apply(lightcraft_catalog::Op::AddPhoto { photo: Box::new(raw) }).unwrap();
-    let source_key = Hasher128::new().str(&content_key(s.catalog.photo(id).unwrap())).finish();
+    let source_key = s.media.source_identity(s.catalog.photo(id).unwrap());
     let image = Rgba8::new(1, 1);
     let mut result = RenderResult {
         request_id: 1,
@@ -91,6 +91,7 @@ fn late_decoded_sources_cannot_restore_plain_or_previous_denoise_products() {
         colour_source: None,
         quick: None,
         display: None,
+        frame: None,
     };
     let spec = |key: &str| DenoiseSpec { product: std::path::PathBuf::from("unused-test-product.lcdn"), key: key.into(), make: None };
     // Exercise the existing file/pair-loader path, so this test alone also compiles before
@@ -101,8 +102,10 @@ fn late_decoded_sources_cannot_restore_plain_or_previous_denoise_products() {
             max_edge: 8,
             loader: None,
             fallback: None,
-            denoise: Some((spec(key), Arc::new(|_, _, _| Ok((Rgb32f::new(8, 8), Some(Rgb32f::new(8, 8)), Default::default()))))),
+            denoise: Some((spec(key), Arc::new(|_, _, _, _| Ok((Rgb32f::new(8, 8), Some(Rgb32f::new(8, 8)), Default::default()))))),
             reduced: None,
+            camera_profile: None,
+            outliers: false,
         }
         .load_source()
         .unwrap()
@@ -190,7 +193,7 @@ fn worker_provenance_requires_a_current_source_and_is_forgotten() {
     assert!(s.source_info(id).colour_source.is_none(), "previously accepted facts do not survive a changed original");
     s.accept(&result);
     assert!(s.source_info(id).colour_source.is_none(), "an old worker cannot restore stale facts");
-    result.source_key = Some(Hasher128::new().str(&content_key(s.catalog.photo(id).unwrap())).finish());
+    result.source_key = Some(s.media.source_identity(s.catalog.photo(id).unwrap()));
     s.accept(&result);
     assert_eq!(s.source_info(id).colour_source, Some(source));
     s.media.clear_sources();
@@ -237,13 +240,15 @@ fn decoder_info_survives_render_jobs_cache_and_eviction() {
     job.source = SourceRef::File {
         path: "synthetic.arw".into(),
         max_edge: 64,
-        loader: Some(Arc::new(move |_, _| {
+        loader: Some(Arc::new(move |_, _, _| {
             let mut image = Rgb32f::new(64, 64);
             image.data.fill([0.1; 3]);
             Ok((image, loaded_info.clone()))
         })),
         fallback: None,
         denoise: None,
+        camera_profile: None,
+        outliers: false,
         reduced: None,
     };
     job.info = SourceInfo::default(); // Header facts cannot override decoder facts.
@@ -305,9 +310,11 @@ fn old_relative_white_balance_on_a_kelvin_camera_keeps_its_look_and_learns_the_a
     job.source = SourceRef::File {
         path: "/photos/DSC00001.ARW".into(),
         max_edge: 64,
-        loader: Some(Arc::new(move |_, _| Ok((loaded_pixels.clone(), loaded_info.clone())))),
+        loader: Some(Arc::new(move |_, _, _| Ok((loaded_pixels.clone(), loaded_info.clone())))),
         fallback: None,
         denoise: None,
+        camera_profile: None,
+        outliers: false,
         reduced: None,
     };
     let undo_before = s.undo.len();
@@ -822,4 +829,60 @@ fn classified_catalog_file_lens_corrects_older_smart_proxy_without_reencoding() 
     assert!(Arc::ptr_eq(&pixels, &source.image), "no proxy pixel rewrite or second warp");
     let legacy = SourceInfo { lens: Some(EmbeddedLens { source: LensSource::Legacy, ..lens }), ..Default::default() };
     assert!(source.info_or(legacy).lens.is_none(), "unclassified old catalog facts do not override proxy");
+}
+
+#[test]
+fn a_thumbnail_is_cut_from_the_decoded_full_source() {
+    let mut s = crate::Session::new();
+    let p = Photo::new(PhotoId(1), Source::File { path: "/nowhere/a.ARW".into() }, "a.ARW", "ARW", 2400, 1600, "");
+    s.catalog.apply(lightcraft_catalog::Op::AddPhoto { photo: Box::new(p.clone()) }).unwrap();
+    s.media.insert(p.id, SourceLevel::Full, Arc::new(Rgb32f::from_fn(2400, 1600, |x, _| [x as f32 / 2400.0, 0.5, 0.25])));
+    let job = s.thumb_job(p.id, 512).unwrap();
+    assert!(matches!(job.source, SourceRef::Fit { .. }));
+    let r = job.run();
+    let thumb = r.rendered.as_ref().unwrap();
+    assert_eq!((thumb.image.width, thumb.image.height), (512, 341));
+    s.accept(&r);
+    let cached = s.media.get(p.id, SourceLevel::Thumb).unwrap();
+    assert_eq!((cached.width, cached.height), (512, 341), "a thumbnail-sized source is kept, not the full source");
+}
+
+#[test]
+fn decoded_identity_rejects_late_dcp_provenance_and_hot_pixel_previews() {
+    let mut s = crate::Session::with_demo();
+    let id = s.active().unwrap();
+    let mut photo = (**s.catalog.photo(id).unwrap()).clone();
+    let mut d = (*photo.develop).clone();
+    d.profile.id = "dcp:test".into();
+    photo.develop = Arc::new(d.clone());
+    s.catalog.apply(Op::SetDevelop { id, settings: photo.develop.clone(), label: "Profile".into(), edited: None }).unwrap();
+    let profile = Arc::new(DcpProfile { name: "Test".into(), camera_model: "Test".into(), color: Default::default() });
+    s.media.camera_profiles.insert("dcp:test".into(), LoadedCameraProfile { profile: profile.clone(), fingerprint: 1 });
+    let key = s.loupe_job(id, 16, 16, true).unwrap().source_key;
+    let mut result = s.loupe_job(id, 16, 16, true).unwrap().run();
+    result.loaded = None;
+    result.colour_source = Some(lightcraft_pipeline::ColourSource {
+        basis: lightcraft_pipeline::ColourBasis::Spectral,
+        monochrome_tone: false,
+        dark_tone: false,
+        dro_tone_removed: false,
+    });
+    s.accept(&result);
+    assert!(s.source_info(id).colour_source.is_some());
+    s.media.camera_profiles.insert("dcp:test".into(), LoadedCameraProfile { profile, fingerprint: 2 });
+    assert_ne!(s.loupe_job(id, 16, 16, true).unwrap().source_key, key);
+    assert!(s.source_info(id).colour_source.is_none());
+    s.accept(&result);
+    assert!(s.source_info(id).colour_source.is_none(), "late worker facts belong to the replaced DCP");
+    let raw_id = PhotoId(999);
+    let mut raw = Photo::new(raw_id, Source::File { path: "identity-only.dng".into() }, "identity-only.dng", "DNG", 32, 32, "");
+    raw.kind = MediaKind::Raw;
+    raw.develop = Arc::new(d.clone());
+    s.catalog.apply(Op::AddPhoto { photo: Box::new(raw) }).unwrap();
+    let normal = s.render_job(raw_id, 16, 16, false, true).unwrap();
+    d.detail.nr_outliers = !d.removes_hot_pixels();
+    let preview = s.preview_job(raw_id, 16, 16, true, &d).unwrap();
+    assert_ne!(preview.source_key, normal.source_key, "transient preprocessing has its own decoded identity");
+    let SourceRef::File { outliers, .. } = preview.source else { panic!("preview must decode the requested original") };
+    assert_eq!(outliers, d.removes_hot_pixels());
 }
