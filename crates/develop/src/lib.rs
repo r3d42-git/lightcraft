@@ -41,14 +41,16 @@ impl DevelopSettings {
         serde_json::from_value(v.clone())
     }
 
-    /// [`Self::to_json`] with Remove Hot Pixels (`detail.nr_outliers`) stated even when off, for JSON that is copied,
-    /// merged, scaled or compared key by key (copy / paste, presets, Auto Sync). The stored JSON leaves it out when
-    /// off, so settings saved before it keep their hash; a merge needs the `false`, or copying Detail would not turn
-    /// the box off and a preset applied at an amount would not find its base value.
+    /// [`Self::to_json`] with optional booleans explicitly stated for copy / paste, presets and Auto
+    /// Sync. Stored JSON omits false values to preserve old hashes; merging needs the false to
+    /// restore Remove Hot Pixels off or profile vignetting Auto over an explicit manual choice.
     pub fn to_json_for_merge(&self) -> Value {
         let mut v = self.to_json();
         if let Some(detail) = v.get_mut("detail").and_then(Value::as_object_mut) {
             detail.insert("nr_outliers".into(), Value::Bool(self.detail.nr_outliers));
+        }
+        if let Some(optics) = v.get_mut("optics").and_then(Value::as_object_mut) {
+            optics.insert("profile_vignetting_manual".into(), Value::Bool(self.optics.profile_vignetting_manual));
         }
         v
     }
@@ -75,6 +77,12 @@ impl DevelopSettings {
         {
             out.wb.scale = WbScale::Legacy;
         }
+        if let Some(optics) = partial.get("optics").and_then(Value::as_object)
+            && optics.contains_key("profile_vignetting")
+            && !optics.contains_key("profile_vignetting_manual")
+        {
+            out.optics.profile_vignetting_manual = true;
+        }
         out.keep_in_range(self);
         Ok(out)
     }
@@ -85,11 +93,13 @@ impl DevelopSettings {
     /// is clipped to the photo first; a turned crop may reach past 0..1 and is bounded where the photo's size is known
     /// (`CropGeometry::bounded`, applied by the pipeline).
     fn keep_in_range(&mut self, before: &DevelopSettings) {
+        let profile_vignetting_manual = self.optics.profile_vignetting_manual;
         for c in controls::CONTROLS {
             if let Some(v) = controls::get(self, c.id) {
                 controls::set(self, c.id, v);
             }
         }
+        self.optics.profile_vignetting_manual = profile_vignetting_manual;
         let c = &mut self.curve;
         for p in [&mut c.master, &mut c.red, &mut c.green, &mut c.blue].into_iter().flatten() {
             *p = lightcraft_geom::Point::new(p.x.clamp(0.0, 1.0), p.y.clamp(0.0, 1.0));
@@ -220,6 +230,7 @@ impl DevelopSettings {
             controls::set(self, c.id, c.default);
         }
         match section {
+            Section::Optics => self.optics.profile_vignetting_manual = false,
             Section::Curve => {
                 let d = ToneCurve::default();
                 self.curve = d;
@@ -264,6 +275,34 @@ mod tests_process;
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn profile_vignette_auto_and_explicit_amounts_remain_distinct() {
+        let auto = DevelopSettings::default();
+        let saved = auto.to_json();
+        assert!(saved["optics"].get("profile_vignetting_manual").is_none());
+        let read = DevelopSettings::from_untrusted_json(&saved).unwrap();
+        assert_eq!(read.to_json(), saved, "old default settings retain their serialized form/hash");
+        let unrelated = auto.merged(&serde_json::json!({"light": {"exposure": 1.0}})).unwrap();
+        assert!(!unrelated.optics.profile_vignetting_manual);
+        for amount in [0.0, 50.0, 100.0] {
+            let mut manual = auto.clone();
+            controls::set(&mut manual, "optics.profileVignetting", amount);
+            assert!(manual.optics.profile_vignetting_manual);
+            let read = DevelopSettings::from_untrusted_json(&manual.to_json()).unwrap();
+            assert_eq!(read.optics, manual.optics);
+            let merged = auto.merged(&serde_json::json!({"optics": {"profile_vignetting": amount}})).unwrap();
+            assert_eq!(merged.optics, manual.optics);
+            let restored = merged.merged(&auto.to_json_for_merge()).unwrap();
+            assert!(!restored.optics.profile_vignetting_manual);
+            manual.reset_section(Section::Optics);
+            assert!(!manual.optics.profile_vignetting_manual);
+            assert_eq!(manual.optics.profile_vignetting, 100.0);
+        }
+        let explicit = auto.merged(&serde_json::json!({"optics": {"profile_vignetting": 100.0}})).unwrap();
+        let back = explicit.merged(&serde_json::json!({"optics": {"profile_vignetting": 100.0, "profile_vignetting_manual": false}})).unwrap();
+        assert!(!back.optics.profile_vignetting_manual);
+    }
 
     /// Remove Hot Pixels (#1345) is on for a newly imported raw and off for everything else, and an edit saved
     /// before the box existed reads as off, so it renders as it did.

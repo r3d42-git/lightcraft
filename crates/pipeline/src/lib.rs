@@ -329,6 +329,18 @@ pub fn native_output_size(src_w: usize, src_h: usize, s: &DevelopSettings) -> (f
 /// The geometric frame `render` uses for `src` (lens data, automatic CA estimate included).
 pub fn frame_for(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, apply_crop: bool) -> geometry::Frame {
     let mut frame = geometry::Frame::with_lens(src.width, src.height, s, apply_crop, info.lens.as_ref());
+    // Compare before user orientation: the verified coefficients describe the EXIF-oriented source.
+    // Only database shading may be omitted; geometric/CA/file corrections remain independent.
+    if info.raw
+        && !s.optics.profile_vignetting_manual
+        && s.optics.profile_vignetting == 100.0
+        && let Some(reference) = info.camera_tone.as_ref().and_then(tone::CameraTone::reference_unshaded)
+        && let Some(lens) = info.lens.as_ref().filter(|lens| lens.source == lightcraft_develop::LensSource::Database)
+        && lens.vignette.as_ref().is_some_and(|v| optics::same_vignette(v, reference))
+        && let Some(warp) = frame.warp.as_mut()
+    {
+        warp.lens_vig = 0.0;
+    }
     if s.optics.remove_ca && s.section_enabled("optics") {
         frame.add_lateral_ca(optics::estimate_lateral_ca(src));
         if apply_crop {

@@ -1,6 +1,6 @@
 use super::pairs::{displayed, local_contrast};
-use super::proxy::{LensGeometry, photometric_proxies};
-use super::{CameraLook, CameraTone, CameraTransform, HueSat, LookProvenance, RawImage, Rgb32f, ToneMap, luminance_2020};
+use super::proxy::PhotometricProxies;
+use super::{CameraLook, CameraTone, CameraTransform, HueSat, LookProvenance, Rgb32f, ToneMap, luminance_2020};
 use crate::camera_profiles::CameraProfile;
 use lightcraft_color::perceptual::oklab_from_2020;
 
@@ -11,16 +11,12 @@ fn reserved(i: usize, w: usize) -> bool {
 }
 
 pub(super) fn with_reference(
-    raw: &RawImage,
-    bytes: &[u8],
     transform: &CameraTransform,
-    lens: Option<&LensGeometry>,
-    embedded: Option<&lightcraft_develop::EmbeddedLens>,
+    (sensor, reference, clipped): PhotometricProxies,
     p: &CameraProfile,
     legacy: Option<&CameraLook>,
 ) -> Option<CameraLook> {
     let matrix = p.matrix().mul(&transform.matrix.inverse()?);
-    let (sensor, reference, clipped) = photometric_proxies(raw, bytes, transform, lens, embedded)?;
     let mut pairs = Vec::new();
     let mut clean = Vec::new();
     let mut colours = Vec::new();

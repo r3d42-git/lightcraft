@@ -19,6 +19,36 @@ pub(crate) fn fit_preview(
     if !transform.matrix_is_fallback || !file_local_look(raw.format) {
         return (None, false);
     }
+    // A file-provided opcode describes the source. A database gain describes the lens;
+    // the camera JPEG may retain the same falloff as the RAW. Fit in the observed domain.
+    let database = embedded.filter(|l| recover_sony_colour && l.source == lightcraft_develop::LensSource::Database && l.vignette.is_some());
+    let measure = |profile| super::proxy::photometric_proxies(raw, bytes, transform, lens, Some(profile));
+    let profiled = database.and_then(measure);
+    if let (Some(profile), Some((usual, jpeg, mask))) = (database, profiled.as_ref())
+        && !monochrome(jpeg)
+        && let Some(vignette) = profile.vignette
+    {
+        let plain = lightcraft_develop::EmbeddedLens { vignette: None, ..*profile };
+        if let Some(unshaded) = measure(&plain)
+            && super::reference_shading::use_unshaded(usual, &unshaded.0, jpeg, mask, &unshaded.2)
+            && let (Some(mut look), false) = fit_in_geometry(raw, bytes, transform, lens, Some(&plain), recover_sony_colour, Some(unshaded))
+        {
+            look.tone = look.tone.with_reference_unshaded(vignette);
+            return (Some(look), false);
+        }
+    }
+    fit_in_geometry(raw, bytes, transform, lens, embedded, recover_sony_colour, profiled)
+}
+
+fn fit_in_geometry(
+    raw: &RawImage,
+    bytes: &[u8],
+    transform: &CameraTransform,
+    lens: Option<&LensGeometry>,
+    embedded: Option<&lightcraft_develop::EmbeddedLens>,
+    recover_sony_colour: bool,
+    measured: Option<super::proxy::PhotometricProxies>,
+) -> (Option<CameraLook>, bool) {
     let profile = raw.metadata.model.as_deref().and_then(crate::camera_profiles::get);
     let (calibration, ordinary) = match profile {
         Some(p) if p.reference_calibration => (Some(p), None),
@@ -28,7 +58,8 @@ pub(crate) fn fit_preview(
     if recover_sony_colour
         && !legacy.1
         && let Some(profile) = calibration
-        && let Some(result) = super::calibrated::with_reference(raw, bytes, transform, lens, embedded, &profile, legacy.0.as_ref())
+        && let Some(proxies) = measured.or_else(|| super::proxy::photometric_proxies(raw, bytes, transform, lens, embedded))
+        && let Some(result) = super::calibrated::with_reference(transform, proxies, &profile, legacy.0.as_ref())
     {
         return (Some(result), false);
     }

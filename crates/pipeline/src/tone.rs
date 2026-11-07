@@ -28,6 +28,9 @@ pub struct CameraTone {
     chroma: [f32; CHROMA_N],
     #[serde(skip_serializing_if = "is_false")]
     generic_luminance: bool,
+    /// Exact database shading removed from the camera reference before fitting this look.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reference_unshaded: Option<lightcraft_develop::EmbeddedVignette>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -44,10 +47,13 @@ impl<'de> serde::Deserialize<'de> for CameraTone {
             chroma: Option<[f32; CHROMA_N]>,
             #[serde(default)]
             generic_luminance: bool,
+            #[serde(default)]
+            reference_unshaded: Option<lightcraft_develop::EmbeddedVignette>,
         }
         let w = Wire::deserialize(d)?;
         let mut tone = Self::new(w.knots).ok_or_else(|| serde::de::Error::custom("invalid camera tone curve"))?;
         tone.generic_luminance = w.generic_luminance;
+        tone.reference_unshaded = w.reference_unshaded;
         match w.chroma {
             Some(c) => tone.with_chroma(c).ok_or_else(|| serde::de::Error::custom("invalid camera chroma curve")),
             None => Ok(tone),
@@ -64,7 +70,7 @@ impl CameraTone {
             }
             previous = p;
         }
-        Some(Self { knots, chroma: NO_CHROMA, generic_luminance: false })
+        Some(Self { knots, chroma: NO_CHROMA, generic_luminance: false, reference_unshaded: None })
     }
 
     /// Carry a file-local chroma curve while retaining the exact generic RAW luminance map.
@@ -75,7 +81,17 @@ impl CameraTone {
             let x = GREY * 2f32.powf(-12.0 + 14.0 * i as f32 / 31.0);
             [x, generic_reference(false).apply(x)]
         });
-        Self { knots, chroma: NO_CHROMA, generic_luminance: true }
+        Self { knots, chroma: NO_CHROMA, generic_luminance: true, reference_unshaded: None }
+    }
+
+    /// Carry the verified database shading removed from the camera reference. Rendering may then
+    /// omit precisely this correction in automatic mode, retaining explicit manual amounts.
+    pub fn with_reference_unshaded(self, vignette: lightcraft_develop::EmbeddedVignette) -> Self {
+        Self { reference_unshaded: Some(vignette), ..self }
+    }
+
+    pub fn reference_unshaded(&self) -> Option<&lightcraft_develop::EmbeddedVignette> {
+        self.reference_unshaded.as_ref()
     }
 
     pub fn is_generic(&self) -> bool {

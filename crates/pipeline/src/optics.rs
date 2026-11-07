@@ -795,3 +795,10 @@ fn min_filter(p: &Plane, r: usize, max: bool) -> Plane {
 
 #[cfg(test)]
 mod tests;
+
+/// Serialized smart-preview floats may differ in the last few bits. Never match materially
+/// different coefficients or malformed profiles, including nonfinite values.
+pub(crate) fn same_vignette(a: &EmbeddedVignette, b: &EmbeddedVignette) -> bool {
+    let close = |a: f64, b: f64| a.is_finite() && b.is_finite() && (a - b).abs() <= 1e-10 * a.abs().max(b.abs()).max(1.0);
+    a.k.iter().zip(b.k).all(|(&a, b)| close(a, b)) && close(a.center.x, b.center.x) && close(a.center.y, b.center.y) && close(a.radius, b.radius)
+}

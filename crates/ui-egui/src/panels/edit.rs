@@ -369,6 +369,22 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         });
         if d.optics.lens_profile {
             control(app, ui, d, "optics.profileDistortion", has_warp);
+            egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 2, bottom: 4 }).show(ui, |ui| {
+                ui.label(crate::i18n::tr("Profile Vignetting"));
+                let manual = d.optics.profile_vignetting_manual || d.optics.profile_vignetting != 100.0;
+                let items = [("Auto", "auto"), ("Manual", "manual")];
+                ui.add_enabled_ui(has_vignette, |ui| {
+                    if let Some(chosen) = crate::widgets::segmented(ui, "profileVignettingMode", &items, Some(usize::from(manual)), 2) {
+                        let optics = if chosen == 0 {
+                            json!({"profile_vignetting": 100.0, "profile_vignetting_manual": false})
+                        } else {
+                            json!({"profile_vignetting_manual": true})
+                        };
+                        let _ = app.run("develop.merge", json!({"settings": {"optics": optics}, "label": "Profile Vignetting"}));
+                    }
+                });
+            });
+            // Editing the amount explicitly selects Manual, even when entering exactly 100%.
             control(app, ui, d, "optics.profileVignetting", has_vignette);
         }
         sub_title(ui, crate::i18n::tr("Manual"));

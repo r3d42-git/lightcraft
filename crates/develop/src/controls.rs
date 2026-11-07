@@ -161,6 +161,9 @@ macro_rules! controls {
         pub fn set(s: &mut DevelopSettings, id: &str, v: f64) -> bool {
             let Some(spec) = find(id) else { return false };
             let v = spec.clamp(v);
+            if id == "optics.profileVignetting" {
+                s.optics.profile_vignetting_manual = true;
+            }
             match id {
                 $( $id => { s.$($field).+ = v as _; true } )*
                 _ => indexed_set(s, id, v),

@@ -699,6 +699,10 @@ pub struct Optics {
     pub lens_profile: bool,
     pub profile_distortion: f64,
     pub profile_vignetting: f64,
+    /// Explicit profile strength, including 100%. Absent in older edits: nondefault strengths are
+    /// still manual; the default 100% permits verified automatic camera-reference handling.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub profile_vignetting_manual: bool,
     pub defringe_purple_amount: f64,
     pub defringe_purple_hue_lo: f64,
     pub defringe_purple_hue_hi: f64,
@@ -721,6 +725,7 @@ impl Default for Optics {
             lens_profile: false,
             profile_distortion: 100.0,
             profile_vignetting: 100.0,
+            profile_vignetting_manual: false,
             defringe_purple_amount: 0.0,
             defringe_purple_hue_lo: 30.0,
             defringe_purple_hue_hi: 70.0,

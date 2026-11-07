@@ -96,13 +96,15 @@ pub(super) fn proxies(
     build_proxies(raw, bytes, transform, Some(size), min_fraction, lens, embedded)
 }
 
+pub(super) type PhotometricProxies = (Rgb32f, Rgb32f, Vec<bool>);
+
 pub(super) fn photometric_proxies(
     raw: &RawImage,
     bytes: &[u8],
     transform: &CameraTransform,
     lens: Option<&LensGeometry>,
     embedded: Option<&lightcraft_develop::EmbeddedLens>,
-) -> Option<(Rgb32f, Rgb32f, Vec<bool>)> {
+) -> Option<PhotometricProxies> {
     build_proxies(raw, bytes, transform, None, MIN_PREVIEW_FRACTION, lens, embedded)
 }
 

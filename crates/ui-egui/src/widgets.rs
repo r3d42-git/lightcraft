@@ -700,7 +700,9 @@ fn edit_value(ui: &mut Ui, t: &Tokens, g: &SliderLayout, draft: Draft, out: &mut
         if field.cancelled() {
             take_escape(ui.ctx());
         }
-        if let Some(nv) = typed_value(g.spec, &text).filter(|nv| !cancelled && g.differs(*nv)) {
+        // A typed profile-vignetting amount also chooses Manual. Entering 100% must reach the
+        // engine even when Auto currently displays 100%; its numeric value alone is unchanged.
+        if let Some(nv) = typed_value(g.spec, &text).filter(|nv| !cancelled && (g.differs(*nv) || g.spec.id == "optics.profileVignetting")) {
             g.set_whole(out, nv);
         }
         ui.data_mut(|m| m.remove::<Draft>(g.typing_id()));

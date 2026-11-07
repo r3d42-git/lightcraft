@@ -732,3 +732,80 @@ fn multi_window_sampling_keeps_the_requested_downscale() {
     }
     assert_ne!(outputs[0], outputs[1], "the fixture must distinguish the filters");
 }
+
+/// A verified unshaded camera reference controls only its matching database shading in Auto.
+/// The frame is shared by CPU and Metal; geometry, CA and manual amounts stay independent.
+#[test]
+fn reference_unshaded_only_omits_matching_automatic_database_vignette() {
+    use lightcraft_develop::LensSource;
+    let vignette = EmbeddedVignette { k: [0.4, 0.05, 0.0, 0.0, 0.0], center: Point::new(0.5, 0.5), radius: 0.7 };
+    let mut lens = EmbeddedLens { source: LensSource::Database, vignette: Some(vignette), ..Default::default() };
+    let mut planes = [[0.0; 6]; 3];
+    for plane in &mut planes {
+        plane[0] = 1.0;
+        plane[1] = -0.02;
+    }
+    lens.warp = Some(EmbeddedWarp { planes, center: vignette.center, radius: vignette.radius });
+    let mut info = SourceInfo {
+        raw: true,
+        lens: Some(lens),
+        camera_tone: Some(crate::tone::CameraTone::generic().with_reference_unshaded(vignette)),
+        ..Default::default()
+    };
+    let src = Rgb32f::from_fn(80, 60, |_, _| [0.2; 3]);
+    let mut settings = DevelopSettings::default();
+    settings.optics.lens_profile = true;
+    settings.optics.ca_red = 20.0;
+    let frame = crate::frame_for(&src, &info, &settings, true);
+    let auto = frame.warp.unwrap();
+    assert_eq!(auto.lens_vig, 0.0);
+    assert_eq!(auto.lens_dist, 1.0);
+    assert_eq!(auto.lens, Some(lens));
+    assert_ne!(auto.ca, [0.0; 3]);
+    let mut rotated = settings.clone();
+    rotated.orientation = lightcraft_geom::Orientation::Rotate90;
+    let rotated_frame = crate::frame_for(&src, &info, &rotated, true);
+    assert_eq!(rotated_frame.warp.unwrap().lens_vig, 0.0, "match before user rotation reorients the coefficients");
+    for strength in [0.0, 50.0, 100.0] {
+        let mut explicit = settings.clone();
+        lightcraft_develop::controls::set(&mut explicit, "optics.profileVignetting", strength);
+        let frame = crate::frame_for(&src, &info, &explicit, true);
+        assert_eq!(frame.warp.unwrap().lens_vig, strength / 100.0);
+    }
+    // Old edits never had a manual marker; any nondefault amount keeps its original meaning.
+    settings.optics.profile_vignetting = 50.0;
+    assert_eq!(crate::frame_for(&src, &info, &settings, true).warp.unwrap().lens_vig, 0.5);
+    settings.optics.profile_vignetting = 100.0;
+    for source in [LensSource::File, LensSource::Legacy] {
+        info.lens.as_mut().unwrap().source = source;
+        assert_eq!(crate::frame_for(&src, &info, &settings, true).warp.unwrap().lens_vig, 1.0);
+    }
+    info.lens.as_mut().unwrap().source = LensSource::Database;
+    info.lens.as_mut().unwrap().vignette.as_mut().unwrap().k[0] += 0.001;
+    assert_eq!(crate::frame_for(&src, &info, &settings, true).warp.unwrap().lens_vig, 1.0);
+    info.lens = Some(lens);
+    info.raw = false;
+    assert_eq!(crate::frame_for(&src, &info, &settings, true).warp.unwrap().lens_vig, 1.0);
+    info.raw = true;
+    info.camera_tone = Some(crate::tone::CameraTone::generic());
+    assert_eq!(crate::frame_for(&src, &info, &settings, true).warp.unwrap().lens_vig, 1.0);
+}
+
+#[test]
+fn reference_unshaded_survives_smart_tone_serialization_and_old_tones_default_absent() {
+    use crate::tone::CameraTone;
+    let old = CameraTone::generic();
+    let old_wire = serde_json::to_value(old).unwrap();
+    assert!(old_wire.get("reference_unshaded").is_none());
+    assert!(serde_json::from_value::<CameraTone>(old_wire.clone()).unwrap().reference_unshaded().is_none());
+    // Even older previews predate both generic luminance and chroma.
+    let mut legacy = old_wire;
+    legacy.as_object_mut().unwrap().remove("generic_luminance");
+    legacy.as_object_mut().unwrap().remove("chroma");
+    assert!(serde_json::from_value::<CameraTone>(legacy).unwrap().reference_unshaded().is_none());
+    let vignette = EmbeddedVignette { k: [0.2, 0.01, 0.0, 0.0, 0.0], center: Point::new(0.5, 0.5), radius: 0.6 };
+    let marked = old.with_reference_unshaded(vignette);
+    let read: CameraTone = serde_json::from_slice(&serde_json::to_vec(&marked).unwrap()).unwrap();
+    assert_eq!(read, marked);
+    assert_eq!(read.reference_unshaded(), Some(&vignette));
+}

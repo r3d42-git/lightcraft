@@ -149,3 +149,42 @@ fn a_typed_value_still_applies_after_a_reset() {
     assert_eq!(value(&h, "light.exposure"), 0.5);
     assert_eq!(h.app.session.undo.len() - undo, 1, "one undo step");
 }
+
+/// An explicit 100% strength differs from the automatic 100% default, including when typed into
+/// the unchanged numeric field. Auto/Manual remains a visible, reversible choice in both locales.
+#[test]
+fn profile_vignetting_accepts_explicit_one_hundred_and_returns_to_auto() {
+    let mut h = edit_panel();
+    let id = h.app.session.selection.active.unwrap();
+    h.app
+        .session
+        .catalog
+        .apply(lightcraft_catalog::Op::SetEmbeddedLens {
+            id,
+            lens: Some(Box::new(lightcraft_develop::EmbeddedLens {
+                source: lightcraft_develop::LensSource::Database,
+                vignette: Some(lightcraft_develop::EmbeddedVignette::default()),
+                ..Default::default()
+            })),
+        })
+        .unwrap();
+    ask(&mut h, "engine.execute", json!({"command": "develop.merge", "params": {"settings": {"optics": {"lens_profile": true}}}}));
+    h.app.ui.open_sections = vec!["optics".to_string()];
+    h.settle(SETTLE);
+    let manual = |h: &Headless| h.app.session.develop_of(id).unwrap().optics.profile_vignetting_manual;
+    assert!(!manual(&h));
+    ask(&mut h, "ui.clickWidget", json!({"id": "sliderValue:optics.profileVignetting"}));
+    ask(&mut h, "ui.text", json!({"text": "100"}));
+    ask(&mut h, "ui.key", json!({"key": "Enter"}));
+    assert!(manual(&h), "typing the unchanged 100% explicitly chooses Manual");
+    assert_eq!(value(&h, "optics.profileVignetting"), 100.0);
+    ask(&mut h, "ui.clickWidget", json!({"id": "button:profileVignettingMode-auto"}));
+    assert!(!manual(&h));
+    ask(&mut h, "ui.clickWidget", json!({"id": "button:profileVignettingMode-manual"}));
+    assert!(manual(&h));
+    for amount in [0.0, 50.0, 100.0] {
+        set(&mut h, "optics.profileVignetting", amount);
+        assert!(manual(&h));
+        assert_eq!(value(&h, "optics.profileVignetting"), amount);
+    }
+}
