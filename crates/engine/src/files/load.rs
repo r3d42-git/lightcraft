@@ -128,15 +128,9 @@ fn load_bytes_now(
         // camera's.)
         let kept_tone = match dcp {
             Some(p) if p.color.profile.tone_curve.is_none() => raw.color.profile.tone_curve.as_ref().and_then(dng_tone_curve).or_else(|| {
-                let own = raw.color.clone();
-                // the same proxy as the starting colour's fit below: the DNG's lens opcodes back in, no embedded lens
-                let tone = with_dng_lens_ops(&mut raw, dng_lens_ops.as_ref(), lens.as_ref(), list3, |raw, embedded| {
-                    crate::camera_preview::starting_colour(raw, &bytes, lens_geometry.as_ref(), embedded)
+                with_dng_lens_ops(&mut raw, dng_lens_ops.as_ref(), lens.as_ref(), list3, |raw, embedded| {
+                    crate::camera_preview::tone_for_imported_profile(raw, &bytes, lens_geometry.as_ref(), embedded)
                 })
-                .2
-                .map(|look| look.tone);
-                raw.color = own;
-                tone
             }),
             _ => None,
         };

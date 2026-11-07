@@ -52,9 +52,33 @@ pub(crate) fn starting_colour(
     lens: Option<&LensGeometry>,
     embedded: Option<&lightcraft_develop::EmbeddedLens>,
 ) -> (Xy, CameraTransform, Option<CameraLook>, ColourSource) {
+    starting_colour_for(raw, bytes, lens, embedded, true)
+}
+
+/// An imported chart profile sometimes borrows the file's previous tone. The user's colour
+/// selection owns the chroma in that case, including when the imported DCP has no tone curve.
+pub(crate) fn tone_for_imported_profile(
+    raw: &mut RawImage,
+    bytes: &[u8],
+    lens: Option<&LensGeometry>,
+    embedded: Option<&lightcraft_develop::EmbeddedLens>,
+) -> Option<CameraTone> {
+    let own = raw.color.clone();
+    let tone = starting_colour_for(raw, bytes, lens, embedded, false).2.map(|look| look.tone);
+    raw.color = own;
+    tone
+}
+
+fn starting_colour_for(
+    raw: &mut RawImage,
+    bytes: &[u8],
+    lens: Option<&LensGeometry>,
+    embedded: Option<&lightcraft_develop::EmbeddedLens>,
+    recover_sony_colour: bool,
+) -> (Xy, CameraTransform, Option<CameraLook>, ColourSource) {
     let (xy, t, look, source) = starting_colour_with(
         raw,
-        |raw, t| fit_preview(raw, bytes, t, lens, embedded),
+        |raw, t| fit_preview(raw, bytes, t, lens, embedded, recover_sony_colour),
         |raw, t| monochrome_look(raw, bytes, t, lens, embedded),
         |raw, t| {
             if !file_local_look(raw.format) {

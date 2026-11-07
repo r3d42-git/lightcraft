@@ -14,6 +14,7 @@ pub(crate) fn fit_preview(
     transform: &CameraTransform,
     lens: Option<&LensGeometry>,
     embedded: Option<&lightcraft_develop::EmbeddedLens>,
+    recover_sony_colour: bool,
 ) -> (Option<CameraLook>, bool) {
     if !transform.matrix_is_fallback || !file_local_look(raw.format) {
         return (None, false);
@@ -27,7 +28,7 @@ pub(crate) fn fit_preview(
     // Sony's Dynamic Range Optimizer (on by default) brightens the camera JPEG's darker regions,
     // not the raw: keep the colour fitted to the JPEG, take the tone curve without DRO.
     let dro = lightcraft_raw::embedded_preview_dynamic_range_optimized(bytes) == Some(true);
-    let sony_colour = raw.format == super::RawFormat::Arw && !black_and_white && profile.is_none();
+    let sony_colour = recover_sony_colour && raw.format == super::RawFormat::Arw && !black_and_white && profile.is_none();
     let look = match fit_look_with(&sensor, &reference, &clipped, colour.clone(), dro) {
         Some(look) => look,
         // A black-and-white JPEG has no colour to fit: the profile's colour and the JPEG's tone curve
@@ -43,6 +44,11 @@ pub(crate) fn fit_preview(
         None if sony_colour
             && raw.metadata.model.as_deref().and_then(|model| lightcraft_raw::spectral::find(raw.metadata.make.as_deref(), model)).is_none() =>
         {
+            // A near-black frame may already have a verified shadow curve in the normal
+            // fallback chain. Keep that decision and its luminance before trying colour alone.
+            if super::mono::fit_dark_tone(&sensor, &reference, &clipped).is_some() {
+                return (None, false);
+            }
             let recovered = proxies(raw, bytes, transform, 256, MIN_PREVIEW_FRACTION, lens, embedded)
                 .and_then(|(sensor, reference, clipped)| super::sony::recover_fallback(&sensor, &reference, &clipped));
             return (recovered, false);

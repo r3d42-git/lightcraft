@@ -1184,7 +1184,7 @@ fn corpus_cr3_gets_a_framing_aligned_camera_look() {
     assert_eq!(raw.format, RawFormat::Cr3);
     assert_eq!(raw.info().developed_size(), (6000, 4000));
     let transform = lightcraft_raw::color::camera_transform(&raw, lightcraft_raw::color::as_shot_white_xy(&raw));
-    let look = fit_preview(&raw, &bytes, &transform, None, None).0;
+    let look = fit_preview(&raw, &bytes, &transform, None, None, true).0;
     eprintln!("R100 guarded colour fit accepted: {}", look.is_some());
     assert!(look.is_some(), "this R100 corpus photo has enough matching colour after camera-framing alignment");
     let (_, info) = crate::files::load_bytes(&bytes, 400).unwrap();
@@ -1221,7 +1221,7 @@ fn corpus_uses_the_bundled_profile(file: &str, model: &str) {
     let lens = lens_geometry(&raw.opcodes.list3);
     raw.opcodes.list3.retain(|op| !op.is_lens_correction());
     let transform = lightcraft_raw::color::camera_transform(&raw, lightcraft_raw::color::as_shot_white_xy(&raw));
-    let look = fit_preview(&raw, &bytes, &transform, lens.as_ref(), None).0.expect("fit accepted");
+    let look = fit_preview(&raw, &bytes, &transform, lens.as_ref(), None, true).0.expect("fit accepted");
     let expected = bundled.matrix().mul(&transform.matrix.inverse().unwrap());
     for (row, want) in look.matrix.0.iter().zip(expected.0) {
         for (got, want) in row.iter().zip(want) {
@@ -1628,7 +1628,7 @@ fn corpus_arw_with_dro_is_lowered_to_the_dro_off_tone() {
         let mut raw = lightcraft_raw::decode(&bytes).unwrap();
         raw.opcodes.list3.retain(|op| !op.is_lens_correction());
         let transform = lightcraft_raw::color::camera_transform(&raw, lightcraft_raw::color::as_shot_white_xy(&raw));
-        let look = fit_preview(&raw, &bytes, &transform, None, None).0.expect("a camera look");
+        let look = fit_preview(&raw, &bytes, &transform, None, None, true).0.expect("a camera look");
         // the look fitted to the JPEG, as before this change
         let (sensor, reference, clipped) = proxies(&raw, &bytes, &transform, PROXY, 0.0, None, None).unwrap();
         let profile = raw.metadata.model.as_deref().and_then(crate::camera_profiles::get);
