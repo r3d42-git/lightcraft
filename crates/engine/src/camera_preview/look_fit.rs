@@ -39,7 +39,8 @@ pub(crate) fn fit_preview(
         }
         None => return (None, black_and_white),
     };
-    let look = if dro { with_dro_off_tone(look) } else { look };
+    let mut look = if dro { with_dro_off_tone(look) } else { look };
+    look.tone = super::tone::repair_pooled_tone(look.tone);
     if lightcraft_pipeline::profiling() {
         eprintln!(
             "[profile] {:?} camera look: {:?}, {:?}, hue/sat table {}, camera profile available {}, DRO tone replaced {dro}",

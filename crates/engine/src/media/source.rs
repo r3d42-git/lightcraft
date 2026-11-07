@@ -7,7 +7,7 @@ use super::{Arc, Deserialize, DevelopSettings, MediaKind, Photo, Rgb32f, Rgba8, 
 // 79: apply validated embedded distortion for newly decoded Sony ILCE-7M3 sources.
 // 80: v0.16.0 grayscale JPEG XL LinearRaw decoding; invalidate previous R3D output.
 // 81: upstream 0.17.0 color/geometry/grain and merged R3D diagnostic views.
-pub const RENDER_CACHE_VERSION: u64 = 83;
+pub const RENDER_CACHE_VERSION: u64 = 84;
 // 83: retain unclassified R3D lens profiles, then classify their provenance safely.
 // 82: v0.18.1 photo-attached masks, reloadable named lens profiles and raw correction updates.
 
@@ -216,7 +216,15 @@ impl DecodedSource {
     pub fn info_or(&self, header: SourceInfo) -> SourceInfo {
         match &self.info {
             Some(info) => {
-                SourceInfo { native_long: info.native_long.or(header.native_long), lens: pinned_lens(info.lens, header.lens), ..info.clone() }
+                // Smart pixels precede optics. A freshly probed file profile in the catalog
+                // can therefore correct an older proxy without re-encoding its pixels. Keep
+                // decode-owned behavior for originals and unclassified legacy catalogs.
+                let lens = if self.from_proxy && header.lens.is_some_and(|l| l.source == lightcraft_develop::LensSource::File) {
+                    header.lens
+                } else {
+                    pinned_lens(info.lens, header.lens)
+                };
+                SourceInfo { native_long: info.native_long.or(header.native_long), lens, ..info.clone() }
             }
             None => SourceInfo { camera_tone: self.camera_tone.or(header.camera_tone), ..header },
         }

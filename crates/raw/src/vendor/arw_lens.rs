@@ -44,6 +44,10 @@ const MAX_ERROR: f64 = 0.0005;
 /// Empirical A7CR unit, fixed on four FE 24-50mm files before checking the other files and lenses.
 /// The camera-JPEG measurements and remaining coverage limits are in docs/sony-lens-corrections.md.
 const A7CR_UNIT: f64 = 15559.300457825264;
+/// Fixed 2^14 unit, checked against ILCE-7C camera JPEGs across 24, 25, 31 and 50 mm.
+const A7C_UNIT: f64 = 16384.0;
+const A7C_FRAME: (usize, usize) = (6000, 4000);
+const A7C_LENS: &str = "FE 24-50mm F2.8 G";
 const A7CR_FRAME: (usize, usize) = (9504, 6336);
 const A7CR_APPROXIMATION_PX: f64 = 0.25;
 
@@ -286,7 +290,7 @@ pub(super) fn corrections(
     order: ByteOrder,
     (raw, big): (&Ifd, bool),
     sr2: Option<&SubIfd>,
-    model: &str,
+    (model, lens, bits): (&str, Option<&str>, u32),
     geometry: SonyLensGeometry,
 ) -> (Option<SonyLensCorrections>, Option<Opcode>) {
     let plain = usize::try_from(raw.offset).ok().and_then(|at| Some(Directory { entries: bytes.get(at..)?, data: bytes, base: 0, order, big }));
@@ -313,16 +317,28 @@ pub(super) fn corrections(
     // image whose image crop and reference are native 3:2 (DefaultCrop can keep native geometry while Sony's tags
     // select an aspect crop).
     let a7cr = model == "ILCE-7CR";
-    let validated_model = DISTORTION_MODELS.contains(&model) || a7cr;
+    let a7c = model == "ILCE-7C" && lens == Some(A7C_LENS);
+    let jpeg_table = a7cr || a7c;
+    let validated_model = DISTORTION_MODELS.contains(&model) || jpeg_table;
     let in_mode = !geometry.linear_ycbcr
         && geometry.native_3_2
+        && (!a7c
+            || (bits == 14
+                && geometry.compression == 1
+                && (geometry.storage_width, geometry.storage_height) == (6048, 4024)
+                && geometry.reference == Rect::new(12, 12, 6000, 4000)))
         && distortion_table.source == Some(SonySource::RawIfd)
-        && (!a7cr || ((geometry.reference.width, geometry.reference.height) == A7CR_FRAME && geometry.image_crop == geometry.reference));
-    let a7cr_auto = distortion_setting.value.is_some_and(|s| matches!(s.meaning, SonySettingMeaning::Auto | SonySettingMeaning::ForcedAuto));
+        && (!jpeg_table
+            || ((geometry.reference.width, geometry.reference.height) == if a7c { A7C_FRAME } else { A7CR_FRAME }
+                && geometry.image_crop == geometry.reference));
+    let a7cr_auto = distortion_setting.value.is_some_and(|s| {
+        if a7c { s.meaning == SonySettingMeaning::ForcedAuto } else { matches!(s.meaning, SonySettingMeaning::Auto | SonySettingMeaning::ForcedAuto) }
+    });
     let (w, h) = (geometry.storage_width, geometry.storage_height);
     let warp = match &distortion_table.value {
+        Some(table) if in_mode && a7c && a7cr_auto => sony_jpeg_distortion(table, Rect::new(0, 0, w, h), geometry.reference, A7C_UNIT),
         Some(table) if in_mode && a7cr && a7cr_auto => a7cr_distortion(table, Rect::new(0, 0, w, h), geometry.reference),
-        Some(table) if in_mode && !a7cr => distortion(model, table, Rect::new(0, 0, w, h), geometry.reference),
+        Some(table) if in_mode && !jpeg_table => distortion(model, table, Rect::new(0, 0, w, h), geometry.reference),
         _ => None,
     };
     let distortion_status = match &distortion_table.value {
@@ -330,7 +346,7 @@ pub(super) fn corrections(
         Some(_) if warp.is_some() => SonyLensStatus::Applied,
         Some(_) if !validated_model => SonyLensStatus::NotValidatedModel,
         Some(_) if !in_mode => SonyLensStatus::NotValidatedMode,
-        Some(_) if a7cr && !a7cr_auto => SonyLensStatus::CameraCorrectionDisabled,
+        Some(_) if jpeg_table && !a7cr_auto => SonyLensStatus::CameraCorrectionDisabled,
         Some(table) if table.iter().all(|v| *v == 0) => SonyLensStatus::Neutral,
         Some(_) => SonyLensStatus::Rejected,
     };
@@ -351,11 +367,15 @@ pub(super) fn corrections(
 /// corrected radius. Its knots use the full-frame diagonal, not storage padding. Off/unknown settings
 /// and unvalidated capture modes are excluded by the caller.
 fn a7cr_distortion(table: &[i16; 16], active: Rect, crop: Rect) -> Option<Opcode> {
-    if (crop.width, crop.height) != A7CR_FRAME
-        || crop != crop.clipped(active.width, active.height)
-        || table.iter().all(|v| *v == 0)
-        || table.iter().any(|v| !(-4096..=4096).contains(v))
-    {
+    if (crop.width, crop.height) != A7CR_FRAME {
+        return None;
+    }
+    sony_jpeg_distortion(table, active, crop, A7CR_UNIT)
+}
+
+/// Shared camera-JPEG radial convention; the caller must validate the body, lens and full-frame mode.
+fn sony_jpeg_distortion(table: &[i16; 16], active: Rect, crop: Rect, unit: f64) -> Option<Opcode> {
+    if crop != crop.clipped(active.width, active.height) || table.iter().all(|v| *v == 0) || table.iter().any(|v| !(-4096..=4096).contains(v)) {
         return None;
     }
     let (cw, ch) = (crop.width as f64, crop.height as f64);
@@ -364,7 +384,7 @@ fn a7cr_distortion(table: &[i16; 16], active: Rect, crop: Rect) -> Option<Opcode
         let at = r / spacing;
         let i = (at.floor() as usize).min(14);
         let (a, b) = (f64::from(table[i]), f64::from(table[i + 1]));
-        r * (1.0 + (a + (b - a) * (at - i as f64)) / A7CR_UNIT)
+        r * (1.0 + (a + (b - a) * (at - i as f64)) / unit)
     };
     let border_min = cw.min(ch) / 2.0;
     let border_max = cw.hypot(ch) / 2.0;
@@ -606,9 +626,11 @@ mod tests {
     /// `SR2Private` IFD -> block.
     struct Arw {
         model: &'static str,
+        lens: Option<&'static str>,
         order: ByteOrder,
         bigtiff: bool,
         size: (u32, u32),
+        bits: u16,
         sony_crop: Option<[u32; 4]>,
         default_crop: Option<[u32; 4]>,
         plain: Vec<(u16, Value)>,
@@ -623,9 +645,11 @@ mod tests {
         fn new(model: &'static str, order: ByteOrder) -> Arw {
             Arw {
                 model,
+                lens: None,
                 order,
                 bigtiff: false,
                 size: (32, 24),
+                bits: 16,
                 sony_crop: Some([2, 2, 30, 20]),
                 default_crop: Some([2, 2, 30, 20]),
                 plain: plain(&TELE, 0),
@@ -640,9 +664,14 @@ mod tests {
             let mut raw = IfdBuilder::new();
             raw.set(t::MAKE, Value::Ascii("SONY".into()));
             raw.set(t::MODEL, Value::Ascii(self.model.into()));
+            if let Some(lens) = self.lens {
+                let mut exif = IfdBuilder::new();
+                exif.set(t::LENS_MODEL, Value::Ascii(lens.into()));
+                raw.set_child(t::EXIF_IFD, exif);
+            }
             raw.set(t::IMAGE_WIDTH, Value::Long(vec![w]));
             raw.set(t::IMAGE_LENGTH, Value::Long(vec![h]));
-            raw.set(t::BITS_PER_SAMPLE, Value::Short(vec![16]));
+            raw.set(t::BITS_PER_SAMPLE, Value::Short(vec![self.bits]));
             raw.set(t::SAMPLES_PER_PIXEL, Value::Short(vec![1]));
             raw.set(t::PHOTOMETRIC, Value::Short(vec![t::photometric::CFA]));
             raw.set(t::COMPRESSION, Value::Short(vec![1]));
@@ -1205,7 +1234,7 @@ mod tests {
                 let bytes = arw.build();
                 let tiff = Tiff::parse(&bytes).unwrap();
                 let run = |model: &str, geometry: SonyLensGeometry| {
-                    let (record, warp) = corrections(&bytes, order, (&tiff.ifds[0], false), None, model, geometry);
+                    let (record, warp) = corrections(&bytes, order, (&tiff.ifds[0], false), None, (model, None, 16), geometry);
                     (record.unwrap().distortion.status, warp.is_some())
                 };
                 let geometry = a7cr_geometry((9728, 6656));
@@ -1234,11 +1263,74 @@ mod tests {
                     }
                     let bytes = arw.build();
                     let tiff = Tiff::parse(&bytes).unwrap();
-                    let (record, warp) = corrections(&bytes, order, (&tiff.ifds[0], false), None, "ILCE-7CR", geometry.clone());
+                    let (record, warp) = corrections(&bytes, order, (&tiff.ifds[0], false), None, ("ILCE-7CR", None, 16), geometry.clone());
                     assert_eq!(record.unwrap().distortion.status, CameraCorrectionDisabled);
                     assert!(warp.is_none());
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a7c_exact_lens_and_full_raw_route() {
+        use SonyLensStatus::*;
+        // Exercise metadata extraction and both header/full vendor routes, not a direct model predicate.
+        for order in [Little, Big] {
+            for (lens, setting, crop, expected) in [
+                (Some(A7C_LENS), 17, [12, 12, 6000, 4000], Applied),
+                (Some(A7C_LENS), 1, [12, 12, 6000, 4000], CameraCorrectionDisabled),
+                (Some(A7C_LENS), 0, [12, 12, 6000, 4000], CameraCorrectionDisabled),
+                (None, 17, [12, 12, 6000, 4000], NotValidatedModel),
+                (Some("FE 24-50mm F2.8 G unknown"), 17, [12, 12, 6000, 4000], NotValidatedModel),
+                (Some("FE 24-70mm F2.8 GM"), 17, [12, 12, 6000, 4000], NotValidatedModel),
+                (Some(A7C_LENS), 17, [12, 12, 3936, 2624], NotValidatedMode),
+                (Some(A7C_LENS), 17, [12, 12, 6000, 3376], NotValidatedMode),
+            ] {
+                let mut arw = Arw::new("ILCE-7C", order);
+                arw.lens = lens;
+                arw.size = (6048, 4024);
+                arw.bits = 14;
+                arw.sony_crop = Some(crop);
+                arw.default_crop = Some(crop);
+                arw.plain = plain(&A7CR_WIDE, setting);
+                arw.sr2 = None;
+                let image = decode(&arw.build());
+                assert_eq!(image.metadata.lens_model.as_deref(), lens);
+                assert_eq!(sony(&image).distortion.status, expected, "{lens:?}, {setting}, {crop:?}");
+                assert_eq!(image.opcodes.list3.len(), usize::from(expected == Applied));
+            }
+        }
+    }
+
+    #[test]
+    fn a7c_rejects_untested_capture_modes() {
+        let mut arw = Arw::new("ILCE-7C", Little);
+        arw.lens = Some(A7C_LENS);
+        arw.bits = 14;
+        arw.size = (6048, 4024);
+        arw.sony_crop = Some([12, 12, 6000, 4000]);
+        arw.default_crop = arw.sony_crop;
+        arw.plain = plain(&A7CR_WIDE, 17);
+        arw.sr2 = None;
+        let bytes = arw.build();
+        let image = decode(&bytes);
+        let tiff = Tiff::parse(&bytes).unwrap();
+        let geometry = sony(&image).geometry.clone();
+        for (bits, compression, storage, reference) in [
+            (16, 1, (6048, 4024), geometry.reference),
+            (14, 32767, (6048, 4024), geometry.reference),
+            (14, 7, (6048, 4024), geometry.reference),
+            (14, 1, (6080, 4040), geometry.reference),
+            (14, 1, (6048, 4024), Rect::new(0, 0, 6000, 4000)),
+        ] {
+            let mut mode = geometry.clone();
+            mode.compression = compression;
+            (mode.storage_width, mode.storage_height) = storage;
+            mode.reference = reference;
+            mode.image_crop = reference;
+            let (record, warp) = corrections(&bytes, Little, (&tiff.ifds[0], false), None, ("ILCE-7C", Some(A7C_LENS), bits), mode);
+            assert_eq!(record.unwrap().distortion.status, SonyLensStatus::NotValidatedMode);
+            assert!(warp.is_none());
         }
     }
 

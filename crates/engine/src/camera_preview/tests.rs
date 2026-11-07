@@ -2972,3 +2972,75 @@ fn external_profile_vignetting_precedes_geometry_in_every_orientation() {
         assert_eq!(plain_clip, fallback_clip);
     }
 }
+
+#[test]
+fn pooled_tone_plateau_retains_measured_contrast_and_chroma() {
+    let knots = [
+        [0.021289112, 0.020544535],
+        [0.026207158, 0.025435437],
+        [0.029949069, 0.028429877],
+        [0.03346042, 0.033604473],
+        [0.036785357, 0.033604473],
+        [0.040707685, 0.039855104],
+        [0.043779366, 0.041808464],
+        [0.046641026, 0.04587902],
+        [0.04916722, 0.05479819],
+        [0.051294032, 0.0583676],
+        [0.053354707, 0.061742295],
+        [0.055499803, 0.068455935],
+        [0.05767443, 0.075682476],
+        [0.059252165, 0.08119551],
+        [0.060841642, 0.08522306],
+        [0.062462464, 0.08941605],
+        [0.06434034, 0.094382025],
+        [0.066079944, 0.094382025],
+        [0.06840841, 0.094382025],
+        [0.070967905, 0.094382025],
+        [0.07412242, 0.094382025],
+        [0.07874262, 0.094382025],
+        [0.08458781, 0.094382025],
+        [0.09410177, 0.104505025],
+        [0.106498174, 0.1444537],
+        [0.12371078, 0.19334845],
+        [0.14230327, 0.22675207],
+        [0.17598534, 0.26496696],
+        [0.213267, 0.31023106],
+        [0.25938767, 0.3386893],
+        [0.33685815, 0.39038357],
+        [0.55683446, 0.49088645],
+    ];
+    let tone = CameraTone::new(knots).unwrap().with_chroma([0.8; 8]).unwrap();
+    assert_eq!(tone.apply(0.066), tone.apply(0.083));
+    let fixed = super::tone::repair_pooled_tone(tone);
+    assert_eq!(fixed.chroma(), tone.chroma());
+    for i in 16..=22 {
+        assert!(fixed.knots()[i][1] < fixed.knots()[i + 1][1]);
+    }
+    assert!(fixed.apply(0.083) > fixed.apply(0.066) + 0.006);
+    for i in 0..31 {
+        let a = fixed.knots()[i];
+        let b = fixed.knots()[i + 1];
+        let slope = (f64::from(b[1]) + ELASTICITY_BLACK).ln() - (f64::from(a[1]) + ELASTICITY_BLACK).ln();
+        assert!(slope / (f64::from(b[0]) / f64::from(a[0])).ln() <= MAX_TONE_ELASTICITY + 1e-5);
+    }
+}
+#[test]
+fn plateau_bridge_preserves_safe_camera_tone_exactly() {
+    let knots = std::array::from_fn(|i| {
+        let x = 0.01 + i as f32 * 0.015;
+        [x, x * 0.8]
+    });
+    let tone = CameraTone::new(knots).unwrap().with_chroma([0.7; 8]).unwrap();
+    assert_eq!(super::tone::repair_pooled_tone(tone), tone);
+}
+#[test]
+fn flat_camera_tone_gets_generic_luminance_without_losing_chroma() {
+    let knots = std::array::from_fn(|i| {
+        let x = 0.01 + i as f32 * 0.015;
+        [x, 0.1]
+    });
+    let tone = CameraTone::new(knots).unwrap().with_chroma([0.7; 8]).unwrap();
+    let fixed = super::tone::repair_pooled_tone(tone);
+    assert!(fixed.knots().windows(2).all(|p| p[0][1] < p[1][1]));
+    assert_eq!(fixed.chroma(), tone.chroma());
+}

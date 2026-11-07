@@ -47,7 +47,11 @@ pub fn missing_available(cat: &Catalog, db: Option<&lightcraft_lensdb::LensDb>, 
             let lens = p.meta.lens.trim();
             match &p.embedded_lens {
                 None if lens.is_empty() => again,
-                None => db.is_some_and(|db| crate::lens_profiles::profile_name(db, &p.meta.camera, lens).is_some()),
+                // Only the newly validated file-profile combination bypasses a database
+                // name match. Other missing named profiles retain their existing filter.
+                None => {
+                    newly_supported_file_profile(p) || db.is_some_and(|db| crate::lens_profiles::profile_name(db, &p.meta.camera, lens).is_some())
+                }
                 Some(l) if l.source == LensSource::Legacy => true,
                 Some(_) => again && from_database(p),
             }
@@ -55,6 +59,13 @@ pub fn missing_available(cat: &Catalog, db: Option<&lightcraft_lensdb::LensDb>, 
         .filter_map(|p| crate::cmd::missing::checked_path(p).map(|path| Missing { id: p.id, path: path.to_string() }))
         .filter(|m| seen.insert(m.id))
         .collect()
+}
+
+/// Narrow metadata gate for the newly validated A7C conversion. The raw reader still checks
+/// Bayer layout, framing, table provenance and the camera correction setting. Once a file
+/// profile is stored this is no longer considered by `missing_available`.
+fn newly_supported_file_profile(p: &Photo) -> bool {
+    p.meta.camera.trim() == "SONY ILCE-7C" && p.meta.lens.trim() == "FE 24-50mm F2.8 G" && matches!((p.width, p.height), (6000, 4000) | (4000, 6000))
 }
 
 /// Probe each listed photo's file as Reload would. Doesn't touch the session.

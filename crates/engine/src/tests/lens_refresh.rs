@@ -428,3 +428,33 @@ fn legacy_database_cache_switches_and_removal_are_isolated() {
     s.accept(&result);
     assert!(matches!(s.render_job(PhotoId(1), 16, 12, false, true).unwrap().source, crate::media::SourceRef::File { .. }));
 }
+
+#[test]
+fn newly_supported_a7c_profile_is_found_by_normal_lookup_without_database() {
+    let mut s = Session::new();
+    for id in 1..=4 {
+        let mut p = raw(id, "FE 24-50mm F2.8 G", false);
+        p.meta.camera = "SONY ILCE-7C".into();
+        (p.width, p.height) = (6000, 4000);
+        if id == 2 {
+            p.meta.camera = "SONY ILCE-7CM2".into();
+        }
+        if id == 3 {
+            p.meta.lens = "FE 24-105mm F4 G OSS".into();
+        }
+        if id == 4 {
+            p.width = 3000;
+        }
+        s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    }
+    let listed = crate::cmd::lens_refresh::missing_available(&s.catalog, None, None, false);
+    assert_eq!(listed.iter().map(|m| m.id.0).collect::<Vec<_>>(), [1]);
+    let mut file_lens = lens(-0.01);
+    file_lens.source = LensSource::File;
+    let results = listed.into_iter().map(|m| (m, Ok(crate::media::ProbeInfo { embedded_lens: Some(file_lens), ..Default::default() }))).collect();
+    crate::cmd::lens_refresh::apply(&mut s, results).unwrap();
+    assert!(
+        crate::cmd::lens_refresh::missing_available(&s.catalog, None, None, false).is_empty(),
+        "successful migration is not repeated at another startup"
+    );
+}

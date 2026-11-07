@@ -240,6 +240,19 @@ fn median(values: &mut [f64]) -> Option<f64> {
     values.get(values.len() / 2).copied()
 }
 
+/// Isotonic pooling can erase a scene interval's contrast while its average JPEG error still
+/// passes. For such an unsafe interior plateau use the existing generic luminance curve, retaining
+/// the accepted matrix, hue/saturation table and chroma. Safe camera curves are byte-identical.
+/// Quantile refitting was insufficient on the diagnosed Sony frame; a neutral colour fallback
+/// would unnecessarily discard its valid calibrated colour as well.
+pub(super) fn repair_pooled_tone(tone: CameraTone) -> CameraTone {
+    if !tone.knots()[1..31].windows(2).any(|p| p[0][1] == p[1][1]) {
+        return tone;
+    }
+    let generic = ToneMap::new(0.0, 0.0, 0.0);
+    CameraTone::new(tone.knots().map(|[x, _]| [x, generic.apply(x)])).and_then(|t| t.with_chroma(*tone.chroma())).unwrap_or(tone)
+}
+
 /// The earlier tone fit, kept as the fallback of [`ToneFit`]: the JPEG's median per equal-population
 /// bin of scene luminance, then pooled-adjacent-violators isotonic regression. It follows the
 /// per-pixel pairs closely when the two images are registered, which is why it can clear the

@@ -802,3 +802,24 @@ fn an_export_develops_from_a_source_twice_its_size() {
     }
     assert_eq!(s.render_job(id, 1600, 1600, false, true).unwrap().level, SourceLevel::Preview, "a view keeps the preview");
 }
+
+/// A smart proxy is stored before optics. Newly probed file facts can correct its unchanged
+/// pixels offline, while a live original keeps its own decode facts if the file was replaced.
+#[test]
+fn classified_catalog_file_lens_corrects_older_smart_proxy_without_reencoding() {
+    use lightcraft_develop::{EmbeddedLens, EmbeddedWarp, LensSource};
+    let lens = EmbeddedLens {
+        source: LensSource::File,
+        warp: Some(EmbeddedWarp { planes: [[1.0, -0.01, 0.0, 0.0, 0.0, 0.0]; 3], radius: 0.6, ..Default::default() }),
+        ..Default::default()
+    };
+    let header = SourceInfo { lens: Some(lens), ..Default::default() };
+    let pixels = Arc::new(Rgb32f::new(8, 8));
+    let mut source = DecodedSource::new(pixels.clone(), Some(SourceInfo::default()));
+    assert!(source.info_or(header.clone()).lens.is_none(), "live file owns its own correction");
+    source.from_proxy = true;
+    assert_eq!(source.info_or(header).lens, Some(lens), "catalog's freshly classified file profile corrects offline proxy");
+    assert!(Arc::ptr_eq(&pixels, &source.image), "no proxy pixel rewrite or second warp");
+    let legacy = SourceInfo { lens: Some(EmbeddedLens { source: LensSource::Legacy, ..lens }), ..Default::default() };
+    assert!(source.info_or(legacy).lens.is_none(), "unclassified old catalog facts do not override proxy");
+}

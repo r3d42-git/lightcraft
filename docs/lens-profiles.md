@@ -45,6 +45,16 @@ file named no lens at import. Ticking **Enable Lens Corrections** on a photo wit
 too. `library.refreshLensProfiles` (`all: true` for the wider pass), `lens.downloadDatabase` (which also selects the
 downloaded folder) and `lens.databaseStatus` do the same for agents.
 
+The normal background lookup also discovers missing file profiles for the validated
+SONY ILCE-7C / FE 24-50mm F2.8 G full-resolution combination, without a database match.
+Once classified it is no longer probed. Smart pixels precede optics, so a freshly
+classified catalog file profile is also used with an older smart proxy without
+rewriting or recompressing it. Their previously stored camera color/tone fit remains
+unchanged: that fit may have been estimated before the distortion geometry was supported.
+For fully current offline color fits, rebuild only the affected smart previews from their
+online originals (targeted `library.buildSmartPreviews`, discard then build). This update
+does not invalidate or rescan unrelated smart previews.
+
 A database profile is pinned to the photo: every render (fresh decode, cached preview, thumbnail, export) uses the
 profile the catalog holds, never one a decode looked up in a newer database, and the profile is part of the render
 and thumbnail cache keys, so a changed profile never shows an old cached render. A file's own correction comes from

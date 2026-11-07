@@ -384,3 +384,27 @@ residuals and spatial coverage, and check crop/aspect and compression variants. 
 useful when the camera actually applied distortion correction; an Off JPEG cannot certify an On warp.
 Prefer same-renderer Sony On/Off exports when the camera setting or geometry is ambiguous. Table-fit
 error alone only checks our polynomial approximation, not whether the table's interpretation is correct.
+
+## ILCE-7C + FE 24-50mm F2.8 G
+
+The R3D addition supports the exact `ILCE-7C` / `FE 24-50mm F2.8 G` pair in the measured capture mode:
+uncompressed (Compression 1), 14-bit Bayer storage 6048 × 4024, a native 3:2 6000 × 4000
+reference crop at (12,12) equal to the image crop, a readable raw-IFD 16-sample distortion
+table, and distortion forced Auto (17). Other lens names, missing identity, compressed
+formats, Auto (1), APS-C/aspect crops, different origins/storage/bit depths, linear YCbCr,
+SR2-only tables and disabled/unknown settings do not enable this path.
+
+Its fixed `A7C_UNIT` is 16384 (2^14). Four private calibration files across 24, 25, 31 and
+50 mm favour a scale around 16513; the fixed standard unit avoids fitting that small
+sample too closely and improves on reusing A7CR's empirical 15559.300457825264.
+Table knots use the reference diagonal divided by 30. For corrected radius r, source
+radius is r × (1 + interpolated_table(r) / unit); the existing border zoom and bounded
+monotonic polynomial approximation generate `WarpRectilinear`. A7CR retains its own unit
+and frame gate. This establishes the measured pair/mode only. Shading and lateral CA
+remain decoded-only. No Lensfun lookup or new calibration file is used.
+
+`a7c_exact_lens_and_full_raw_route` writes an ExifIFD LensModel and exercises header and
+full RAW decode in both byte orders: accepted ForcedAuto, rejected Auto/Off, missing or
+incorrect lens and APS-C/aspect rejection. `a7c_rejects_untested_capture_modes` independently
+checks the additional bit-depth, compression, storage and crop-origin gates. Synthetic
+route tests prove gating and opcode propagation; real photo comparisons establish geometry.
