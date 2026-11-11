@@ -14,6 +14,10 @@ impl LightcraftApp {
     /// Retained for desktop host compatibility. Fork builds perform no automatic update checks.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_startup_update_check(&mut self, _on: bool) {}
+
+    /// Retained for desktop shutdown compatibility. Fork builds never install upstream updates.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn start_pending_update(&mut self) {}
 }
 
 pub(crate) fn blocks_input(_app: &LightcraftApp) -> bool {
@@ -42,6 +46,15 @@ mod tests {
             output.borrow_mut().push(url.to_owned());
             Ok(())
         }));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            app.set_startup_update_check(true);
+            app.start_pending_update();
+        }
+        let ctx = egui::Context::default();
+        tick(&mut app, &ctx);
+        show(&mut app, &ctx);
+        assert!(seen.borrow().is_empty());
         assert_eq!(check(&mut app).unwrap()["url"], RELEASES);
         assert_eq!(&*seen.borrow(), &[RELEASES.to_owned()]);
         assert!(!blocks_input(&app));
