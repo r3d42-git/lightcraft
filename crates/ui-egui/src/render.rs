@@ -438,6 +438,13 @@ impl Renderer {
         pool
     }
 
+    /// Keep native jobs, including quick stand-ins that bypass render offloads, queued in tests.
+    /// Install before the first frame, so source decoding can be advanced synchronously.
+    #[cfg(test)]
+    pub(crate) fn hold_worker_jobs(&mut self) {
+        self.pool = Self::pool(0);
+    }
+
     /// Explicit worker count for hosts and bounded validation runs (one to six on native).
     /// Browser hosts continue to use inline jobs or their installed worker offload.
     pub fn with_worker_threads(threads: usize) -> Self {

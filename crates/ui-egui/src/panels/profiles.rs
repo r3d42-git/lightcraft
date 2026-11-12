@@ -264,7 +264,7 @@ mod tests {
     use lightcraft_catalog::{MediaKind, Op, Photo, Source};
     use lightcraft_engine::media::SourceLevel;
     use lightcraft_pipeline::{ColourBasis, ColourSource, SourceInfo};
-    use std::{sync::Arc, time::Duration};
+    use std::{cell::Cell, rc::Rc, sync::Arc, time::Duration};
 
     #[test]
     fn colour_readout_follows_selection_in_both_panels() {
@@ -306,25 +306,35 @@ mod tests {
                 },
             ))
         });
-        let app = LightcraftApp::new(session, crate::Services { png: None, ..Default::default() });
+        // Keep the synthetic decoder installed for the lifetime of every queued source ref.
+        // Neither renders nor their quick stand-ins may resolve a photo before its pending
+        // assertion. The offload gate holds normal renders; the held pool covers quick jobs.
+        session.media.file_loader = Some(loader);
+        let mut app = LightcraftApp::new(session, crate::Services { png: None, ..Default::default() });
+        app.renderer.hold_worker_jobs();
+        app.renderer.set_offload(Box::new(crate::headless::RenderGate::new(Rc::new(Cell::new(false)))));
         let mut h = crate::headless::Headless::new(app, [1400.0, 1400.0], 1.0);
         let timeout = Duration::from_secs(30);
         for language in ["en", "de"] {
             for panel in ["edit", "profiles"] {
                 h.app.session.media.clear_sources();
                 for (i, id) in ids.iter().enumerate() {
-                    h.request("engine.execute", json!({"command":"library.select", "params":{"ids":[id.0], "active":id.0}}), timeout);
-                    h.request("ui.set", json!({"view":"detail", "right":panel, "language":language}), timeout);
+                    let selected = h.request("engine.execute", json!({"command":"library.select", "params":{"ids":[id.0], "active":id.0}}), timeout);
+                    assert_eq!(selected["ok"], true, "{selected}");
+                    assert_eq!(h.app.session.active(), Some(*id));
+                    let configured = h.request("ui.set", json!({"view":"detail", "right":panel, "language":language}), timeout);
+                    assert_eq!(configured["ok"], true, "{configured}");
                     h.step();
                     let text = h.painted_text().join("\n");
                     assert_eq!(h.app.widgets.iter().any(|(name, _)| name == "label:cameraColourSource"), i < sources.len(), "{panel}: {i}");
                     if i < sources.len() {
-                        assert!(text.contains(if language == "de" { "nach dem Dekodieren" } else { "not available until" }), "{text}");
+                        assert!(
+                            text.contains(if language == "de" { "nach dem Dekodieren" } else { "not available until" }),
+                            "{panel} {language} {i}: {text}"
+                        );
                     }
                     if i < sources.len() {
-                        h.app.session.media.file_loader = Some(loader.clone());
                         h.app.session.source_now(*id, SourceLevel::Preview).unwrap();
-                        h.app.session.media.file_loader = None;
                         h.step();
                         let text = h.painted_text().join("\n");
                         assert!(text.contains(if language == "de" { sources[i].2 } else { sources[i].1 }), "{panel} {language} {i}: {text}");
