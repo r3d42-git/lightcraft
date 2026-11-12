@@ -49,15 +49,25 @@ fn box_row<T: Pixel>(row: &mut [T], tmp: &mut Vec<T>, r: usize) {
     let last = w - 1;
     let inv = 1.0 / (2 * r + 1) as f32;
     let mut acc = T::zero();
-    // the window [-r, r] with clamped edges: r copies of the first pixel, the pixels 0..=min(r, last), then the
-    // last pixel for each offset past it (O(w), not O(r), however large the radius)
-    acc = acc.madd(s[0], r as f32);
-    for v in &s[..=r.min(last)] {
-        acc = acc.madd(*v, 1.0);
-    }
-    // only when the window reaches past the last pixel: a NaN there must not poison a row it isn't in
-    if r > last {
-        acc = acc.madd(s[last], (r - last) as f32);
+    // Keep the historical f32 summation for ordinary radii: multiplying the repeated edge
+    // changes rounding and can alter already-edited photos. This branch is still O(w), since
+    // r <= w bounds its initial window to at most 2*w+1 samples. Huge radii use the bounded
+    // priming below, so hostile blur settings cannot make the work proportional to r.
+    if r <= w {
+        for i in 0..=r.saturating_mul(2) {
+            acc = acc.madd(s[i.saturating_sub(r).min(last)], 1.0);
+        }
+    } else {
+        // the window [-r, r] with clamped edges: r copies of the first pixel, the pixels 0..=min(r, last), then the
+        // last pixel for each offset past it (O(w), not O(r), however large the radius)
+        acc = acc.madd(s[0], r as f32);
+        for v in &s[..=r.min(last)] {
+            acc = acc.madd(*v, 1.0);
+        }
+        // only when the window reaches past the last pixel: a NaN there must not poison a row it isn't in
+        if r > last {
+            acc = acc.madd(s[last], (r - last) as f32);
+        }
     }
     for x in 0..w {
         row[x] = T::zero().madd(acc, inv);
@@ -184,6 +194,16 @@ pub fn gaussian_taps<T: Pixel>(img: &Image<T>, taps: &[f32]) -> Image<T> {
 
 #[cfg(test)]
 mod tests {
+    /// Legacy sharpening uses this blur even in process V1: ordinary windows must keep
+    /// the old repeated-addition rounding, while oversized windows retain bounded work.
+    #[test]
+    fn ordinary_box_radius_preserves_legacy_rounding() {
+        let mut row = [0.0_f32; 40];
+        row[0] = 0.001_003_009_f32;
+        box_row(&mut row, &mut Vec::new(), 9);
+        assert_eq!(row[0].to_bits(), 0x3a0a_62be);
+    }
+
     #[test]
     fn a_non_finite_last_pixel_stays_out_of_windows_that_do_not_reach_it() {
         let mut row = [1.0f32; 8];

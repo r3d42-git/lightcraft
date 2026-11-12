@@ -42,17 +42,22 @@ pub(super) fn lens_blur(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopS
             let auto = b.shape == lightcraft_develop::FocusShape::Auto;
             let none = if auto { crate::i18n::tr("Subject") } else { crate::i18n::tr(b.shape.label()) };
             let shown = chosen.map_or_else(|| none.to_string(), |m| m.name.clone());
-            let r = crate::widgets::dropdown(ui, "lensBlurFocus", &shown, t.font(14.0), t.text_label);
+            // Mask names are user text: keep the chevron inside the remaining panel width.
+            // The shared bounded dropdown shows the full selected name on hover.
+            let width = ui.available_width();
+            let r = crate::widgets::dropdown_within(ui, "lensBlurFocus", &shown, t.font(14.0), t.text_label, width);
             let r = r.on_hover_text(crate::i18n::tr("What stays sharp: the photo's subject, or the selection of one of its masks"));
             let mut pick: Option<Option<u32>> = None;
             egui::Popup::menu(&r).show(|ui| {
+                ui.set_max_width(r.rect.width().clamp(160.0, 280.0));
                 let item = ui.selectable_label(chosen.is_none() && auto, crate::i18n::tr("Subject"));
                 register(ui, "lensBlurFocus:subject", item.rect);
                 if item.clicked() {
                     pick = Some(None);
                 }
                 for m in &d.masks {
-                    let item = ui.selectable_label(chosen.is_some_and(|c| c.id == m.id), m.name.as_str());
+                    // Wrap the full name in the menu instead of widening it past the viewport.
+                    let item = ui.add(egui::Button::selectable(chosen.is_some_and(|c| c.id == m.id), m.name.as_str()).wrap());
                     register(ui, format!("lensBlurFocus:mask:{}", m.id), item.rect);
                     if item.clicked() {
                         pick = Some(Some(m.id));

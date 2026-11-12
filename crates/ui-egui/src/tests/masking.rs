@@ -2331,6 +2331,53 @@ fn lens_blur_shape_buttons_pick_the_focus_shape() {
     h.settle(SETTLE);
 }
 
+/// A long focus-mask name must leave its arrow reachable in a narrow Edit panel at 200%.
+/// The selected value is elided with its full name on hover; the menu wraps the complete name.
+#[test]
+fn lens_blur_long_focus_name_fits_and_remains_selectable_at_double_scale() {
+    let mut h = detail("panel.masking");
+    assert_eq!(h.request("ui.zoomFactor", json!({"factor": 2.0}), T)["ok"], true);
+    assert_eq!(h.request("ui.resize", json!({"width": 900, "height": 1100}), T)["ok"], true);
+    assert_eq!(
+        h.request(
+            "ui.set",
+            json!({"language": "de", "right": "edit", "rightWidth": 330, "leftPanel": false, "filmstrip": false,
+                   "histogram": false, "openSections": ["lensBlur"]}),
+            T,
+        )["ok"],
+        true
+    );
+    let name = "Person im Vordergrund – Schärfebereich mit Schutz der Haare und Brillenkante sowie außergewöhnlich langen Maskennamen";
+    exec(&mut h, "mask.add", json!({"kind": "radial", "name": name}));
+    let id = develop(&h).masks[0].id;
+    exec(&mut h, "develop.merge", json!({"settings": {"lens_blur": {"enabled": true, "amount": 20, "focus_mask": id}}}));
+    h.step();
+    h.step();
+    let widget = |h: &Headless, name: &str| h.app.widgets.iter().find(|(key, _)| key == name).expect("widget").1;
+    let panel = widget(&h, "panel:right_panel");
+    let dropdown = widget(&h, "dropdown:lensBlurFocus");
+    assert!(dropdown.left() >= panel.left() && dropdown.right() <= panel.right(), "dropdown {dropdown:?} must fit {panel:?}");
+    assert!(dropdown.width() > 20.0, "room for the name and chevron");
+    assert_eq!(h.request("ui.hoverWidget", json!({"id": "dropdown:lensBlurFocus"}), T)["ok"], true);
+    assert!(
+        h.step_until(Duration::from_secs(5), |h| {
+            h.view.ctx.memory(|m| m.areas().visible_layer_ids().into_iter().any(|l| l.order == egui::Order::Tooltip))
+                && h.painted_text().iter().any(|text| text.contains(name))
+        }),
+        "the complete selected name is available on hover"
+    );
+    click(&mut h, "dropdown:lensBlurFocus");
+    let item = widget(&h, &format!("lensBlurFocus:mask:{id}"));
+    assert!(item.width() <= 280.0 && item.height() > dropdown.height(), "the full popup name wraps: {item:?}");
+    assert!(h.painted_text().iter().any(|text| text == name), "the menu contains the complete mask name");
+    click(&mut h, "lensBlurFocus:subject");
+    assert!(develop(&h).lens_blur.focus_mask.is_none());
+    click(&mut h, "dropdown:lensBlurFocus");
+    click(&mut h, &format!("lensBlurFocus:mask:{id}"));
+    assert_eq!(develop(&h).lens_blur.focus_mask, Some(id));
+    crate::i18n::set_language(crate::i18n::Locale::En);
+}
+
 /// While Apply is off the focus controls don't respond; on, Move & Resize drags the fixed shape on
 /// the photo (one undo step per drag) and a shape button puts it back in the middle.
 #[test]
