@@ -239,8 +239,8 @@ fn op_variants_are_versioned() {
             Op::SetDenoiseState { .. } => 10,
         }
     }
-    /// R3D v14: shared mask grids in snapshots and history.
-    const NEWEST_FIELDS: u32 = 14;
+    /// R3D v15: Lens Blur (v14: shared mask grids in snapshots and history).
+    const NEWEST_FIELDS: u32 = 15;
     let newest = since(&Op::SetHistoryCursor { id: PhotoId(1), cursor: None });
     assert_eq!(newest.max(NEWEST_FIELDS), VERSION, "the newest op's or fields' version must be the current format version");
 }

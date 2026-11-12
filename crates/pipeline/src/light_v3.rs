@@ -284,7 +284,7 @@ pub fn applies(s: &DevelopSettings, info: &SourceInfo) -> bool {
     let camera_look = info.raw && info.camera_tone.as_ref().is_some_and(|curve| !curve.is_generic());
     match s.process.process() {
         Process::V1 | Process::V2 | Process::V3 => false,
-        Process::V4 | Process::V5 | Process::V6 | Process::V7 => camera_look,
+        Process::V4 | Process::V5 | Process::V6 | Process::V7 | Process::V8 => camera_look,
     }
 }
 

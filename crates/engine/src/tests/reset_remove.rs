@@ -101,7 +101,7 @@ fn add_photo(s: &mut Session, id: PhotoId, import_look: bool, removed: bool) -> 
     expected.geometry = edited.geometry.clone();
     expected.masks = edited.masks.clone();
     expected.red_eye = edited.red_eye.clone();
-    expected.lens_blur = edited.lens_blur;
+    expected.lens_blur = edited.lens_blur.clone();
     expected.enhance.raw_details = true;
     expected.enhance.super_resolution = true;
     expected.disabled_sections = vec!["geometry".into(), "lensBlur".into()];

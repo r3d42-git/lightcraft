@@ -35,7 +35,7 @@ fn processes_before_v7_keep_the_value_noise() {
             Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 => {
                 assert!(matches!(model, Some(GrainModel::Value(_))), "{p:?}")
             }
-            Process::V7 => assert!(matches!(model, Some(GrainModel::Crystal(_))), "{p:?}"),
+            Process::V7 | Process::V8 => assert!(matches!(model, Some(GrainModel::Crystal(_))), "{p:?}"),
         }
         assert!(GrainModel::new(&on(p, 0.0), 2000.0, false).is_none(), "{p:?}: no grain at Amount 0");
     }
@@ -98,9 +98,9 @@ fn hostile_grain_settings_render() {
     }
 }
 
-/// R3D's generic fallback must keep its contrast and black operators when V7 adds grain.
+/// R3D's generic fallback keeps Contrast and Blacks in V7/V8 while their new effects are off.
 #[test]
-fn without_grain_v7_preserves_the_raw_generic_fallback() {
+fn newer_processes_preserve_the_raw_generic_fallback() {
     let src = Rgb32f::from_fn(64, 48, |x, y| {
         let v = 0.001 + (x + y * 64) as f32 / 3072.0 * 3.0;
         [v, v * 0.7, v * 0.4]
@@ -112,7 +112,9 @@ fn without_grain_v7_preserves_the_raw_generic_fallback() {
         s.light.blacks = blacks;
         let req = RenderRequest::fit(64, 48);
         let before = render(&src, &info, &s, &req).image;
-        s.process = Process::V7.version();
-        assert_eq!(before.data, render(&src, &info, &s, &req).image.data);
+        for process in [Process::V7, Process::V8] {
+            s.process = process.version();
+            assert_eq!(before.data, render(&src, &info, &s, &req).image.data, "{process:?}");
+        }
     }
 }

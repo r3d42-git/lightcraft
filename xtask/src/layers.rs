@@ -37,7 +37,6 @@ pub const TABLE: &[(&str, Class)] = &[
     ("geom", Class::Layer(0)),
     ("color", Class::Layer(0)),
     ("raster", Class::Layer(0)),
-    ("tiff", Class::Layer(0)),
     ("sysmem", Class::Layer(0)),
     ("fs-security", Class::Standalone),
     ("wincolor", Class::Layer(0)),
@@ -80,7 +79,6 @@ pub const TABLE: &[(&str, Class)] = &[
 /// L1: `raw` and `codecs` read metadata through `meta`; `develop` uses `meta` for XMP.
 pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
     &["geom", "color", "raster"],
-    &["tiff", "raster"],
     &["denoise-core", "denoise"],
     &["meta", "raw"],
     &["meta", "codecs"],
