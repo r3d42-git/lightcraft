@@ -928,28 +928,15 @@ pub fn flyout_row(ui: &mut Ui, id: &str, title: &str, icon: Icon, open: bool) ->
 
 /// A small bordered text button (Auto, B&W, HDR…).
 pub fn text_button(ui: &mut Ui, id: &str, label: &str, active: bool) -> Response {
-    text_button_style(ui, id, label, active, false)
-}
-
-/// A header toggle with a solid, contrasting fill when its current setting is selected.
-pub fn filled_text_button(ui: &mut Ui, id: &str, label: &str, active: bool) -> Response {
-    text_button_style(ui, id, label, active, true)
-}
-
-fn text_button_style(ui: &mut Ui, id: &str, label: &str, active: bool, filled: bool) -> Response {
     let label = if id.starts_with("labelSet-") { label } else { crate::i18n::tr(label) };
     let t = Tokens::get(ui.ctx());
     let font = t.semibold(11.5);
-    let selected = active && filled;
-    let text = if selected { t.canvas } else { t.text };
-    let galley = ui.painter().layout_no_wrap(label.to_string(), font, text);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font, t.text);
     let size = vec2(text_button_width(galley.size().x), 24.0);
     let (r, resp) = ui.allocate_exact_size(size, Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, active, label));
     register(ui, format!("button:{id}"), r);
-    let fill = if selected {
-        t.text
-    } else if active {
+    let fill = if active {
         t.pressed
     } else if resp.hovered() {
         t.hover
@@ -957,8 +944,8 @@ fn text_button_style(ui: &mut Ui, id: &str, label: &str, active: bool, filled: b
         t.button
     };
     let p = ui.painter();
-    p.rect(r, CornerRadius::same(4), fill, Stroke::new(1.0, if selected { t.text } else { t.button_border }), StrokeKind::Inside);
-    p.galley(r.center() - galley.size() / 2.0, galley, text);
+    p.rect(r, CornerRadius::same(4), fill, Stroke::new(1.0, t.button_border), StrokeKind::Inside);
+    p.galley(r.center() - galley.size() / 2.0, galley, t.text);
     resp
 }
 

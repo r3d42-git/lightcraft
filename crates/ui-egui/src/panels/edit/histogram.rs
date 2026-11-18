@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_header_selected_buttons_have_solid_fills() {
+    fn edit_header_selected_buttons_use_the_theme_pressed_fill() {
         let language = crate::i18n::language();
         crate::i18n::set_language(crate::i18n::Locale::De);
         let mut view = crate::headless::HeadlessView::new();
@@ -344,7 +344,7 @@ mod tests {
                 // Sample a fill pixel away from the stroke, rounded corner and label.
                 let p = rect.left_top() + vec2(5.0, 5.0);
                 let fill = image.pixels[p.y as usize * image.size[0] + p.x as usize];
-                assert_eq!(fill, if selected { tokens.text } else { tokens.button }, "{name}: {id}");
+                assert_eq!(fill, if selected { tokens.pressed } else { tokens.button }, "{name}: {id}");
             }
             if let Ok(path) = std::env::var("LIGHTCRAFT_AUTO_HEADER_SHOTS") {
                 let path = std::path::Path::new(&path);

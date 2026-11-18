@@ -1504,8 +1504,6 @@ use tests::xmp as tests_xmp;
 
 #[cfg(test)]
 mod tests_export_safety;
-#[cfg(test)]
-mod tests_preview_prep;
 /// The turn or flip that takes orientation `from` to `to` (`None` when they are the same): what the
 /// masks, on the oriented photo, must follow ([`lightcraft_pipeline::mask_space::turn`]).
 pub(crate) fn orientation_change(from: lightcraft_geom::Orientation, to: lightcraft_geom::Orientation) -> Option<lightcraft_geom::Orientation> {

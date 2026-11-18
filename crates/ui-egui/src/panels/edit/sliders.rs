@@ -347,7 +347,7 @@ pub(super) fn header_buttons(ui: &mut egui::Ui, auto: bool, bw: bool, hdr: bool,
             ui.spacing_mut().item_spacing.x = GAP;
             for &i in row {
                 let (id, label, active) = left[i];
-                let mut resp = crate::widgets::filled_text_button(ui, id, crate::i18n::tr(label), active);
+                let mut resp = crate::widgets::text_button(ui, id, crate::i18n::tr(label), active);
                 if id == "hdr" {
                     // HDR editing, next to B&W as Lightroom has it
                     resp = resp.on_hover_text(crate::i18n::tr("Edit in HDR: highlights above SDR white, for HDR exports and displays"));
