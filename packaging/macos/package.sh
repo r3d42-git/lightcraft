@@ -6,6 +6,10 @@
 #
 # Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build] [--dev-app]
 # Fonts: use CRAFT_FONTS_DIR or ../craft-fonts; download the pinned checkout if absent.
+# Okeinla: set LIGHTCRAFT_ONNXRUNTIME_PACKAGE to the installed onnxruntime
+# 1.23.2 arm64 wheel's `onnxruntime` directory, use --arch aarch64 and
+# set MACOS_SIGN_IDENTITY to a Developer ID Application identity.
+# With --skip-build, the inputs must already be built with the okeinla-model feature.
 #
 # Signing (env):
 #   MACOS_SIGN_IDENTITY   codesign identity (name or SHA-1). Default "-" = ad-hoc (local testing;
@@ -27,7 +31,7 @@ while [ $# -gt 0 ]; do
     --arch) ARCH="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --dev-app) DEV_APP=1; shift ;;
-    -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -37,6 +41,17 @@ case "$ARCH" in
   x86_64) TARGETS=(x86_64-apple-darwin) ;;
   *) echo "unknown --arch $ARCH" >&2; exit 2 ;;
 esac
+ONNXRUNTIME_FEATURES=()
+if [[ -n "${LIGHTCRAFT_ONNXRUNTIME_PACKAGE:-}" ]]; then
+  if [[ "$ARCH" != aarch64 ]]; then
+    echo "error: LIGHTCRAFT_ONNXRUNTIME_PACKAGE requires --arch aarch64" >&2
+    exit 2
+  fi
+  # shellcheck source=onnxruntime.sh
+  . "$HERE/onnxruntime.sh"
+  validate_onnxruntime
+  ONNXRUNTIME_FEATURES=(--features lightcraft/okeinla-model,lightcraft-cli/okeinla-model)
+fi
 
 # Keep in sync with LSMinimumSystemVersion in Info.plist.in.
 export MACOSX_DEPLOYMENT_TARGET=11.0
@@ -51,14 +66,20 @@ NOTARIZE=0
 MACOS_NOTARY_PROFILE="${MACOS_NOTARY_PROFILE-ToolBoxS}"
 NOTARY_AUTH=(--keychain-profile "$MACOS_NOTARY_PROFILE")
 if [ "$DEV_APP" = 1 ]; then
-  # Local, explicitly isolated development artifact. Never use release credentials.
+  # Local, explicitly isolated development artifact. It is never notarized.
   ARCH=local
-  IDENTITY="-"
+  if [[ -z "${LIGHTCRAFT_ONNXRUNTIME_PACKAGE:-}" ]]; then IDENTITY="-"; fi
   : "${LIGHTCRAFT_R3D_CONFIG_DIR:?source r3d/dev-env.sh before --dev-app}"
   : "${LIGHTCRAFT_R3D_LIBRARY:?source r3d/dev-env.sh before --dev-app}"
 fi
+if [[ -n "${LIGHTCRAFT_ONNXRUNTIME_PACKAGE:-}" && "$IDENTITY" = - ]]; then
+  echo "error: ONNX Runtime requires MACOS_SIGN_IDENTITY (Developer ID Application); hardened runtime rejects an ad-hoc dylib" >&2
+  exit 2
+fi
 if [ "$IDENTITY" = "-" ]; then
   warn "macOS: ad-hoc signing (no MACOS_SIGN_IDENTITY); artifacts are not notarized"
+elif [ "$DEV_APP" = 1 ]; then
+  : # Local package only.
 elif [ -n "$MACOS_NOTARY_PROFILE" ]; then
   NOTARIZE=1
 elif [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
@@ -72,14 +93,14 @@ echo "==> LightCraft $VERSION for macOS ($ARCH), identity: $IDENTITY, notarize: 
 
 # ---- build -------------------------------------------------------------------------------------
 if [ "$SKIP_BUILD" = 0 ] && [ "$DEV_APP" = 1 ]; then
-  (cd "$ROOT" && cargo build --locked -p lightcraft -p lightcraft-cli)
+  (cd "$ROOT" && cargo build --locked -p lightcraft -p lightcraft-cli ${ONNXRUNTIME_FEATURES[@]+"${ONNXRUNTIME_FEATURES[@]}"})
 elif [ "$SKIP_BUILD" = 0 ]; then
   # shellcheck source=../fonts.sh
   . "$ROOT/packaging/fonts.sh"
   prepare_fonts
   args=()
   for t in "${TARGETS[@]}"; do args+=(--target "$t"); done
-  (cd "$ROOT" && cargo build --release --locked -p lightcraft -p lightcraft-cli --features lightcraft/heif,lightcraft-cli/heif "${args[@]}")
+  (cd "$ROOT" && cargo build --release --locked -p lightcraft -p lightcraft-cli --features lightcraft/heif,lightcraft-cli/heif ${ONNXRUNTIME_FEATURES[@]+"${ONNXRUNTIME_FEATURES[@]}"} "${args[@]}")
 fi
 
 rm -rf "$WORK"
@@ -97,9 +118,9 @@ done
 
 # ---- signing helpers ---------------------------------------------------------------------------
 sign() {
-  # Hardened runtime + secure timestamp for a real identity; ad-hoc can't be timestamped.
+  # Local artifacts do not contact the signing timestamp server.
   local ts=(--timestamp)
-  [[ "$IDENTITY" = "-" ]] && ts=(--timestamp=none)
+  [[ "$IDENTITY" = "-" || "$DEV_APP" = 1 ]] && ts=(--timestamp=none)
   local kc=()
   [[ -n "${MACOS_KEYCHAIN:-}" ]] && kc=(--keychain "$MACOS_KEYCHAIN")
   codesign --force --sign "$IDENTITY" ${kc[@]+"${kc[@]}"} "${ts[@]}" "$@"
@@ -172,19 +193,24 @@ printf 'APPL????' >"$APP/Contents/PkgInfo"
 # Licences (and the craft-fonts font licences when built with CRAFT_FONTS_DIR) inside the bundle.
 mkdir -p "$APP/Contents/Resources/Licenses"
 copy_docs "$APP/Contents/Resources/Licenses"
+if [[ -n "${LIGHTCRAFT_ONNXRUNTIME_PACKAGE:-}" ]]; then
+  copy_onnxruntime "$APP/Contents/Frameworks" "$APP/Contents/Resources/Licenses" "$APP/Contents/MacOS/LightCraft"
+fi
 
 # Remove inherited build-time extended attributes BEFORE code signing.
 # Never repair, re-sign or strip metadata from the published release after signing.
 xattr -cr "$APP"
 
 # Sign inside-out: nested code first, then the bundle itself (no --deep on the final signature).
-# Today the only nested code is the main executable; frameworks/helpers would be signed here too.
+if [[ -n "${LIGHTCRAFT_ONNXRUNTIME_PACKAGE:-}" ]]; then
+  sign --options runtime "$APP/Contents/Frameworks/$ONNXRUNTIME_DYLIB"
+fi
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP/Contents/MacOS/LightCraft"
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP"
 codesign --verify --strict --deep --verbose=2 "$APP"
 
 if [ "$DEV_APP" = 1 ]; then
-  echo "==> local development app only (ad-hoc signed, not notarized): $APP"
+  echo "==> local development app only (signed, not notarized): $APP"
   exit 0
 fi
 
@@ -276,6 +302,12 @@ CLI_DIR="$WORK/lightcraft-r3d-cli-$VERSION-macos-$ARCH"
 mkdir -p "$CLI_DIR"
 cp "$WORK/bin/lightcraft-cli" "$CLI_DIR/"
 copy_docs "$CLI_DIR"
+if [[ -n "${LIGHTCRAFT_ONNXRUNTIME_PACKAGE:-}" ]]; then
+  copy_onnxruntime "$CLI_DIR" "$CLI_DIR" "$CLI_DIR/lightcraft-cli"
+  xattr -c "$CLI_DIR/$ONNXRUNTIME_DYLIB"
+  sign --options runtime "$CLI_DIR/$ONNXRUNTIME_DYLIB"
+  codesign --verify --strict --verbose=2 "$CLI_DIR/$ONNXRUNTIME_DYLIB"
+fi
 # Same entitlements as the app: `--opt addToPhotos=true` / `app.export {addToPhotos}` send Apple
 # Events to Photos through osascript too (macOS asks about the app that started the CLI, usually
 # the terminal).

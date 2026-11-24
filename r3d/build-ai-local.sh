@@ -13,8 +13,27 @@ export LIGHTCRAFT_BUILD_SHA="$(git -C "$R3D_SOURCE" rev-parse HEAD)"
 export LIGHTCRAFT_BUILD_DATE="$(date -u +%Y-%m-%d)"
 export MACOSX_DEPLOYMENT_TARGET=11.0
 cd "$R3D_SOURCE"
+ONNXRUNTIME_FEATURES=()
+LOCAL_IDENTITY=-
+if [[ -n "${LIGHTCRAFT_ONNXRUNTIME_PACKAGE:-}" ]]; then
+  # Use the same pinned runtime and licenses as the macOS distribution packages.
+  . packaging/env.sh
+  . packaging/macos/onnxruntime.sh
+  validate_onnxruntime
+  LOCAL_IDENTITY="${MACOS_SIGN_IDENTITY:--}"
+  if [[ "$LOCAL_IDENTITY" = - ]]; then
+    echo "error: set MACOS_SIGN_IDENTITY to a Developer ID Application identity for Okeinla" >&2
+    exit 2
+  fi
+  ONNXRUNTIME_FEATURES=(--features lightcraft/okeinla-model,lightcraft-cli/okeinla-model)
+fi
+local_sign() {
+  local keychain=()
+  [[ -n "${MACOS_KEYCHAIN:-}" ]] && keychain=(--keychain "$MACOS_KEYCHAIN")
+  codesign --force --sign "$LOCAL_IDENTITY" ${keychain[@]+"${keychain[@]}"} --timestamp=none "$@"
+}
 if [[ "${1:-}" != --skip-build ]]; then
-  cargo build --locked --offline --release -p lightcraft -p lightcraft-cli
+  cargo build --locked --offline --release -p lightcraft -p lightcraft-cli ${ONNXRUNTIME_FEATURES[@]+"${ONNXRUNTIME_FEATURES[@]}"}
 fi
 test -x "$CARGO_TARGET_DIR/release/lightcraft"
 test ! -e "$R3D_AI_STAGING"
@@ -26,8 +45,16 @@ for binary in lightcraft lightcraft-cli; do
 done
 # Native packaging is reused for the optimized binaries; its dev-app switch stops
 # before distribution containers/notarization. Restore the actual installed identity below.
-CARGO_TARGET_DIR="$R3D_AI_STAGING" DIST="$R3D_AI_DIST" MACOS_SIGN_IDENTITY=- \
+CARGO_TARGET_DIR="$R3D_AI_STAGING" DIST="$R3D_AI_DIST" MACOS_SIGN_IDENTITY="$LOCAL_IDENTITY" \
   bash packaging/macos/package.sh --arch aarch64 --skip-build --dev-app
+if [[ -n "${LIGHTCRAFT_ONNXRUNTIME_PACKAGE:-}" ]]; then
+  copy_onnxruntime "$R3D_AI_ARTIFACTS" "$R3D_AI_ARTIFACTS" "$R3D_AI_ARTIFACTS/lightcraft-cli"
+  xattr -c "$R3D_AI_ARTIFACTS/$ONNXRUNTIME_DYLIB"
+  local_sign --options runtime "$R3D_AI_ARTIFACTS/$ONNXRUNTIME_DYLIB"
+  codesign --verify --strict "$R3D_AI_ARTIFACTS/$ONNXRUNTIME_DYLIB"
+  local_sign --options runtime --entitlements packaging/macos/entitlements.plist "$R3D_AI_ARTIFACTS/lightcraft-cli"
+  codesign --verify --strict "$R3D_AI_ARTIFACTS/lightcraft-cli"
+fi
 python3 tools/ai_retouch/package_runtime.py embed \
   --worker "$R3D_SOURCE/tools/ai_retouch/worker.py" --app "$R3D_AI_STAGING/macos-package/LightCraft R3D.app"
 python3 - "$R3D_AI_INSTALLED/Contents/Info.plist" "$R3D_AI_STAGING/macos-package/LightCraft R3D.app/Contents/Info.plist" <<'PY'
@@ -45,11 +72,17 @@ assert info['CFBundleIdentifier']=='local.r3d.lightcraft'
 assert info['LSEnvironment']['LIGHTCRAFT_R3D_LIBRARY']=='/Volumes/Media/LightCraft/Library'
 assert 'LIGHTCRAFT_AI_RETOUCH_RUNTIME' not in info['LSEnvironment']
 info.update(LightCraftVersion=os.environ['LIGHTCRAFT_VERSION'],LightCraftBuildCommit=os.environ['LIGHTCRAFT_BUILD_SHA'])
+if os.environ.get('R3D_CAMERA_CALIBRATIONS'):
+    import hashlib
+    with open(os.environ['R3D_CAMERA_CALIBRATIONS'], 'rb') as f:
+        info['LightCraftCameraCalibrationSHA256'] = hashlib.sha256(f.read()).hexdigest()
+else:
+    info.pop('LightCraftCameraCalibrationSHA256', None)
 info.pop('LightCraftBuildPatchSHA256',None)
 with open(sys.argv[2],'wb') as f: plistlib.dump(info,f)
 PY
-codesign --force --sign - --timestamp=none --options runtime \
-  --entitlements packaging/macos/entitlements.plist "$R3D_AI_STAGING/macos-package/LightCraft R3D.app"
+local_sign --options runtime --entitlements packaging/macos/entitlements.plist \
+  "$R3D_AI_STAGING/macos-package/LightCraft R3D.app"
 codesign --verify --strict --deep "$R3D_AI_STAGING/macos-package/LightCraft R3D.app"
 python3 tools/ai_retouch/package_runtime.py copy-app \
   --source "$R3D_AI_STAGING/macos-package/LightCraft R3D.app" --destination "$R3D_AI_APP"

@@ -39,6 +39,8 @@ use crate::{Selection, Session};
 mod builtin;
 mod gpu;
 mod model;
+#[cfg(all(feature = "okeinla-model", target_os = "macos"))]
+mod okeinla;
 mod products;
 mod session;
 mod settings;

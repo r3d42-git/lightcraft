@@ -56,10 +56,14 @@ chrono = { workspace = true }
 # free space of the drive holding the preview cache (the low-disk alert; pure Rust: rustix / windows-sys)
 fs4 = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "load-dynamic"], optional = true }
+
 [features]
 # AI masks with SAM 3 (Object / Describe). Off for the web and CLI builds.
 sam = ["dep:lightcraft-segment"]
 denoise = ["dep:lightcraft-denoise", "lightcraft-denoise/runtime", "lightcraft-gpu/denoise"]
+okeinla-model = ["denoise", "dep:ort", "lightcraft-denoise-core/okeinla-model"]
 rawnind-model = ["denoise", "lightcraft-denoise/rawnind-model", "lightcraft-denoise-core/rawnind-model"]
 
 [dev-dependencies]

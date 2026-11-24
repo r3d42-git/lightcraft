@@ -13,6 +13,11 @@ photo. Other installed compatible models appear too. The choice is stored with t
 photo's edits, can be undone and redone, and survives reopening. Choosing a method
 while AI Denoise is off does not turn it on. Amount remains the same when switching.
 
+R3D macOS builds with the Okeinla runtime also offer **Okeinla 1.0** in Settings ▸
+AI Denoise. This Bayer model by Ayéda Okambawa runs locally on the CPU. The download
+is 117 MB and the weights are licensed under GPL-3.0. LightCraft fits each tile's
+output to the original sensor samples before blending it into the image.
+
 Settings ▸ AI Denoise manages installed models and the **Default for new denoising**.
 Changing that default does not change photos that already have a method. RawNIND is
 suggested once installed unless a default was explicitly chosen; without installed

@@ -313,11 +313,7 @@ impl Model for Network {
 
     fn self_test(&self, run_on: RunOn) -> Result<Value, String> {
         let t = self.cpu.self_test();
-        if !t.ok {
-            let failed: Vec<&str> = t.checks.iter().filter(|(_, ok)| !*ok).map(|(c, _)| c.as_str()).collect();
-            return Err(format!("the model failed its self-test: it does not {}", failed.join(", and does not ")));
-        }
-        let mut v = serde_json::to_value(&t).map_err(|e| e.to_string())?;
+        let mut v = checked_self_test(t)?;
         // the card is set up and checked here, so the test says where the work will run
         if run_on != RunOn::Cpu {
             let _ = self.card(true);
@@ -354,6 +350,15 @@ impl Model for Network {
     }
 }
 
+#[cfg(feature = "denoise")]
+pub(super) fn checked_self_test(t: lightcraft_denoise::runtime::SelfTest) -> Result<Value, String> {
+    if !t.ok {
+        let failed: Vec<&str> = t.checks.iter().filter(|(_, ok)| !*ok).map(|(c, _)| c.as_str()).collect();
+        return Err(format!("the model failed its self-test: it does not {}", failed.join(", and does not ")));
+    }
+    serde_json::to_value(t).map_err(|e| e.to_string())
+}
+
 /// The loader of this build: our pure-Rust executor with the `denoise` feature, else one that says why nothing can run.
 pub(crate) fn default_loader() -> Loader {
     #[cfg(feature = "denoise")]
@@ -366,13 +371,22 @@ pub(crate) fn default_loader() -> Loader {
                 None => None,
             };
             let remote = sha256.and_then(|h| RemoteSide::from_env(&h, manifest.tile as usize));
-            Ok(Arc::new(network(path, manifest, remote)?) as Arc<dyn Model>)
+            load_model(path, manifest, remote)
         })
     }
     #[cfg(not(feature = "denoise"))]
     {
         Arc::new(|_, _| Err("this build cannot run denoise models".to_string()))
     }
+}
+
+#[cfg(feature = "denoise")]
+fn load_model(path: &Path, manifest: &DenoiserManifest, remote: Option<RemoteSide>) -> Result<Arc<dyn Model>, String> {
+    #[cfg(all(feature = "okeinla-model", target_os = "macos"))]
+    if manifest.id == "rawdenoise-okeinla" {
+        return Ok(Arc::new(super::okeinla::Okeinla::load(path, manifest)?));
+    }
+    Ok(Arc::new(network(path, manifest, remote)?))
 }
 
 /// The model at `path` on this computer, sharing tiles with `remote` when there is one.
@@ -425,7 +439,7 @@ pub fn serving(dir: Option<&Path>, id: Option<&str>, run_on: RunOn) -> Result<Se
         Some(h) => h.clone(),
         None => lightcraft_denoise::hash::sha256_file(&installed.onnx).map_err(|e| format!("{}: {e}", installed.onnx.display()))?,
     };
-    let net = Arc::new(network(&installed.onnx, m, None)?);
+    let net = load_model(&installed.onnx, m, None)?;
     let tile = m.tile as usize;
     // set the card up now (and say where the tiles run) rather than with the first client's tile
     let _ = net.runner(run_on, GPU_PARALLEL);

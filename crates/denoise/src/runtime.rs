@@ -60,27 +60,41 @@ impl TileRunner for CpuRunner {
         self.runner.run(input)
     }
 }
-fn self_test(runner: &dyn TileRunner, manifest: &DenoiserManifest, load_ms: f64) -> SelfTest {
+/// Run the installation checks on the model's real output and declared gain.
+pub fn self_test(runner: &dyn TileRunner, manifest: &DenoiserManifest, load_ms: f64) -> SelfTest {
     let t = manifest.tile as usize;
     let mut checks: Vec<(String, bool)> = Vec::new();
     let (input, base) = test_tile(t);
     let (mut times, mut scale) = (Vec::new(), 0.0f64);
     let mut run = || {
         let started = Instant::now();
-        let r = runner.run(&input);
+        if input.is_empty() {
+            return Err(Error::Input("invalid self-test tile size".into()));
+        }
+        let r = runner.run(&input).and_then(|out| {
+            if out.len() != 12 * t * t || out.iter().any(|v| !v.is_finite()) {
+                return Err(Error::Model("invalid tile dimensions or non-finite samples".into()));
+            }
+            Ok(out)
+        });
         times.push(started.elapsed().as_secs_f64() * 1000.0);
         r
     };
     let (a, b) = (run(), run());
-    match (&a, &b) {
-        (Ok(a), Ok(b)) => {
+    match (a, b) {
+        (Ok(mut a), Ok(b)) => {
             checks.push((format!("gives {} finite numbers per tile", a.len()), true));
             checks.push((
                 "gives the same answer for the same tile".into(),
-                a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1e-4 * x.abs().max(y.abs()).max(1e-9)),
+                a.iter().zip(&b).all(|(x, y)| (x - y).abs() <= 1e-4 * x.abs().max(y.abs()).max(1e-9)),
             ));
             let side = 2 * t;
             let mean_in = base.iter().map(|&v| f64::from(v)).sum::<f64>() / base.len().max(1) as f64;
+            if manifest.gain == Gain::CfaLeastSquares
+                && let Err(e) = crate::run::normalize_cfa_tile(&input, &mut a, t)
+            {
+                checks.push((format!("normalises its prediction against the Bayer sites: {e}"), false));
+            }
             let mean_out = a.iter().map(|&v| f64::from(v)).sum::<f64>() / a.len().max(1) as f64;
             scale = if mean_in > 0.0 { mean_out / mean_in } else { 0.0 };
             if let Gain::MatchMean { nominal, max_deviation } = manifest.gain {
@@ -89,7 +103,10 @@ fn self_test(runner: &dyn TileRunner, manifest: &DenoiserManifest, load_ms: f64)
                 checks.push((format!("its scale is the {nominal:.3e} the description says (found {scale:.3e})"), (ratio - 1.0).abs() <= tolerance));
             }
             // noise left after bringing the answer back to the input's scale, against the noise that went in
-            let g = if scale > 0.0 { 1.0 / scale } else { 1.0 };
+            if manifest.gain == Gain::CfaLeastSquares {
+                checks.push((format!("preserves the signal scale after Bayer normalisation (found {scale:.4})"), (scale - 1.0).abs() <= 0.05));
+            }
+            let g = if manifest.gain != Gain::CfaLeastSquares && scale > 0.0 { 1.0 / scale } else { 1.0 };
             let (mut noise_in, mut noise_out, mut n_in, mut n_out) = (0.0f64, 0.0f64, 0usize, 0usize);
             for (i, (&v, &s)) in input.iter().zip(base.iter().cycle()).enumerate() {
                 // centre of each plane only: edges are the model's guess
@@ -119,7 +136,7 @@ fn self_test(runner: &dyn TileRunner, manifest: &DenoiserManifest, load_ms: f64)
         ok: !checks.is_empty() && checks.iter().all(|(_, ok)| *ok),
         load_ms,
         tile_ms: times.get(times.len() / 2).copied().unwrap_or(0.0),
-        tile_megapixels: (2 * t * 2 * t) as f64 / 1e6,
+        tile_megapixels: (2.0 * t as f64).powi(2) / 1e6,
         scale,
         checks,
     }

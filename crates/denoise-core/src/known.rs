@@ -3,12 +3,15 @@
 //! None is part of LightCraft. A model with an address here can be downloaded when the user asks and has accepted
 //! its terms; anything else is brought by the user as an `.onnx` file with a `denoise-model.json` beside it.
 
-#[cfg(any(feature = "rawnind-model", test))]
+#[cfg(any(feature = "rawnind-model", all(feature = "okeinla-model", target_os = "macos"), test))]
 use crate::licence::{Commercial, Licence};
 
 use crate::manifest::DenoiserManifest;
-#[cfg(any(feature = "rawnind-model", test))]
+#[cfg(any(feature = "rawnind-model", all(feature = "okeinla-model", target_os = "macos"), test))]
 use crate::manifest::{Domain, Gain};
+
+pub const OKEINLA_SHA256: &str = "76077c2312cae19eb87aa7f5c6879d29324f556d4ba06ed36c50c1f021cc9c7c";
+pub const OKEINLA_SIZE: u64 = 117_179_233;
 
 /// A known model, and how to get it.
 pub struct Known {
@@ -57,16 +60,45 @@ fn rawnind_bayer() -> Known {
     Known { manifest, download: Some(download), entry: Some("model_bayer.onnx") }
 }
 
-/// Every model LightCraft knows.
+#[cfg(any(all(feature = "okeinla-model", target_os = "macos"), test))]
+fn okeinla() -> Known {
+    let manifest = DenoiserManifest {
+        id: "rawdenoise-okeinla".into(),
+        name: "Okeinla".into(),
+        version: "1.0".into(),
+        licence: Licence {
+            name: "GPL-3.0".into(),
+            commercial: Commercial::Yes,
+            url: Some("https://huggingface.co/AyedaOk/rawlab-models/blob/251b80cf634cc3ad3d2968eeac705f5db39428cc/licenses/GPL-3.0.txt".into()),
+            notice: "Ayéda Okambawa publishes these weights under the GNU General Public License v3. Commercial use is permitted under the GPL. Its licence, notice and corresponding-source obligations apply when redistributing the weights.".into(),
+        },
+        source: Some("https://huggingface.co/AyedaOk/rawlab-models/tree/251b80cf634cc3ad3d2968eeac705f5db39428cc/models/rawdenoise-okeinla/1.0".into()),
+        sha256: Some(OKEINLA_SHA256.into()),
+        size_bytes: Some(OKEINLA_SIZE),
+        provenance: "Ayéda Okambawa's NAFNet M8, checkpoint 2940000. Trained on RawNIND and AO dataset v1, according to the publisher.".into(),
+        domain: Domain::BayerToRgb,
+        tile: 512,
+        overlap: 64,
+        gain: Gain::CfaLeastSquares,
+    };
+    let download = Download {
+        id: manifest.id.clone(),
+        url: "https://huggingface.co/AyedaOk/rawlab-models/resolve/251b80cf634cc3ad3d2968eeac705f5db39428cc/models/rawdenoise-okeinla/1.0/model_bayer.onnx".into(),
+        file_name: "rawdenoise-okeinla-1.0.onnx".into(),
+        size_bytes: OKEINLA_SIZE,
+        sha256: OKEINLA_SHA256.into(),
+    };
+    Known { manifest, download: Some(download), entry: None }
+}
+
+/// Every model this build offers.
 pub fn all() -> Vec<Known> {
-    #[cfg(feature = "rawnind-model")]
-    {
-        vec![rawnind_bayer()]
-    }
-    #[cfg(not(feature = "rawnind-model"))]
-    {
-        Vec::new()
-    }
+    vec![
+        #[cfg(feature = "rawnind-model")]
+        rawnind_bayer(),
+        #[cfg(all(feature = "okeinla-model", target_os = "macos"))]
+        okeinla(),
+    ]
 }
 
 /// The known model with this id.
@@ -87,8 +119,11 @@ mod tests {
     #[test]
     fn known_models_are_valid_unique_and_downloaded_over_https() {
         let all = all();
-        assert_eq!(all.is_empty(), !cfg!(feature = "rawnind-model"));
+        let offers_okeinla = cfg!(all(feature = "okeinla-model", target_os = "macos"));
+        assert_eq!(all.is_empty(), !cfg!(feature = "rawnind-model") && !offers_okeinla);
         validate(&rawnind_bayer().manifest).unwrap();
+        validate(&okeinla().manifest).unwrap();
+        assert_eq!(by_sha256(OKEINLA_SHA256).map(|m| m.id), offers_okeinla.then(|| "rawdenoise-okeinla".into()));
         for (i, k) in all.iter().enumerate() {
             validate(&k.manifest).unwrap();
             assert!(all.iter().skip(i + 1).all(|o| o.manifest.id != k.manifest.id), "unique ids");

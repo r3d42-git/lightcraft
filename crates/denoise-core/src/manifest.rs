@@ -34,6 +34,8 @@ pub enum Gain {
     /// dark to measure, or whose measured scale is further than `maxDeviation` (a fraction, 0.05 = 5 %) from
     /// `nominal`, is scaled as if it were within that limit.
     MatchMean { nominal: f32, max_deviation: f32 },
+    /// Fit one signed scale against the model predictions at their original Bayer sensor sites.
+    CfaLeastSquares,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -4,6 +4,7 @@
 //! The model itself is a [`TileRunner`], so everything around it (packing, tiling, scale matching, highlight
 //! protection, blending, cancelling, progress) is tested without one.
 
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use lightcraft_raster::Rgb32f;
@@ -17,6 +18,8 @@ use crate::tiles::{starts, weight};
 pub const MAX_PIXELS: usize = 110_000_000;
 /// A tile whose mean signal is below this (white = 1) is too dark to measure its scale from.
 const MIN_SIGNAL: f32 = 0.003;
+/// The CFA fit excludes readings at or close to sensor saturation.
+const CFA_CLIP: f32 = 0.999;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -155,6 +158,17 @@ pub fn denoise_bayer(
                 if out.iter().any(|v| !v.is_finite()) {
                     return Err(Error::Model("numbers that are not finite".into()));
                 }
+                if p.gain == Gain::CfaLeastSquares {
+                    let (px, py) = layout.position(x0 as isize, y0 as isize);
+                    let xs = real_sensor_axis(px, width, side);
+                    let ys = real_sensor_axis(py, height, side);
+                    let clip = p.clip.unwrap_or(CFA_CLIP).min(CFA_CLIP);
+                    if fit_cfa_scale(&input, &mut out, p.tile, xs, ys, clip)?.is_none() {
+                        // A nearly black or clipped tile has no reliable gain. Reconstruct it from the measured Bayer planes.
+                        let planes = input.chunks_exact(p.tile * p.tile).map(<[f32]>::to_vec).collect::<Vec<_>>();
+                        out = crate::builtin::demosaic(&planes, p.tile);
+                    }
+                }
                 finish_tile(&input, &mut out, p, (bx, ax, by, ay));
                 if out.iter().any(|v| !v.is_finite()) {
                     return Err(Error::Model("numbers that are not finite after scale matching or highlight protection".into()));
@@ -225,6 +239,65 @@ pub fn denoise_bayer(
         );
     }
     Ok(Rgb32f { width, height, data: acc })
+}
+
+fn real_sensor_axis(origin: isize, extent: usize, side: usize) -> Range<usize> {
+    let bound = |end: isize| (end - origin).clamp(0, side as isize) as usize;
+    bound(0)..bound(extent as isize)
+}
+
+/// Normalize a full, unpadded RGGB test tile using the same signed CFA gain as the photo pipeline.
+/// Returns the scalar applied to the RGB output.
+pub fn normalize_cfa_tile(input: &[f32], output: &mut [f32], tile: usize) -> Result<f64, Error> {
+    if !(1..=2048).contains(&tile) || input.len() != 4 * tile * tile || output.len() != 12 * tile * tile {
+        return Err(Error::Input("the input or output dimensions do not match the CFA tile".into()));
+    }
+    if input.iter().any(|v| !v.is_finite()) {
+        return Err(Error::Input("the CFA tile contains nonfinite samples".into()));
+    }
+    if output.iter().any(|v| !v.is_finite()) {
+        return Err(Error::Model("nonfinite CFA tile predictions".into()));
+    }
+    fit_cfa_scale(input, output, tile, 0..2 * tile, 0..2 * tile, CFA_CLIP)?
+        .ok_or_else(|| Error::Model("too few usable sensor samples to fit CFA gain".into()))
+}
+
+fn fit_cfa_scale(input: &[f32], output: &mut [f32], tile: usize, xs: Range<usize>, ys: Range<usize>, clip: f32) -> Result<Option<f64>, Error> {
+    let side = 2 * tile;
+    let plane = tile * tile;
+    let rgb_channels = [0, 1, 1, 2];
+    let mut samples = 0;
+    let (mut numerator, mut denominator) = (0.0, 0.0);
+    // Match the original sensor reading to the prediction for the same site and color.
+    for y in ys.clone() {
+        for x in xs.clone() {
+            let site = 2 * (y % 2) + x % 2;
+            let source = input[site * plane + (y / 2) * tile + x / 2];
+            if source <= 0.001 || source >= clip {
+                continue;
+            }
+            let predicted = f64::from(output[rgb_channels[site] * side * side + y * side + x]);
+            numerator += predicted * f64::from(source);
+            denominator += predicted * predicted;
+            samples += 1;
+        }
+    }
+    let real_samples = xs.len() * ys.len();
+    if samples == 0 || samples < real_samples.div_ceil(10) {
+        return Ok(None);
+    }
+    let gain = numerator / denominator;
+    if !gain.is_finite() || gain == 0.0 {
+        return Err(Error::Model("CFA predictions with no usable gain".into()));
+    }
+    let peak = output.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
+    if f64::from(peak) * gain.abs() > f64::from(f32::MAX) {
+        return Err(Error::Model("CFA predictions that overflow after scaling".into()));
+    }
+    for v in output {
+        *v = (f64::from(*v) * gain) as f32;
+    }
+    Ok(Some(gain))
 }
 
 /// Bring a tile's output to the input's scale and keep clipped highlights as they were (in place).
@@ -400,6 +473,68 @@ mod tests {
 
     fn params(tile: usize, overlap: usize, gain: Gain) -> Params {
         Params { tile, overlap, gain, clip: None, parallel: 2 }
+    }
+
+    #[test]
+    fn cfa_gain_fits_one_signed_scale_at_sensor_sites() {
+        for scale in [-1024.0, 32.0] {
+            // A 2 × 2 packed tile with distinct greens and some black or clipped readings.
+            let input = [0.0, 0.125, 0.25, 0.5, 0.25, 0.25, 0.125, 0.25, 0.5, 0.5, 0.5, 0.5, 0.75, 0.5, 0.25, 1.0];
+            let mut output = [9.0 * scale; 48];
+            for (site, channel) in [0, 1, 1, 2].into_iter().enumerate() {
+                for (cell, &source) in input[4 * site..4 * (site + 1)].iter().enumerate() {
+                    if source > 0.0 && source < 1.0 {
+                        let (x, y) = (2 * (cell % 2) + site % 2, 2 * (cell / 2) + site / 2);
+                        output[channel * 16 + y * 4 + x] = source * scale;
+                    }
+                }
+            }
+            let gain = normalize_cfa_tile(&input, &mut output, 2).unwrap();
+            assert_eq!(gain, 1.0 / f64::from(scale));
+            assert_eq!(output[0], 9.0);
+            assert_eq!(output[16 + 1], 0.25);
+            assert_eq!(output[16 + 4], 0.5);
+        }
+    }
+
+    #[test]
+    fn cfa_gain_excludes_padding_in_a_shifted_odd_mosaic() {
+        struct Shifted;
+        impl TileRunner for Shifted {
+            fn run(&self, input: &[f32]) -> Result<Vec<f32>, Error> {
+                const SIDE: usize = 32;
+                let mut output = vec![100.0; 3 * SIDE * SIDE];
+                // A 3 × 3 BGGR mosaic begins at (1, 1) in the tile.
+                for y in 1..4 {
+                    for x in 1..4 {
+                        let site = 2 * (y % 2) + x % 2;
+                        let channel = [0, 1, 1, 2][site];
+                        output[channel * SIDE * SIDE + y * SIDE + x] = -128.0 * input[site * 256 + (y / 2) * 16 + x / 2];
+                    }
+                }
+                Ok(output)
+            }
+        }
+        let layout = Layout { dx: 1, dy: 1 };
+        let mosaic = [0.25, 0.5, 0.25, 0.625, 0.75, 0.625, 0.25, 0.5, 0.25];
+        let image = denoise_bayer(&mosaic, 3, 3, layout, &Shifted, &params(16, 0, Gain::CfaLeastSquares), &Control::default()).unwrap();
+        for (i, pixel) in image.data.iter().enumerate() {
+            let channel = [2, 1, 1, 0][(i / 3 % 2) * 2 + i % 3 % 2];
+            assert_eq!(pixel[channel], mosaic[i]);
+        }
+    }
+
+    #[test]
+    fn cfa_gain_uses_sensor_values_when_no_safe_fit_exists() {
+        let p = params(16, 0, Gain::CfaLeastSquares);
+        let layout = Layout { dx: 0, dy: 0 };
+        let model = Mock { tile: 16, scale: -128.0 };
+        for dark_or_clipped in [0.0, 0.0005, 0.9995, 1.0] {
+            let image = denoise_bayer(&[dark_or_clipped; 4], 2, 2, layout, &model, &p, &Control::default()).unwrap();
+            assert_eq!(image.data, vec![[dark_or_clipped; 3]; 4]);
+        }
+        assert!(normalize_cfa_tile(&[0.5; 4], &mut [0.0; 12], 1).is_err());
+        assert!(normalize_cfa_tile(&[0.0; 4], &mut [-5.0; 12], 1).is_err());
     }
 
     #[test]
