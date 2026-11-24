@@ -185,6 +185,7 @@ mod tests {
             AiEdit::from_pixels(
                 AiEdit {
                     id: 1,
+                    group: None,
                     enabled: true,
                     rect: [0.25, 0.25, 0.75, 0.75],
                     support: None,

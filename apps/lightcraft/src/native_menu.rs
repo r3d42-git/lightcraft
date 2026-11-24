@@ -724,9 +724,7 @@ mod tests {
         for (nid, n) in &installed {
             assert_eq!(synced.get(nid.as_str()), Some(n), "{nid}");
         }
-        // R3D deliberately calls the full export-dialog action "Export…" in both locations.
-        // Distinct live row labels are exercised by sync_rows below with independent stand-ins.
-        for (cmd, labels) in [("dialog.export", ["Export…", "Export…"]), ("dialog.newAlbum", ["New Album…", "New Album…"])] {
+        for (cmd, labels) in [("dialog.export", ["Export…", "Custom…"]), ("dialog.newAlbum", ["New Album…", "New Album…"])] {
             let own: Vec<(&str, &str)> = installed
                 .iter()
                 .filter_map(|(nid, n)| match n {

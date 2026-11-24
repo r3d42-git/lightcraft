@@ -5390,10 +5390,11 @@ fn check_ai_remove_draft_preview(profiled: bool) {
     let history = h.app.session.catalog.photo(id).unwrap().history.len();
     let undo = h.app.session.undo.len();
     // Synthetic draft only: no model, catalogue write, hardware or external image needed.
-    h.app.session.ai_remove.draft = Some(
+    h.app.session.ai_remove.draft = Some(vec![
         AiEdit::from_pixels(
             AiEdit {
                 id: 0,
+                group: None,
                 enabled: true,
                 rect: [0.1, 0.1, 0.9, 0.9],
                 support: None,
@@ -5408,7 +5409,7 @@ fn check_ai_remove_draft_preview(profiled: bool) {
             &[[0.2, 0.6, 0.1, 1.0]],
         )
         .unwrap(),
-    );
+    ]);
     h.step_until(SETTLE, |h| h.app.loupe_shown.map(|l| l.1) == Some("hover"));
     assert_eq!(h.app.loupe_shown.map(|l| l.1), Some("hover"));
     save_ai_ui_evidence(&mut h, if profiled { "draft-preview-display-p3.png" } else { "draft-preview.png" });
@@ -5470,6 +5471,9 @@ fn ai_remove_brush_paints_private_mask_without_healing_or_history() {
     let history = h.app.session.catalog.photo(id).unwrap().history.len();
     assert!(!h.app.widgets.iter().any(|(name, _)| name.starts_with("spotPin:") || name.starts_with("spotSource:")), "AI mode hides classic handles");
     let start = h.app.image_rect.unwrap().center() - vec2(30.0, 80.0);
+    let probe = start + vec2(30.0, 72.0);
+    let at_stroke_center = |image: &egui::ColorImage| image.pixels[probe.y as usize * image.size[0] + probe.x as usize];
+    let unselected = at_stroke_center(&h.paint());
     h.app.synthetic.push(Event::PointerMoved(start));
     h.app.synthetic.push(Event::PointerButton { pos: start, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
     h.step();
@@ -5480,15 +5484,14 @@ fn ai_remove_brush_paints_private_mask_without_healing_or_history() {
     }
     let end = start + vec2(60.0, 144.0);
     h.app.synthetic.push(Event::PointerButton { pos: end, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
-    h.step();
-    h.step();
+    let selected = at_stroke_center(&h.snapshot(SETTLE));
     let selection = h.app.session.ai_remove.selection.clone().expect("private AI selection");
     assert!(selection.points.len() > 1);
     assert!(std::sync::Arc::ptr_eq(&before, &h.app.session.develop_of(id).unwrap()));
     assert_eq!(h.app.session.undo.len(), undo);
     assert_eq!(h.app.session.catalog.photo(id).unwrap().history.len(), history);
     save_ai_ui_evidence(&mut h, "ai-brush-selection.png");
-    assert!(h.view.ctx.data(|d| d.get_temp::<(u64, egui::TextureHandle)>(egui::Id::unique("ai-remove-mask-texture"))).is_some());
+    assert_ne!(selected, unselected, "the released stroke is visible in the rendered overlay");
     h.app.session.execute("aiRemove.cancel", &json!({})).unwrap();
     assert_eq!(h.app.session.ai_remove.selection, Some(selection));
     h.request("ui.clickWidget", json!({"id":"aiRemoveBrushMode"}), t);

@@ -603,7 +603,7 @@ mod tests {
         session.ai_remove.match_lighting = Some(matching);
         session.ai_remove.tag = session.ai_remove_tag();
         session.ai_remove.job = Some(Job { reply, phases, cancel: std::sync::Arc::new(AtomicBool::new(false)) });
-        tx.send(Ok(super::super::JobResult::Variants(Box::new(variants)))).unwrap();
+        tx.send(Ok(super::super::JobResult::Variants(vec![variants]))).unwrap();
         session.ai_remove_poll();
         session
     }
@@ -617,15 +617,15 @@ mod tests {
         let mut s = completed_session(variants, true);
         let id = s.active().unwrap();
         let before = s.develop_of(id).unwrap();
-        assert_eq!(s.ai_remove.draft.as_ref(), Some(&matched));
+        assert_eq!(s.ai_remove.draft.as_deref().and_then(|edits| edits.first()), Some(&matched));
         let _ = s.ai_remove_preview_settings().unwrap();
         assert!(s.ai_remove.preview_settings.is_some());
         s.execute("aiRemove.matchLighting", &json!({"enabled":false})).unwrap();
-        assert_eq!(s.ai_remove.draft.as_ref(), Some(&raw));
+        assert_eq!(s.ai_remove.draft.as_deref().and_then(|edits| edits.first()), Some(&raw));
         assert!(s.ai_remove.preview_settings.is_none());
         assert_eq!(*s.develop_of(id).unwrap(), *before);
         s.execute("aiRemove.matchLighting", &json!({"enabled":true})).unwrap();
-        assert_eq!(s.ai_remove.draft.as_ref(), Some(&matched));
+        assert_eq!(s.ai_remove.draft.as_deref().and_then(|edits| edits.first()), Some(&matched));
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         s.execute("aiRemove.accept", &json!({})).unwrap();
         assert!(s.ai_remove.lighting_drafts.is_none());
@@ -652,7 +652,7 @@ mod tests {
         let mut s = completed_session(variants, true);
         assert!(s.ai_remove.draft.is_none());
         s.execute("aiRemove.matchLighting", &json!({"enabled":false})).unwrap();
-        assert_eq!(s.ai_remove.draft.as_ref().unwrap().decode_pixels().unwrap()[protected], [3., 1.5, 0.5, 0.]);
+        assert_eq!(s.ai_remove.draft.as_ref().unwrap()[0].decode_pixels().unwrap()[protected], [3., 1.5, 0.5, 0.]);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
     #[test]
@@ -666,10 +666,10 @@ mod tests {
         assert!(s.ai_remove.draft.is_none());
         assert!(s.ai_remove.tag.is_some());
         s.execute("aiRemove.matchLighting", &json!({"enabled":false})).unwrap();
-        assert_eq!(s.ai_remove.draft.as_ref(), Some(&raw));
+        assert_eq!(s.ai_remove.draft.as_deref().and_then(|edits| edits.first()), Some(&raw));
         assert!(s.execute("aiRemove.matchLighting", &json!({"enabled":true})).is_err());
         assert_eq!(s.ai_remove.match_lighting, Some(false));
-        assert_eq!(s.ai_remove.draft.as_ref(), Some(&raw));
+        assert_eq!(s.ai_remove.draft.as_deref().and_then(|edits| edits.first()), Some(&raw));
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         s.ai_remove.selecting = true;
         assert!(s.execute("aiRemove.matchLighting", &json!({"enabled":true})).is_err());

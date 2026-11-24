@@ -1,15 +1,18 @@
 # Aktueller Einrichtungsweg
 
-## Objekte per Klick auswählen (Entwicklungsstand 03.11.2026)
+## Objekte und Kabel entfernen
 
 Im Entfernen-Werkzeug mit aktiver **KI-Entfernung** ist **Objekt** die
-Standardauswahl. Ein Klick startet die lokale SAM-3-Segmentierung; weitere Klicks
-verfeinern dasselbe Objekt, ⌥-Klicks schließen Bereiche aus. Die cyanfarbene
+Standardauswahl. Ein Klick startet die lokale SAM-3-Segmentierung. Ein ⇧-Klick
+fügt ein weiteres Objekt hinzu. Weitere einfache Klicks verfeinern das zuletzt
+gewählte Objekt, ⌥-Klicks schließen Bereiche aus. Die cyanfarbene
 Maske zeigt die Auswahl einschließlich eines kleinen Entfernungsrands.
 **Auswahlrand** vergrößert oder verkleinert diesen sichtbaren Rand; er verhindert,
 dass enge Objektkonturen bei der Entfernung stehen bleiben. **Pinsel** ergänzt sie, **Subtrahieren** oder ⌥ beim Malen
 nimmt Bereiche heraus. Pinselkorrekturen bleiben bei späteren Objektklicks
-erhalten. **KI-Auswahl löschen** beginnt eine neue Auswahl.
+erhalten. Bei einer reinen Pinselauswahl beginnt ein einfacher Strich eine neue
+Auswahl. Mit ⇧ lassen sich getrennte Striche hinzufügen, etwa für mehrere Kabel.
+**KI-Auswahl löschen** beginnt eine neue Auswahl.
 
 Erst **Auswahl entfernen** startet das gewählte Retuschemodell;
 Vorschau, Verwerfen und Übernehmen bleiben der bestehende Ablauf. Die Auswahl
@@ -24,16 +27,26 @@ vorhandenen Einrichtungsdialog und lädt nichts ungefragt herunter.
 
 Segmentierung sieht das entwickelte, objektivkorrigierte Foto einschließlich
 lokaler Anpassungen. Die Engine bildet die Auswahl mit der aufgelösten
-Objektiv-/Perspektivabbildung in den ursprünglichen Bildraum ab. Gespeichert wird
-wie bisher ein Rasterpatch ohne spätere Modellabhängigkeit; Katalogformat und
-bestehende Retuschen bleiben unverändert. Bei kleinen Objekten folgt auf die
+Objektiv-/Perspektivabbildung in den ursprünglichen Bildraum ab. Bei kleinen Objekten folgt auf die
 sofort sichtbare Grobmaske automatisch eine Detailanalyse des Objektausschnitts.
 Manuelle Korrekturen behalten diesen Ausschnitt mit einem Raster bis 1024² bei;
-Striche außerhalb erweitern ihn. Die gespeicherte Retusche bleibt auf maximal
-1024 Pixel Kantenlänge begrenzt. Feine Kanten und unterschiedliche Motive
-benötigen weiterhin eine praktische Qualitätsprüfung.
+Striche außerhalb erweitern ihn.
 
-Steuerbefehle: `aiRemove.objectPoint {x,y,exclude?}`,
+Die lokalen Retuschemodelle erhalten für weit auseinanderliegende Objekte eigene
+Bildausschnitte. Lange, schmale Auswahlen können mehrere Ausschnitte entlang
+des Verlaufs erhalten. Jedes Teilstück sieht auch die Umgebung. Die Auswahl
+bestimmt, welche Pixel übernommen werden. Ein Kabel muss also zuerst markiert
+werden. Die Cloud-Retusche verarbeitet die gesamte Auswahl in einem Ausschnitt.
+
+Alle Teilstücke erscheinen zusammen in der Vorschau und bilden nach dem
+Übernehmen eine Retusche. Ausblenden, Löschen und Rückgängig wirken auf die
+gesamte Gruppe. Die gespeicherten Raster haben höchstens 1024 Pixel Kantenlänge
+und lassen sich auch ohne Modell anzeigen und exportieren. Ein Foto kann bis zu
+acht Raster mit insgesamt 2.097.152 Pixeln enthalten. Eine umfangreiche
+Kabelretusche kann mehrere oder alle verfügbaren Raster belegen.
+
+Steuerbefehle: `aiRemove.objectPoint {x,y,exclude?,add?}`,
+`aiRemove.select {points:[[x,y],…],size?,append?}`,
 `aiRemove.refineBrush {points:[[x,y],…],size,subtract?}`,
 `aiRemove.objectMargin {size}` (0…0,02 der langen Bildkante, Standard 0,003),
 `aiRemove.clearSelection {}`. `aiRemove.status` meldet zusätzlich `selecting`;

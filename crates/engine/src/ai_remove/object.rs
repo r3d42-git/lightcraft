@@ -11,12 +11,21 @@ pub struct ObjectSelection {
     pub exclude: Vec<Point>,
     pub margin: f64,
     raw_seg: Option<SegMask>,
+    prior_segments: Vec<SegMask>,
     pub(super) refinements: Vec<(Spot, bool)>,
 }
 
 impl Default for ObjectSelection {
     fn default() -> Self {
-        Self { seg: None, include: Vec::new(), exclude: Vec::new(), margin: 0.003, raw_seg: None, refinements: Vec::new() }
+        Self {
+            seg: None,
+            include: Vec::new(),
+            exclude: Vec::new(),
+            margin: 0.003,
+            raw_seg: None,
+            prior_segments: Vec::new(),
+            refinements: Vec::new(),
+        }
     }
 }
 
@@ -44,6 +53,9 @@ impl SelectionMask {
         let y = (((p.y - self.rect[1]) / (self.rect[3] - self.rect[1]) * self.side as f64).floor() as usize).min(self.side - 1);
         self.logits.get(y * self.side + x).is_some_and(|v| *v > 0.0)
     }
+    pub(super) fn grid(&self) -> (usize, [f64; 4], &[f32]) {
+        (self.side, self.rect, &self.logits)
+    }
     pub(super) fn selected_bounds(&self) -> [f64; 4] {
         let mut b = [1.0f64, 1.0, 0.0, 0.0];
         for (i, l) in self.logits.iter().enumerate().filter(|(_, l)| **l > 0.0) {
@@ -67,25 +79,60 @@ impl ObjectSelection {
     pub fn decoded_mask(&self) -> Result<SelectionMask, String> {
         SelectionMask::new(self.seg.as_ref().ok_or("No object mask yet.")?)
     }
-    fn refined(&self, seg: SegMask, aspect: f64) -> Result<SegMask, String> {
+    fn active_seed(&self) -> Option<&SegMask> {
+        // Also accept a directly supplied segmentation before its first refinement.
+        self.raw_seg.as_ref().or(if self.refinements.is_empty() && self.prior_segments.is_empty() { self.seg.as_ref() } else { None })
+    }
+    pub fn has_object_mask(&self) -> bool {
+        self.active_seed().is_some() || !self.prior_segments.is_empty()
+    }
+    pub(super) fn brush_only(&self) -> bool {
+        !self.has_object_mask() && !self.refinements.is_empty()
+    }
+    fn start_added_object(&mut self) -> Result<(), &'static str> {
+        if let Some(seg) = self.active_seed().cloned() {
+            if self.prior_segments.len() >= 15 {
+                return Err("At most 16 objects per selection.");
+            }
+            self.prior_segments.push(seg);
+        }
+        self.raw_seg = None;
+        self.include.clear();
+        self.exclude.clear();
+        Ok(())
+    }
+    fn refined(&self, seg: Option<&SegMask>, aspect: f64) -> Result<Option<SegMask>, String> {
         if !self.margin.is_finite() || !(0.0..=0.02).contains(&self.margin) || !aspect.is_finite() || aspect <= 0.0 {
             return Err("Invalid object selection margin or aspect.".into());
         }
-        if self.refinements.is_empty() && self.margin == 0.0 {
-            SelectionMask::new(&seg)?;
-            return Ok(seg);
+        if self.refinements.is_empty()
+            && self.prior_segments.is_empty()
+            && self.margin == 0.0
+            && let Some(seg) = seg
+        {
+            return Ok((!SelectionMask::new(seg)?.is_empty()).then(|| seg.clone()));
         }
-        let mask = SelectionMask::new(&seg)?;
+        let masks = self.prior_segments.iter().chain(seg).map(SelectionMask::new).collect::<Result<Vec<_>, _>>()?;
         // Keep manual corrections finer than the model grid; the source-space result is
         // frozen later, after applying the actual resolved lens geometry.
         let side = 1024usize;
         let (w, h) = if aspect >= 1.0 { (aspect, 1.0) } else { (1.0, 1.0 / aspect) };
         // Preserve a detail crop's resolution when painting. Extend it only as far as
         // corrections need, rather than downsampling the refined object over the full photo.
-        let mut rect = if mask.is_empty() { mask.rect } else { mask.selected_bounds() };
+        let mut rect = [1.0f64, 1.0, 0.0, 0.0];
+        for mask in &masks {
+            let [x0, y0, x1, y1] = if mask.is_empty() { mask.rect } else { mask.selected_bounds() };
+            rect = [rect[0].min(x0), rect[1].min(y0), rect[2].max(x1), rect[3].max(y1)];
+        }
         let margin = self.margin * w.max(h);
-        rect = [(rect[0] - margin / w).max(0.0), (rect[1] - margin / h).max(0.0), (rect[2] + margin / w).min(1.0), (rect[3] + margin / h).min(1.0)];
-        for (spot, _) in &self.refinements {
+        if !masks.is_empty() {
+            rect =
+                [(rect[0] - margin / w).max(0.0), (rect[1] - margin / h).max(0.0), (rect[2] + margin / w).min(1.0), (rect[3] + margin / h).min(1.0)];
+        }
+        for (spot, subtract) in &self.refinements {
+            if *subtract {
+                continue;
+            }
             let radius = spot.size * w.max(h);
             for p in &spot.points {
                 rect[0] = rect[0].min((p.x - radius / w).max(0.0));
@@ -95,21 +142,27 @@ impl ObjectSelection {
             }
         }
         let (rw, rh) = (rect[2] - rect[0], rect[3] - rect[1]);
-        let mut logits: Vec<f32> = (0..side * side)
-            .map(|i| {
-                if mask.contains(Point::new(
-                    rect[0] + ((i % side) as f64 + 0.5) / side as f64 * rw,
-                    rect[1] + ((i / side) as f64 + 0.5) / side as f64 * rh,
-                )) {
-                    8.0
-                } else {
-                    -8.0
+        if rw <= 0.0 || rh <= 0.0 {
+            return Err("Paint or select an object first.".into());
+        }
+        let mut logits = vec![-8.0; side * side];
+        if !masks.is_empty() {
+            for (i, l) in logits.iter_mut().enumerate() {
+                let p = Point::new(rect[0] + ((i % side) as f64 + 0.5) / side as f64 * rw, rect[1] + ((i / side) as f64 + 0.5) / side as f64 * rh);
+                if masks.iter().any(|mask| mask.contains(p)) {
+                    *l = 8.0;
                 }
-            })
-            .collect();
-        if margin > 0.0 {
+            }
+        }
+        if margin > 0.0 && !masks.is_empty() {
             dilate(&mut logits, side, rw * w / side as f64, rh * h / side as f64, margin);
         }
+        self.paint_refinements(&mut logits, side, rect, [w, h])?;
+        Ok(logits.iter().any(|l| *l > 0.0).then(|| SegMask::from_logits_in(side, &logits, rect)))
+    }
+    fn paint_refinements(&self, logits: &mut [f32], side: usize, rect: [f64; 4], image_size: [f64; 2]) -> Result<(), String> {
+        let [w, h] = image_size;
+        let (rw, rh) = (rect[2] - rect[0], rect[3] - rect[1]);
         let mut work = 0usize;
         // Visit only each capsule's bounding cells, rather than every image cell for
         // every point. Cap the complete replay before doing any raster work.
@@ -117,13 +170,16 @@ impl ObjectSelection {
         for (spot, subtract) in &self.refinements {
             let points: Vec<[f64; 2]> = spot.points.iter().map(|p| [p.x * w, p.y * h]).collect();
             let radius = spot.size * w.max(h);
-            for i in 0..points.len().max(1) {
+            for i in 0..points.len().saturating_sub(1).max(1) {
                 let Some(a) = points.get(i).copied() else { continue };
                 let b = points.get(i + 1).copied().unwrap_or(a);
                 let x0 = ((((a[0].min(b[0]) - radius) / w - rect[0]) / rw * side as f64).floor().max(0.0) as usize).min(side);
                 let x1 = ((((a[0].max(b[0]) + radius) / w - rect[0]) / rw * side as f64).ceil().max(0.0) as usize).min(side);
                 let y0 = ((((a[1].min(b[1]) - radius) / h - rect[1]) / rh * side as f64).floor().max(0.0) as usize).min(side);
                 let y1 = ((((a[1].max(b[1]) + radius) / h - rect[1]) / rh * side as f64).ceil().max(0.0) as usize).min(side);
+                if x0 >= x1 || y0 >= y1 {
+                    continue;
+                }
                 work = work.saturating_add((x1 - x0).saturating_mul(y1 - y0));
                 if work > 16_000_000 {
                     return Err("Selection refinements are too complex. Clear the selection and try fewer strokes.".into());
@@ -143,7 +199,7 @@ impl ObjectSelection {
                 }
             }
         }
-        Ok(SegMask::from_logits_in(side, &logits, rect))
+        Ok(())
     }
 }
 /// Exact squared Euclidean distance on the bounded raster, with independent physical
@@ -238,9 +294,19 @@ impl Session {
             None => false,
             Some(v) => v.as_bool().ok_or_else(|| error("exclude must be a boolean."))?,
         };
+        let add = match p.get("add") {
+            None => false,
+            Some(v) => v.as_bool().ok_or_else(|| error("add must be a boolean."))?,
+        };
         self.ai_remove_poll();
         let tag = self.ai_remove_tag().ok_or_else(|| error("Select a photo."))?;
         let mut selection = self.ai_remove.object_selection.clone().unwrap_or_default();
+        if add && !exclude {
+            if self.ai_remove.selecting {
+                return Err(error("Wait for the object selection."));
+            }
+            selection.start_added_object().map_err(error)?;
+        }
         if selection.include.len() + selection.exclude.len() >= crate::segment::MAX_CLICKS {
             return Err(error("At most 64 object selection clicks."));
         }
@@ -255,8 +321,10 @@ impl Session {
         let revision = self.ai_remove.selection_revision.wrapping_add(1);
         self.segmenter.require_model()?;
         self.segment_ai_remove_later(tag.0, revision, &selection.include, &selection.exclude).map_err(error)?;
+        if let Some(spot) = self.ai_remove.selection.take() {
+            selection.refinements.push((spot, false));
+        }
         self.ai_remove_cancel();
-        self.ai_remove.selection = None;
         self.ai_remove.selection_tag = Some(tag);
         self.ai_remove.object_selection = Some(selection);
         self.ai_remove.selection_revision = revision;
@@ -274,20 +342,36 @@ impl Session {
         if self.ai_remove.selecting {
             return Err(error("Wait for the object selection."));
         }
-        let mut selection = self.ai_remove.object_selection.clone().ok_or_else(|| error("Select an object first."))?;
+        let tag = self.ai_remove_tag().ok_or_else(|| error("Select a photo."))?;
+        let mut selection = self.ai_remove.object_selection.clone().unwrap_or_default();
+        if let Some(spot) = self.ai_remove.selection.clone() {
+            selection.refinements.push((spot, false));
+        }
         if selection.refinements.len() >= 256 {
             return Err(error("At most 256 brush refinements."));
         }
-        let seg = selection.raw_seg.clone().or_else(|| selection.seg.clone()).ok_or_else(|| error("Select an object first."))?;
-        selection.raw_seg = Some(seg.clone());
+        selection.raw_seg = selection.active_seed().cloned();
         // Rebuild from the raw model result so neither margin nor corrections accumulate.
         selection.refinements.push((spot, subtract));
-        selection.seg = Some(selection.refined(seg, self.ai_remove_aspect()).map_err(error)?);
+        selection.seg = selection.refined(selection.raw_seg.as_ref(), self.ai_remove_aspect()).map_err(error)?;
+        let selected = selection.seg.is_some();
+        let has_object = selection.has_object_mask();
         self.ai_remove_cancel();
-        self.ai_remove.selection_revision = self.ai_remove.selection_revision.wrapping_add(1);
+        self.ai_remove.selection = None;
+        self.ai_remove.selection_tag = Some(tag);
         self.ai_remove.object_selection = Some(selection);
-        self.ai_remove.message = "Object selection refined.".into();
-        Ok(json!({"selected":true}))
+        if !self.ai_remove.busy() {
+            self.ai_remove.phase = super::Phase::Idle;
+        }
+        self.ai_remove.message = if !selected {
+            "The selected mask is empty."
+        } else if has_object {
+            "Object selection refined."
+        } else {
+            "AI selection ready. Run AI Remove to create a preview."
+        }
+        .into();
+        Ok(json!({"selected":selected}))
     }
     pub(super) fn ai_remove_object_margin(&mut self, p: &Value) -> crate::Result<Value> {
         let margin = p
@@ -300,14 +384,17 @@ impl Session {
             return Err(error("Wait for the object selection."));
         }
         let mut selection = self.ai_remove.object_selection.clone().ok_or_else(|| error("Select an object first."))?;
-        let raw = selection.raw_seg.clone().or_else(|| selection.seg.clone()).ok_or_else(|| error("Select an object first."))?;
+        if !selection.has_object_mask() {
+            return Err(error("Select an object first."));
+        }
+        selection.raw_seg = selection.active_seed().cloned();
         selection.margin = margin;
-        selection.seg = Some(selection.refined(raw.clone(), self.ai_remove_aspect()).map_err(error)?);
-        selection.raw_seg = Some(raw);
+        selection.seg = selection.refined(selection.raw_seg.as_ref(), self.ai_remove_aspect()).map_err(error)?;
+        let selected = selection.seg.is_some();
         self.ai_remove_cancel();
         self.ai_remove.object_selection = Some(selection);
         self.ai_remove.message = "Object selection margin updated.".into();
-        Ok(json!({"size":margin,"selected":true}))
+        Ok(json!({"size":margin,"selected":selected}))
     }
     fn ai_remove_aspect(&self) -> f64 {
         self.active().and_then(|id| self.catalog.photo(id)).map_or(1.0, |p| {
@@ -340,13 +427,13 @@ impl Session {
                     .object_selection
                     .as_ref()
                     .ok_or_else(|| "Selection cleared.".to_string())
-                    .and_then(|o| o.refined(seg.clone(), aspect));
+                    .and_then(|o| o.refined(Some(&seg), aspect));
                 let raw_seg = seg;
                 match refined {
                     Ok(seg) => {
                         if let Some(o) = &mut self.ai_remove.object_selection {
-                            o.raw_seg = Some(raw_seg.clone());
-                            o.seg = Some(seg);
+                            o.raw_seg = Some(raw_seg);
+                            o.seg = seg;
                         }
                         if let Some(region) = region {
                             self.ai_remove.selecting = true;
@@ -359,8 +446,8 @@ impl Session {
                         // New prompts must never authorize an older mask if corrections
                         // cannot be replayed onto their result, even during a detail pass.
                         if let Some(o) = &mut self.ai_remove.object_selection {
-                            o.seg = None;
                             o.raw_seg = None;
+                            o.seg = o.refined(None, aspect).ok().flatten();
                         }
                         self.ai_remove.message = format!("Object mask refinement failed: {e}");
                     }
@@ -368,8 +455,9 @@ impl Session {
             }
             Err(e) => {
                 if !detail && let Some(o) = &mut self.ai_remove.object_selection {
-                    o.seg = None;
                     o.raw_seg = None;
+                    // Keep other objects and brush strokes if the new object could not be selected.
+                    o.seg = o.refined(None, aspect).ok().flatten();
                 }
                 self.ai_remove.message = if detail { format!("Object detail refinement failed: {e} Coarse selection retained.") } else { e };
             }
@@ -431,6 +519,54 @@ mod tests {
         let _ = s.ai_remove_apply_seg(revision, false, Ok(Some(seg())));
         assert!(s.ai_remove.object_selection.is_none());
         assert!(!s.ai_remove.selecting);
+    }
+    #[test]
+    fn appended_strokes_keep_distinct_paths_and_subtract_in_order() {
+        let mut s = Session::with_demo();
+        let id = s.active().unwrap();
+        let before = s.develop_of(id).unwrap();
+        let undo = s.undo.len();
+        s.execute("aiRemove.select", &json!({"points":[[0.15,0.2],[0.15,0.7]],"size":0.007})).unwrap();
+        assert!(s.ai_remove.selection.is_some() && s.ai_remove.object_selection.is_none());
+        s.execute("aiRemove.select", &json!({"points":[[0.85,0.25],[0.85,0.8]],"size":0.015,"append":true})).unwrap();
+        let selection = s.ai_remove.object_selection.as_ref().unwrap();
+        assert!(selection.brush_only());
+        assert_eq!(selection.refinements.len(), 2);
+        assert_eq!(selection.refinements[0].0.size, 0.007);
+        assert_eq!(selection.refinements[1].0.size, 0.015);
+        assert!(s.ai_remove.selection.is_none());
+        let mask = selection.decoded_mask().unwrap();
+        assert!(mask.contains(Point::new(0.15, 0.4)));
+        assert!(mask.contains(Point::new(0.85, 0.55)));
+        assert!(!mask.contains(Point::new(0.5, 0.5)));
+        s.execute("aiRemove.refineBrush", &json!({"points":[[0.15,0.4]],"size":0.02,"subtract":true})).unwrap();
+        let mask = s.ai_remove.object_selection.as_ref().unwrap().decoded_mask().unwrap();
+        assert!(!mask.contains(Point::new(0.15, 0.4)));
+        assert!(mask.contains(Point::new(0.15, 0.3)));
+        assert!(mask.contains(Point::new(0.85, 0.55)));
+        assert!(std::sync::Arc::ptr_eq(&before, &s.develop_of(id).unwrap()));
+        assert_eq!(s.undo.len(), undo);
+    }
+    #[test]
+    fn separately_segmented_objects_remain_after_active_object_refinement_or_failure() {
+        let mut s = Session::with_demo();
+        selected(&mut s);
+        let selection = s.ai_remove.object_selection.as_mut().unwrap();
+        selection.exclude.push(Point::new(0.1, 0.1));
+        selection.start_added_object().unwrap();
+        assert!(selection.include.is_empty() && selection.exclude.is_empty());
+        selection.include.push(Point::new(0.8, 0.4));
+        let revision = s.ai_remove.selection_revision;
+        let second = SegMask::from_logits_in(1, &[8.0], [0.75, 0.35, 0.85, 0.45]);
+        s.ai_remove_apply_seg(revision, true, Ok(Some(second)));
+        let mask = s.ai_remove.object_selection.as_ref().unwrap().decoded_mask().unwrap();
+        assert!(mask.contains(Point::new(0.4, 0.4)));
+        assert!(mask.contains(Point::new(0.8, 0.4)));
+        assert!(!mask.contains(Point::new(0.6, 0.4)));
+        s.ai_remove_apply_seg(revision, false, Err("Synthetic active object was unavailable.".into()));
+        let mask = s.ai_remove.object_selection.as_ref().unwrap().decoded_mask().unwrap();
+        assert!(mask.contains(Point::new(0.4, 0.4)));
+        assert!(!mask.contains(Point::new(0.8, 0.4)));
     }
     #[test]
     fn stale_object_outcomes_are_rejected_for_every_context_boundary() {
@@ -580,7 +716,7 @@ mod tests {
     fn circular_margin_respects_photo_aspect_and_localized_roi() {
         let raw = SegMask::from_logits_in(64, &vec![8.; 64 * 64], [0.4, 0.4, 0.6, 0.6]);
         let o = ObjectSelection::default();
-        let refined = o.refined(raw, 2.0).unwrap();
+        let refined = o.refined(Some(&raw), 2.0).unwrap().unwrap();
         let mask = SelectionMask::new(&refined).unwrap();
         assert!(mask.contains(Point::new(0.602, 0.5)));
         assert!(mask.contains(Point::new(0.5, 0.604)));
@@ -605,7 +741,7 @@ mod tests {
         assert_eq!(s.ai_remove.object_selection.as_ref().unwrap().seg, before);
         assert_eq!(s.ai_remove.object_selection.as_ref().unwrap().margin, 0.003);
         let invalid = ObjectSelection { margin: f64::NAN, ..Default::default() };
-        assert!(invalid.refined(seg(), 1.0).is_err());
+        assert!(invalid.refined(Some(&seg()), 1.0).is_err());
     }
     #[test]
     fn empty_mask_can_be_repainted_and_hostile_work_is_rejected_without_mutation() {

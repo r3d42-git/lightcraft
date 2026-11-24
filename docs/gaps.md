@@ -208,6 +208,8 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 
 The upstream gap assessment above is retained. This personal fork additionally has conservative external optical profiles, ILCE-7M3 distortion, accepted RAW colour provenance, adaptive Auto, BM3D/per-photo denoiser pins, preview preparation, protected exports and persisted native AI raster retouches. These do not establish broad Lightroom parity. The 0.17 combination needs fresh automated and personal acceptance; historical evidence is not a new acceptance result. The fork runs one Ubuntu gate and local macOS/Metal validation; inherited platform/release/Sonar workflows stay removed.
 
+Local R3D removal processes distant selections and long, narrow strokes in smaller source crops within the existing catalogue limits. Each removal is reviewed and accepted together. See [R3D AI retouch](r3d-ai-retouch.md).
+
 ## R3D local retouch lighting candidate — 2026-11-05
 
 Optional local low-frequency and boundary brightness matching extends `cmd:aiRemove.matchLighting`

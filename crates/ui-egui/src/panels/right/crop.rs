@@ -306,10 +306,10 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                 }
             });
             ui.label(
-                egui::RichText::new(crate::i18n::tr(if mode == 0 {
-                    "Click an object. Click again to refine; Option-click to exclude. Then remove and review."
-                } else {
-                    "Paint to refine the selection. Option paints away. Clear the selection to start again."
+                egui::RichText::new(crate::i18n::tr(match mode {
+                    0 => "Click to select or refine. Shift-click adds an object. Option-click excludes.",
+                    2 => "Paint over parts of the selection to erase them.",
+                    _ => "Paint to select. Drag with Shift to add a stroke or with Option to erase.",
                 }))
                 .size(12.0)
                 .color(Tokens::get(ui.ctx()).text_dim),
@@ -378,7 +378,7 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         decimals: 0,
         track: lightcraft_develop::Track::Plain,
     };
-    if ai_mode && let Some(margin) = app.session.ai_remove.object_selection.as_ref().filter(|s| s.seg.is_some()).map(|s| s.margin) {
+    if ai_mode && let Some(margin) = app.session.ai_remove.object_selection.as_ref().filter(|s| s.has_object_mask()).map(|s| s.margin) {
         let editable = !app.session.ai_remove.selecting && !app.session.ai_remove.busy();
         ui.add_enabled_ui(editable, |ui| {
             let out = slider(ui, &plain("ui.objectMargin", "Selection margin", 0.0, 20.0, 3.0), margin * 1000.0, true, None);
@@ -682,7 +682,10 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             ui.label(egui::RichText::new(crate::i18n::tr("Saved retouches")).font(t.semibold(13.0)).color(t.text_label));
             ui.add_space(8.0);
             ui.spacing_mut().item_spacing.y = 8.0;
-            for edit in &d.ai_edits {
+            for (i, edit) in d.ai_edits.iter().enumerate() {
+                if d.ai_edits[..i].iter().any(|earlier| earlier.removal_id() == edit.removal_id()) {
+                    continue;
+                }
                 ui.horizontal(|ui| {
                     ui.set_min_height(32.0);
                     let mut enabled = edit.enabled;

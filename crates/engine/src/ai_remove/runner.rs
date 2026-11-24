@@ -120,6 +120,7 @@ pub(super) fn execute_with_progress(
 /// Keep both local drafts from the same inference; toggling never reruns a model.
 pub(super) fn execute_variants_with_progress(
     prepared: PreparedInput,
+    layout: patch::Layout<'_>,
     runner: &dyn RetouchRunner,
     cancel: &AtomicBool,
     deadline: std::time::Instant,
@@ -128,11 +129,12 @@ pub(super) fn execute_variants_with_progress(
     progress(super::Phase::Running);
     let output = invoke_checked(&prepared.request, runner, cancel)?;
     progress(super::Phase::Finalizing);
-    construct_local_variants(prepared, output, Vec::new(), cancel, deadline)
+    construct_local_variants(prepared, layout, output, Vec::new(), cancel, deadline)
 }
 
 fn construct_local_variants(
     prepared: PreparedInput,
+    layout: patch::Layout<'_>,
     output: RetouchOutput,
     stages: Vec<lightcraft_develop::ai_edit::AiEditStage>,
     cancel: &AtomicBool,
@@ -168,7 +170,8 @@ fn construct_local_variants(
             coverage: output.coverage.clone(),
             provenance: RetouchProvenance { model, revision: output.provenance.revision.clone(), identity: output.provenance.identity.clone() },
         };
-        let mut edit = patch::construct(PreparedInput { request: prepared.request.clone(), support: prepared.support.clone() }, matched)?;
+        let mut edit =
+            patch::construct_with_layout(PreparedInput { request: prepared.request.clone(), support: prepared.support.clone() }, matched, layout)?;
         edit.stages = stages.clone();
         edit.pixel_count().map_err(|e| e.to_string())?;
         Ok(edit)
@@ -176,7 +179,7 @@ fn construct_local_variants(
     if cancel.load(Ordering::Relaxed) {
         return Err("Cancelled.".into());
     }
-    let mut raw = patch::construct(prepared, output)?;
+    let mut raw = patch::construct_with_layout(prepared, output, layout)?;
     raw.stages = stages;
     raw.pixel_count().map_err(|e| e.to_string())?;
     Ok(super::LightingDrafts { raw, matched })
@@ -217,8 +220,10 @@ pub(super) fn execute_chain_with_progress(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_chain_variants_with_progress(
     prepared: PreparedInput,
+    layout: patch::Layout<'_>,
     first: &dyn RetouchRunner,
     second: &dyn RetouchRunner,
     stages: [lightcraft_develop::ai_edit::AiEditStage; 2],
@@ -227,7 +232,7 @@ pub(super) fn execute_chain_variants_with_progress(
     progress: &dyn Fn(super::Phase),
 ) -> Result<super::LightingDrafts, String> {
     execute_chain_result_with_progress(prepared, first, second, stages, cancel, deadline, progress, |prepared, output, stages| {
-        construct_local_variants(prepared, output, stages, cancel, deadline)
+        construct_local_variants(prepared, layout, output, stages, cancel, deadline)
     })
 }
 
@@ -328,6 +333,7 @@ mod tests {
         let expected = AiEdit::from_pixels(
             AiEdit {
                 id: 0,
+                group: None,
                 enabled: true,
                 rect: input.request.rect,
                 support: input.support.clone(),
@@ -443,6 +449,7 @@ mod tests {
             AiEdit::from_pixels(
                 AiEdit {
                     id: 1,
+                    group: None,
                     enabled: true,
                     rect: [0.0, 0.0, 1.0, 1.0],
                     support: None,
@@ -537,7 +544,7 @@ mod lighting_tests {
         let (_, phases) = std::sync::mpsc::channel();
         session.ai_remove.tag = session.ai_remove_tag();
         session.ai_remove.job = Some(super::super::Job { reply, phases, cancel: std::sync::Arc::new(AtomicBool::new(false)) });
-        tx.send(Ok(super::super::JobResult::Variants(Box::new(variants)))).unwrap();
+        tx.send(Ok(super::super::JobResult::Variants(vec![variants]))).unwrap();
         session.ai_remove_poll();
         session
     }
@@ -545,9 +552,15 @@ mod lighting_tests {
     fn local_pair_preserves_alpha_uses_one_inference_and_toggles_without_editing_saved_photo() {
         let calls = AtomicUsize::new(0);
         let input = prepared();
-        let variants =
-            execute_variants_with_progress(input, &Local(&calls), &AtomicBool::new(false), Instant::now() + Duration::from_secs(30), &|_| {})
-                .unwrap();
+        let variants = execute_variants_with_progress(
+            input,
+            Default::default(),
+            &Local(&calls),
+            &AtomicBool::new(false),
+            Instant::now() + Duration::from_secs(30),
+            &|_| {},
+        )
+        .unwrap();
         let raw = variants.raw.clone();
         let matched = variants.matched.as_ref().unwrap().clone();
         assert!(matched.model.ends_with("; lighting=local-frequency-v2"));
@@ -564,13 +577,13 @@ mod lighting_tests {
         assert!(!session.ai_remove.use_cloud);
         let id = session.active().unwrap();
         let before = session.develop_of(id).unwrap();
-        assert_eq!(session.ai_remove.draft.as_ref(), Some(&matched));
+        assert_eq!(session.ai_remove.draft.as_deref().and_then(|edits| edits.first()), Some(&matched));
         session.ai_remove_preview_settings().unwrap();
         session.execute("aiRemove.matchLighting", &serde_json::json!({"enabled":false})).unwrap();
-        assert_eq!(session.ai_remove.draft.as_ref(), Some(&raw));
+        assert_eq!(session.ai_remove.draft.as_deref().and_then(|edits| edits.first()), Some(&raw));
         assert!(session.ai_remove.preview_settings.is_none());
         session.execute("aiRemove.matchLighting", &serde_json::json!({"enabled":true})).unwrap();
-        assert_eq!(session.ai_remove.draft.as_ref(), Some(&matched));
+        assert_eq!(session.ai_remove.draft.as_deref().and_then(|edits| edits.first()), Some(&matched));
         assert_eq!(*session.develop_of(id).unwrap(), *before);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         session.execute("aiRemove.accept", &serde_json::json!({})).unwrap();
@@ -585,20 +598,26 @@ mod lighting_tests {
         let calls = AtomicUsize::new(0);
         let mut input = prepared();
         input.request.mask.fill(255);
-        let variants =
-            execute_variants_with_progress(input, &Local(&calls), &AtomicBool::new(false), Instant::now() + Duration::from_secs(30), &|_| {})
-                .unwrap();
+        let variants = execute_variants_with_progress(
+            input,
+            Default::default(),
+            &Local(&calls),
+            &AtomicBool::new(false),
+            Instant::now() + Duration::from_secs(30),
+            &|_| {},
+        )
+        .unwrap();
         assert!(variants.matched.is_err());
         let raw = variants.raw.clone();
         let mut session = complete(variants);
         assert_eq!(session.ai_remove.phase, super::super::Phase::Failed);
         assert!(session.ai_remove.draft.is_none());
         session.execute("aiRemove.matchLighting", &serde_json::json!({"enabled":false})).unwrap();
-        assert_eq!(session.ai_remove.draft.as_ref(), Some(&raw));
+        assert_eq!(session.ai_remove.draft.as_deref().and_then(|edits| edits.first()), Some(&raw));
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         assert!(session.execute("aiRemove.matchLighting", &serde_json::json!({"enabled":true})).is_err());
         assert_eq!(session.ai_remove.match_lighting, Some(false));
-        assert_eq!(session.ai_remove.draft.as_ref(), Some(&raw));
+        assert_eq!(session.ai_remove.draft.as_deref().and_then(|edits| edits.first()), Some(&raw));
     }
 }
 
@@ -679,6 +698,7 @@ mod chain_lighting_persistence {
         };
         let variants = execute_chain_variants_with_progress(
             prepared,
+            Default::default(),
             &first,
             &second,
             [stage(true), stage(false)],

@@ -1514,6 +1514,7 @@ fn persisted_ai_raster_uses_cpu_sampling_and_invalidates_gpu_cache() {
     let edit = lightcraft_develop::AiEdit::from_pixels(
         lightcraft_develop::AiEdit {
             id: 1,
+            group: None,
             enabled: true,
             rect: [0.2, 0.2, 0.8, 0.8],
             support: None,

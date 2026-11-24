@@ -145,6 +145,10 @@ fn deserialize_stages<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<AiEd
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AiEdit {
     pub id: u32,
+    /// The first raster ID of a removal made from several source regions.
+    /// Single-region and legacy removals carry no group metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<u32>,
     pub enabled: bool,
     /// Normalized source bounds [x0, y0, x1, y1], entirely in 0..1.
     pub rect: [f64; 4],
@@ -163,6 +167,11 @@ pub struct AiEdit {
 }
 
 impl AiEdit {
+    /// The user-visible removal that owns this raster.
+    pub fn removal_id(&self) -> u32 {
+        self.group.unwrap_or(self.id)
+    }
+
     /// Validate and encode a supplied raster. Metadata must identify the actual generator;
     /// this constructor does not download, start or select a model.
     pub fn from_pixels(mut metadata: Self, pixels: &[[f32; 4]]) -> Result<Self, AiEditError> {
@@ -332,6 +341,7 @@ mod tests {
         AiEdit::from_pixels(
             AiEdit {
                 id: 1,
+                group: None,
                 enabled: true,
                 rect: [0.25, 0.25, 0.75, 0.75],
                 support: None,

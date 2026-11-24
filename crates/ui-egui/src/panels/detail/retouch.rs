@@ -146,10 +146,15 @@ fn ai_selection_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui:
     let long = map.screen(Point::new(1.0, 0.0)).distance(origin).max(map.screen(Point::new(0.0, 1.0)).distance(origin));
     let radius = app.ui.remove_size * long;
     let p = ui.painter_at(app.canvas_rect.unwrap_or(map.rect));
+    let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
+    let subtract = mode == 2 || alt;
+    let stroke_in_progress = matches!(app.gesture, Some(Gesture::Spot { .. }));
     if app.session.ai_remove.draft.is_none()
         && let Some(selection) = &app.session.ai_remove.object_selection
     {
-        if let Some(seg) = &selection.seg {
+        if let Some(seg) = &selection.seg
+            && (mode == 0 || !stroke_in_progress || shift || subtract || selection.has_object_mask())
+        {
             draw_object_selection(ui, &p, map, seg);
         }
         for (points, color) in [(&selection.include, Color32::from_rgb(80, 230, 120)), (&selection.exclude, Color32::from_rgb(255, 95, 90))] {
@@ -163,7 +168,7 @@ fn ai_selection_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui:
         if app.session.ai_remove.draft.is_none()
             && let Some(selection) = &app.session.ai_remove.selection
         {
-            draw_ai_selection(ui, &p, map, &selection.points, selection.size as f32 * long);
+            draw_ai_selection(ui, &p, map, &selection.points, selection.size as f32 * long, None);
         }
         if resp.hover_pos().is_some() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
@@ -172,46 +177,31 @@ fn ai_selection_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui:
             && let Some(q) = resp.interact_pointer_pos().filter(|q| map.rect.contains(*q))
         {
             let point = map.norm(q);
-            let exclude = ui.input(|i| i.modifiers.alt);
-            if let Err(e) = app.run_typed("aiRemove.objectPoint", json!({"x":point.x,"y":point.y,"exclude":exclude})) {
+            if let Err(e) = app.run_typed("aiRemove.objectPoint", json!({"x":point.x,"y":point.y,"exclude":alt,"add":shift})) {
                 app.ai_error(ui.ctx(), e, None);
             }
         }
         return;
     }
+    if app.session.ai_remove.selecting {
+        return;
+    }
+    let stroke = if subtract { Color32::from_rgb(255, 95, 90) } else { Color32::from_rgb(20, 210, 235) };
     if let Some(q) = resp.hover_pos().filter(|p| map.rect.contains(*p)) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::None);
-        p.circle_stroke(q, radius, Stroke::new(1.0, Color32::from_rgb(35, 220, 240)));
+        p.circle_stroke(q, radius, Stroke::new(1.0, stroke));
     }
-    if let Some(q) = resp.interact_pointer_pos()
-        && (resp.drag_started() || resp.dragged() || resp.clicked())
-        && map.rect.contains(q)
-    {
-        if !matches!(app.gesture, Some(Gesture::Spot { .. })) {
-            let _ = app.run("aiRemove.cancel", json!({}));
-            let start = ui.input(|i| i.pointer.press_origin()).unwrap_or(q);
-            app.gesture = Some(Gesture::Spot { points: vec![map.norm(start)] });
-        }
-        let point = map.norm(q);
-        if point.x.is_finite()
-            && point.y.is_finite()
-            && (0.0..=1.0).contains(&point.x)
-            && (0.0..=1.0).contains(&point.y)
-            && let Some(Gesture::Spot { points }) = &mut app.gesture
-            && points.len() < 4096
-            && points.last() != Some(&point)
-        {
-            points.push(point);
-        }
-    }
+    collect_ai_brush(app, ui, resp, map, stroke_in_progress);
     let selection = app.session.ai_remove.selection.as_ref();
-    let painted = match &app.gesture {
-        Some(Gesture::Spot { points }) => Some((points.as_slice(), radius)),
-        _ if app.session.ai_remove.draft.is_none() => selection.map(|s| (s.points.as_slice(), s.size as f32 * long)),
-        _ => None,
-    };
-    if let Some((points, radius)) = painted {
-        draw_ai_selection(ui, &p, map, points, radius);
+    let painting = matches!(app.gesture, Some(Gesture::Spot { .. }));
+    if app.session.ai_remove.draft.is_none()
+        && (!painting || shift || subtract)
+        && let Some(selection) = selection
+    {
+        draw_ai_selection(ui, &p, map, &selection.points, selection.size as f32 * long, None);
+    }
+    if let Some(Gesture::Spot { points }) = &app.gesture {
+        draw_ai_selection(ui, &p, map, points.as_slice(), radius, Some(stroke));
     }
     if (resp.drag_stopped() || resp.clicked())
         && let Some(Gesture::Spot { points }) = app.gesture.take()
@@ -221,14 +211,34 @@ fn ai_selection_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui:
             .filter(|p| p.x.is_finite() && p.y.is_finite() && (0.0..=1.0).contains(&p.x) && (0.0..=1.0).contains(&p.y))
             .map(|p| [p.x, p.y])
             .collect();
-        let subtract = mode == 2 || ui.input(|i| i.modifiers.alt);
-        let refinement = app.session.ai_remove.object_selection.is_some() || subtract;
+        let refinement = subtract || app.session.ai_remove.object_selection.as_ref().is_some_and(|s| s.has_object_mask());
         if let Err(e) = app.run(
             if refinement { "aiRemove.refineBrush" } else { "aiRemove.select" },
-            json!({"points":points,"size":app.ui.remove_size,"feather":app.ui.remove_feather,"opacity":app.ui.remove_opacity,"subtract":subtract}),
+            json!({"points":points,"size":app.ui.remove_size,"feather":app.ui.remove_feather,"opacity":app.ui.remove_opacity,"subtract":subtract,"append":shift}),
         ) {
             app.toast(ui.ctx(), e);
         }
+    }
+}
+
+fn collect_ai_brush(app: &mut LightcraftApp, ui: &egui::Ui, resp: &egui::Response, map: &CanvasMap, stroke_in_progress: bool) {
+    let Some(q) = resp.interact_pointer_pos().filter(|q| map.rect.contains(*q)) else { return };
+    if !(resp.drag_started() || resp.dragged() || resp.clicked() || (stroke_in_progress && resp.drag_stopped())) {
+        return;
+    }
+    if !stroke_in_progress {
+        let _ = app.run("aiRemove.cancel", json!({}));
+        let start = ui.input(|i| i.pointer.press_origin()).unwrap_or(q);
+        app.gesture = Some(Gesture::Spot { points: vec![map.norm(start)] });
+    }
+    let point = map.norm(q);
+    if (0.0..=1.0).contains(&point.x)
+        && (0.0..=1.0).contains(&point.y)
+        && let Some(Gesture::Spot { points }) = &mut app.gesture
+        && points.len() < 4096
+        && points.last() != Some(&point)
+    {
+        points.push(point);
     }
 }
 
@@ -289,7 +299,7 @@ fn draw_object_selection(ui: &egui::Ui, painter: &egui::Painter, map: &CanvasMap
 }
 
 /// A union mask in one texture: overlapping capsules never accumulate opacity.
-fn draw_ai_selection(ui: &egui::Ui, painter: &egui::Painter, map: &CanvasMap, points: &[Point], radius: f32) {
+fn draw_ai_selection(ui: &egui::Ui, painter: &egui::Painter, map: &CanvasMap, points: &[Point], radius: f32, live_stroke: Option<Color32>) {
     use std::hash::{Hash, Hasher};
     let points: Vec<Pos2> = points.iter().map(|p| map.screen(*p)).filter(|p| p.x.is_finite() && p.y.is_finite()).collect();
     if points.is_empty() || !radius.is_finite() || radius <= 0.0 {
@@ -297,6 +307,7 @@ fn draw_ai_selection(ui: &egui::Ui, painter: &egui::Painter, map: &CanvasMap, po
     }
     let mut bounds = Rect::NOTHING;
     let mut hash = std::collections::hash_map::DefaultHasher::new();
+    live_stroke.hash(&mut hash);
     radius.to_bits().hash(&mut hash);
     for point in &points {
         bounds.extend_with(*point);
@@ -311,7 +322,7 @@ fn draw_ai_selection(ui: &egui::Ui, painter: &egui::Painter, map: &CanvasMap, po
         v.to_bits().hash(&mut hash);
     }
     let hash = hash.finish();
-    let key = egui::Id::unique("ai-remove-mask-texture");
+    let key = egui::Id::unique(if live_stroke.is_some() { "ai-remove-stroke-texture" } else { "ai-remove-mask-texture" });
     let cached = ui.data(|data| data.get_temp::<(u64, egui::TextureHandle)>(key));
     let texture = match cached {
         Some((old, texture)) if old == hash => texture,
@@ -345,10 +356,9 @@ fn draw_ai_selection(ui: &egui::Ui, painter: &egui::Painter, map: &CanvasMap, po
                     }
                 }
             }
-            let pixels = mask
-                .into_iter()
-                .map(|inside| if inside { Color32::from_rgba_unmultiplied(20, 210, 235, 100) } else { Color32::TRANSPARENT })
-                .collect();
+            let [r, g, b, _] = live_stroke.unwrap_or(Color32::from_rgb(20, 210, 235)).to_array();
+            let color = Color32::from_rgba_unmultiplied(r, g, b, 100);
+            let pixels = mask.into_iter().map(|inside| if inside { color } else { Color32::TRANSPARENT }).collect();
             let texture = ui.ctx().load_texture("ai-remove-selection", egui::ColorImage::new([width, height], pixels), egui::TextureOptions::LINEAR);
             ui.data_mut(|data| data.insert_temp(key, (hash, texture.clone())));
             texture

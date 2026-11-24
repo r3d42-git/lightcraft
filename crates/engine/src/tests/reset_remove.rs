@@ -22,6 +22,7 @@ fn patch(id: u32) -> AiEdit {
     AiEdit::from_pixels(
         AiEdit {
             id,
+            group: None,
             enabled: id != 2,
             rect: [0.25, 0.25, 0.75, 0.75],
             support: Some(AiBrushSupport {

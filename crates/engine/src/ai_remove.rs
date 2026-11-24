@@ -57,7 +57,7 @@ pub struct AiRemove {
     /// Session preference for either provider; None means enabled for new jobs.
     pub match_lighting: Option<bool>,
     #[cfg(not(target_arch = "wasm32"))]
-    lighting_drafts: Option<LightingDrafts>,
+    lighting_drafts: Option<Vec<LightingDrafts>>,
     pub include_effects: Option<bool>,
     /// Explicit opt-in to ObjectClear → RORem; None keeps the selected model output.
     pub reconstruct: Option<bool>,
@@ -69,7 +69,7 @@ pub struct AiRemove {
     pub phase: Phase,
     cancel_reason: Option<&'static str>,
     pub message: String,
-    pub draft: Option<AiEdit>,
+    pub draft: Option<Vec<AiEdit>>,
     preview_settings: Option<(std::sync::Arc<DevelopSettings>, u64)>,
     pub preview_original: bool,
     pub selection: Option<Spot>,
@@ -90,7 +90,7 @@ struct LightingDrafts {
 enum JobResult {
     #[cfg(test)]
     Single(Box<AiEdit>),
-    Variants(Box<LightingDrafts>),
+    Variants(Vec<LightingDrafts>),
 }
 #[cfg(not(target_arch = "wasm32"))]
 struct Job {
@@ -117,16 +117,16 @@ impl Job {
     fn spawn_variants(
         activity: &crate::activity::Activity,
         detail: &str,
-        work: impl FnOnce(&std::sync::atomic::AtomicBool, &dyn Fn(Phase)) -> std::result::Result<LightingDrafts, String> + Send + 'static,
+        work: impl FnOnce(&std::sync::atomic::AtomicBool, &dyn Fn(Phase)) -> std::result::Result<Vec<LightingDrafts>, String> + Send + 'static,
     ) -> std::result::Result<Self, String> {
-        Self::spawn_result(activity, detail, move |cancel, progress| work(cancel, progress).map(|variants| JobResult::Variants(Box::new(variants))))
+        Self::spawn_result(activity, detail, move |cancel, progress| work(cancel, progress).map(JobResult::Variants))
     }
     fn spawn_cloud(
         activity: &crate::activity::Activity,
         work: impl FnOnce(&std::sync::atomic::AtomicBool, &dyn Fn(Phase)) -> std::result::Result<LightingDrafts, String> + Send + 'static,
     ) -> std::result::Result<Self, String> {
         Self::spawn_result(activity, "ChatGPT via Codex", move |cancel, progress| {
-            work(cancel, progress).map(|variants| JobResult::Variants(Box::new(variants)))
+            work(cancel, progress).map(|variants| JobResult::Variants(vec![variants]))
         })
     }
     fn spawn_result(
@@ -165,8 +165,14 @@ impl AiRemove {
     #[cfg(not(target_arch = "wasm32"))]
     fn select_lighting_draft(&mut self, enabled: bool) -> std::result::Result<(), String> {
         let Some(variants) = &self.lighting_drafts else { return Ok(()) };
-        let edit = if enabled { variants.matched.clone()? } else { variants.raw.clone() };
-        self.draft = Some(edit);
+        if variants.is_empty() {
+            return Err("AI Remove produced no image regions.".into());
+        }
+        let edits = variants
+            .iter()
+            .map(|pair| if enabled { pair.matched.clone() } else { Ok(pair.raw.clone()) })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        self.draft = Some(edits);
         self.preview_settings = None;
         self.preview_original = false;
         self.phase = Phase::Ready;
@@ -189,6 +195,31 @@ impl AiRemove {
         }
     }
 }
+/// Build the same bounded stack for preview and commit. All constituent rasters
+/// keep ordinary source-space coordinates, including when read by older builds.
+fn append_removal(settings: &mut DevelopSettings, draft: &[AiEdit]) -> Result<()> {
+    let existing = &mut settings.ai_edits;
+    if draft.is_empty() || existing.len().saturating_add(draft.len()) > lightcraft_develop::ai_edit::MAX_EDITS {
+        return Err(error("The removal exceeds the available AI patch slots."));
+    }
+    let previous_len = existing.len();
+    let mut next_id = existing.iter().map(|edit| edit.id).max().unwrap_or(0);
+    next_id.checked_add(draft.len() as u32).ok_or_else(|| error("Too many edit IDs."))?;
+    let group = (draft.len() > 1).then(|| next_id + 1);
+    for region in draft {
+        next_id += 1;
+        let mut edit = region.clone();
+        edit.id = next_id;
+        edit.group = group;
+        existing.push(edit);
+    }
+    if let Err(err) = lightcraft_develop::ai_edit::validate_stack(existing) {
+        existing.truncate(previous_len);
+        return Err(error(err));
+    }
+    Ok(())
+}
+
 fn error(s: impl ToString) -> EngineError {
     EngineError::Other(s.to_string())
 }
@@ -262,7 +293,7 @@ impl Session {
                     match result {
                         #[cfg(test)]
                         Ok(JobResult::Single(edit)) => {
-                            self.ai_remove.draft = Some(*edit);
+                            self.ai_remove.draft = Some(vec![*edit]);
                             self.ai_remove.phase = Phase::Ready;
                             self.ai_remove.message = if self.ai_remove.reconstruction_active {
                                 "Result ready. Review shadows, texture and transitions before accepting."
@@ -274,7 +305,7 @@ impl Session {
                             .into();
                         }
                         Ok(JobResult::Variants(variants)) => {
-                            self.ai_remove.lighting_drafts = Some(*variants);
+                            self.ai_remove.lighting_drafts = Some(variants);
                             if let Err(message) = self.ai_remove.select_lighting_draft(self.ai_remove.match_lighting.unwrap_or(true)) {
                                 self.ai_remove.draft = None;
                                 self.ai_remove.preview_settings = None;
@@ -302,10 +333,7 @@ impl Session {
         if self.ai_remove.preview_settings.is_none() {
             let id = self.active()?;
             let mut settings = (*self.develop_of(id)?).clone();
-            let mut edit = draft.clone();
-            edit.id = settings.ai_edits.iter().map(|e| e.id).max().unwrap_or(0).checked_add(1)?;
-            settings.ai_edits.push(edit);
-            lightcraft_develop::ai_edit::validate_stack(&settings.ai_edits).ok()?;
+            append_removal(&mut settings, draft).ok()?;
             if let Some(i) = self.ai_remove.spot.filter(|i| *i < settings.spots.len()) {
                 settings.spots.remove(i);
             }
@@ -365,7 +393,9 @@ impl Session {
         if self.ai_remove.selecting {
             return Err(error("Wait for the object selection."));
         }
-        let segmented = self.ai_remove.object_selection.as_ref().and_then(|o| o.seg.clone());
+        let objects = self.ai_remove.object_selection.as_ref();
+        let segmented = objects.and_then(|o| o.seg.clone());
+        let brush_only = objects.is_some_and(ObjectSelection::brush_only);
         if self.ai_remove.object_selection.is_some() && segmented.is_none() {
             return Err(error("Select an object first."));
         }
@@ -453,6 +483,7 @@ impl Session {
                     settings,
                     spot,
                     segmented,
+                    brush_only,
                     refinements,
                     effects,
                     index.is_none(),
@@ -525,10 +556,15 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             s.ai_remove.match_lighting = Some(enabled);
             Ok(json!({"matchLighting":enabled}))
         }),
-        cmd!(query "aiRemove.objectPoint", "Select AI Object", [], None, "{x,y,exclude?:bool} — refine a temporary object selection", has_active, |s, p| s.ai_remove_object_point(p)),
+        cmd!(query "aiRemove.objectPoint", "Select AI Object", [], None, "{x,y,exclude?:bool,add?:bool} — refine a temporary object selection or add another object", has_active, |s, p| s.ai_remove_object_point(p)),
         cmd!(query "aiRemove.objectMargin", "Object Selection Margin", [], None, "{size:0..0.02} — visible margin as a fraction of the long edge", has_active, |s, p| s.ai_remove_object_margin(p)),
         cmd!(query "aiRemove.refineBrush", "Refine AI Selection", [], None, "{points:[[x,y],…],size?,subtract?:bool}", has_active, |s, p| s.ai_remove_refine_brush(p)),
-        cmd!(query "aiRemove.select", "Paint AI Selection", [], None, "{points:[[x,y],…],size?,feather?,opacity?} — temporary AI mask; no photo edit", has_active, |s, p| {
+        cmd!(query "aiRemove.select", "Paint AI Selection", [], None, "{points:[[x,y],…],size?,feather?,opacity?,append?:bool} — temporary AI mask; no photo edit", has_active, |s, p| {
+            match p.get("append") {
+                Some(Value::Bool(true)) => return s.ai_remove_refine_brush(p),
+                Some(Value::Bool(false)) | None => {}
+                Some(_) => return Err(error("append must be a boolean.")),
+            }
             let selection = selection_param(p)?;
             let tag = s.ai_remove_tag().ok_or_else(|| error("Select a photo."))?;
             s.ai_remove_cancel();
@@ -582,7 +618,7 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             }
             #[cfg(target_arch = "wasm32")] { let _ = (s, cloud, backend, model_id, include_effects, reconstruct, match_lighting); Err(error("AI Remove is unavailable in the browser.")) }
         }),
-        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"provider":if s.ai_remove.use_cloud { "chatgpt" } else { "local" },"matchLighting":s.ai_remove.match_lighting.unwrap_or(true),"reconstruction":if s.ai_remove.reconstruction_active { "objectclear-rorem" } else { "selected" },"reconstructionPreference":if s.ai_remove.reconstruction_enabled(None) { "objectclear-rorem" } else { "selected" },"stage":match s.ai_remove.phase { Phase::Effects=>1,Phase::Reconstruction=>2,_=>0 },"draftStages":s.ai_remove.draft.as_ref().map(|e|&e.stages),"reconstructionAvailable":s.ai_remove_reconstruction_available(),"includeEffects":s.ai_remove.include_effects.unwrap_or(true),"effectsActive":s.ai_remove.effects_active,"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some() || s.ai_remove.object_selection.as_ref().is_some_and(|o|o.seg.is_some()),"selecting":s.ai_remove.selecting,"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
+        cmd!(query "aiRemove.status", "AI Remove Status", [], None, "{}", always, |s, _| { s.ai_remove_poll(); Ok(json!({"provider":if s.ai_remove.use_cloud { "chatgpt" } else { "local" },"matchLighting":s.ai_remove.match_lighting.unwrap_or(true),"reconstruction":if s.ai_remove.reconstruction_active { "objectclear-rorem" } else { "selected" },"reconstructionPreference":if s.ai_remove.reconstruction_enabled(None) { "objectclear-rorem" } else { "selected" },"stage":match s.ai_remove.phase { Phase::Effects=>1,Phase::Reconstruction=>2,_=>0 },"draftRegions":s.ai_remove.draft.as_ref().map_or(0, Vec::len),"draftStages":s.ai_remove.draft.as_ref().and_then(|edits|edits.first()).map(|e|&e.stages),"reconstructionAvailable":s.ai_remove_reconstruction_available(),"includeEffects":s.ai_remove.include_effects.unwrap_or(true),"effectsActive":s.ai_remove.effects_active,"running":s.ai_remove.busy(),"ready":s.ai_remove.draft.is_some(),"selected":s.ai_remove.selection.is_some() || s.ai_remove.object_selection.as_ref().is_some_and(|o|o.seg.is_some()),"selecting":s.ai_remove.selecting,"previewOriginal":s.ai_remove.preview_original,"message":s.ai_remove.message,"phase":s.ai_remove.phase})) }),
         cmd!(query "aiRemove.previewOriginal", "Show Photo Without AI Draft", [], None, "{enabled:bool} — compare the pending result without accepting it", has_active, |s, p| {
             s.ai_remove_poll();
             if s.ai_remove.draft.is_none() { return Err(error("No current AI result to preview.")); }
@@ -593,12 +629,10 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
         cmd!(query "aiRemove.cancel", "Cancel AI Remove", [], None, "{}", always, |s, _| { s.ai_remove_cancel(); Ok(json!({})) }),
         cmd!("aiRemove.accept", "Accept AI Remove", [], None, "{}", has_active, |s, _| {
             s.ai_remove_poll();
-            let mut edit = s.ai_remove.draft.clone().ok_or_else(|| error("No current AI result to accept."))?;
+            let draft = s.ai_remove.draft.as_deref().ok_or_else(|| error("No current AI result to accept."))?;
             let id = s.active().ok_or_else(|| error("No active photo."))?;
             let mut d = (*s.develop_of(id).unwrap_or_default()).clone();
-            edit.id = d.ai_edits.iter().map(|e| e.id).max().unwrap_or(0).checked_add(1).ok_or_else(|| error("Too many edit IDs."))?;
-            d.ai_edits.push(edit);
-            lightcraft_develop::ai_edit::validate_stack(&d.ai_edits).map_err(error)?;
+            append_removal(&mut d, draft)?;
             if let Some(i) = s.ai_remove.spot.filter(|i| *i < d.spots.len()) {
                 d.spots.remove(i);
             }
@@ -616,12 +650,12 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             let id = s.active().ok_or_else(|| error("No photo."))?;
             let mut d = (*s.develop_of(id).unwrap_or_default()).clone();
             let edit_id = p.get("id").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()).ok_or_else(|| error("Missing patch ID."))?;
-            let i = d.ai_edits.iter().position(|e| e.id == edit_id).ok_or_else(|| error("Patch missing."))?;
+            let target = d.ai_edits.iter().find(|edit| edit.id == edit_id).ok_or_else(|| error("Patch missing."))?.removal_id();
             if p.get("delete").and_then(Value::as_bool) == Some(true) {
-                d.ai_edits.remove(i);
+                d.ai_edits.retain(|edit| edit.removal_id() != target);
             } else if let Some(enabled) = p.get("enabled").and_then(Value::as_bool) {
-                if let Some(e) = d.ai_edits.get_mut(i) {
-                    e.enabled = enabled;
+                for edit in d.ai_edits.iter_mut().filter(|edit| edit.removal_id() == target) {
+                    edit.enabled = enabled;
                 }
             } else {
                 return Err(error("Give enabled or delete."));
@@ -712,8 +746,25 @@ fn run_worker(
     seed: u32,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> std::result::Result<AiEdit, String> {
-    run_worker_with_progress(runtime, backend, package, None, source, info, d, spot, None, Vec::new(), false, continuous, seed, cancel, &|_| {})
-        .map(|variants| variants.raw)
+    run_worker_with_progress(
+        runtime,
+        backend,
+        package,
+        None,
+        source,
+        info,
+        d,
+        spot,
+        None,
+        false,
+        Vec::new(),
+        false,
+        continuous,
+        seed,
+        cancel,
+        &|_| {},
+    )
+    .and_then(|variants| variants.into_iter().next().map(|v| v.raw).ok_or_else(|| "No local AI draft.".to_string()))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -728,44 +779,47 @@ fn run_worker_with_progress(
     d: DevelopSettings,
     spot: Spot,
     segmented: Option<lightcraft_develop::SegMask>,
+    pure_brush: bool,
     refinements: Vec<(Spot, bool)>,
     effects: bool,
     continuous: bool,
     seed: u32,
     cancel: &std::sync::atomic::AtomicBool,
     progress: &dyn Fn(Phase),
-) -> std::result::Result<LightingDrafts, String> {
+) -> std::result::Result<Vec<LightingDrafts>, String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1200);
     progress(Phase::Preparing);
-    let mut prepared = match segmented {
-        Some(seg) => input::prepare_segmented_protected(source, info, d, seg, &refinements, seed, cancel)?,
-        None => input::prepare(source, info, d, spot, continuous, seed, cancel)?,
-    };
-    prepared.request.effects = effects;
-    if let Some(second) = reconstruction {
-        let first = package.ok_or("Two-stage reconstruction requires verified packages.")?;
-        let stages = [
-            first.stage_record(lightcraft_develop::ai_edit::AiStageRole::Effects, seed, 20).map_err(|e| e.to_string())?,
-            second.stage_record(lightcraft_develop::ai_edit::AiStageRole::Reconstruction, seed, 20).map_err(|e| e.to_string())?,
-        ];
-        runner::execute_chain_variants_with_progress(
-            prepared,
-            &protocol::ProtocolRunner { runtime, backend, package, deadline: Some(deadline) },
-            &protocol::ProtocolRunner { runtime: &second.runtime, backend: &second.backend, package: Some(second), deadline: Some(deadline) },
-            stages,
-            cancel,
-            deadline,
-            progress,
-        )
-    } else {
-        runner::execute_variants_with_progress(
-            prepared,
-            &protocol::ProtocolRunner { runtime, backend, package, deadline: Some(deadline) },
-            cancel,
-            deadline,
-            progress,
-        )
-    }
+    input::run_local(source, info, d, spot, segmented, pure_brush, &refinements, effects, continuous, seed, cancel, |prepared, layout| {
+        if std::time::Instant::now() >= deadline {
+            return Err("AI Remove timed out.".into());
+        }
+        if let Some(second) = reconstruction {
+            let first = package.ok_or("Two-stage reconstruction requires verified packages.")?;
+            let stages = [
+                first.stage_record(lightcraft_develop::ai_edit::AiStageRole::Effects, seed, 20).map_err(|e| e.to_string())?,
+                second.stage_record(lightcraft_develop::ai_edit::AiStageRole::Reconstruction, seed, 20).map_err(|e| e.to_string())?,
+            ];
+            runner::execute_chain_variants_with_progress(
+                prepared,
+                layout,
+                &protocol::ProtocolRunner { runtime, backend, package, deadline: Some(deadline) },
+                &protocol::ProtocolRunner { runtime: &second.runtime, backend: &second.backend, package: Some(second), deadline: Some(deadline) },
+                stages,
+                cancel,
+                deadline,
+                progress,
+            )
+        } else {
+            runner::execute_variants_with_progress(
+                prepared,
+                layout,
+                &protocol::ProtocolRunner { runtime, backend, package, deadline: Some(deadline) },
+                cancel,
+                deadline,
+                progress,
+            )
+        }
+    })
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -778,6 +832,7 @@ mod tests {
         let edit = AiEdit::from_pixels(
             AiEdit {
                 id: 0,
+                group: None,
                 enabled: true,
                 rect: [0.0, 0.0, 1.0, 1.0],
                 support: None,
@@ -798,7 +853,7 @@ mod tests {
     }
 
     pub(super) fn draft(s: &mut Session) {
-        s.ai_remove.draft = Some(pending_edit(s));
+        s.ai_remove.draft = Some(vec![pending_edit(s)]);
     }
     #[test]
     fn lens_change_invalidates_selection_and_draft_without_a_develop_edit() {
@@ -1116,6 +1171,53 @@ printf '%s' '{"version":1,"width":128,"height":96,"model":"test","model_version"
         assert!(d.ai_edits.is_empty());
         assert_eq!(d.spots.len(), 1);
     }
+    #[test]
+    fn region_group_previews_and_persists_as_one_undoable_removal() {
+        let mut s = Session::with_demo();
+        let id = s.active().unwrap();
+        draft(&mut s);
+        s.execute("aiRemove.accept", &json!({})).unwrap();
+        let before = s.develop_of(id).unwrap();
+        assert!(before.ai_edits[0].group.is_none());
+        let left = pending_edit(&mut s);
+        let mut right = left.clone();
+        right.rect = [0.6, 0.3, 0.8, 0.7];
+        s.ai_remove.draft = Some(vec![left, right]);
+        let undo = s.undo.len();
+        let preview = s.ai_remove_preview_settings().unwrap();
+        assert_eq!(s.execute("aiRemove.status", &json!({})).unwrap()["draftRegions"], 2);
+        assert_eq!(s.develop_of(id).unwrap().ai_edits, before.ai_edits);
+        s.execute("aiRemove.accept", &json!({})).unwrap();
+        let accepted = s.develop_of(id).unwrap();
+        assert_eq!(preview.ai_edits, accepted.ai_edits);
+        assert_eq!(s.undo.len(), undo + 1);
+        let saved = accepted.to_json();
+        assert!(saved["ai_edits"][0].get("group").is_none());
+        let restored = DevelopSettings::from_json(&saved).unwrap();
+        assert_eq!(restored.ai_edits, accepted.ai_edits);
+        assert_eq!(restored.ai_edits.iter().map(AiEdit::removal_id).collect::<Vec<_>>(), [1, 2, 2]);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.develop_of(id).unwrap().ai_edits, before.ai_edits);
+        s.execute("edit.redo", &json!({})).unwrap();
+        s.execute("aiRemove.update", &json!({"id":3, "enabled":false})).unwrap();
+        assert_eq!(s.develop_of(id).unwrap().ai_edits.iter().map(|e| e.enabled).collect::<Vec<_>>(), [true, false, false]);
+        s.execute("aiRemove.update", &json!({"id":2, "delete":true})).unwrap();
+        assert_eq!(s.develop_of(id).unwrap().ai_edits, before.ai_edits);
+    }
+
+    #[test]
+    fn oversized_group_is_rejected_without_committing_a_partial_removal() {
+        let mut s = Session::with_demo();
+        let mut settings = DevelopSettings::default();
+        let region = pending_edit(&mut s);
+        let mut invalid = region.clone();
+        invalid.width = 0;
+        assert!(append_removal(&mut settings, &[region.clone(), invalid]).is_err());
+        assert!(settings.ai_edits.is_empty());
+        assert!(append_removal(&mut settings, &vec![region; lightcraft_develop::ai_edit::MAX_EDITS + 1]).is_err());
+        assert!(settings.ai_edits.is_empty());
+    }
+
     #[test]
     fn draft_preview_is_shared_developed_and_never_committed() {
         let mut s = Session::with_demo();

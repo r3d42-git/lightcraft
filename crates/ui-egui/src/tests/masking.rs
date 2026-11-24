@@ -132,6 +132,37 @@ fn remove_object_brush_refinement_preserves_temporary_selection_and_photo() {
     assert_eq!(develop(&h), before);
 }
 
+#[test]
+fn remove_brush_shift_drag_adds_a_separate_stroke() {
+    let mut h = detail("panel.remove");
+    click(&mut h, "button:aiRemovePaintMode");
+    let before = develop(&h);
+    let undo = h.app.session.undo.len();
+    let drag = |h: &mut Headless, x: f64, shift: bool| {
+        let r = h.request(
+            "ui.pointer",
+            json!({"shift":shift,"events":[{"kind":"down","x":x,"y":0.3},{"kind":"move","x":x,"y":0.45},{"kind":"move","x":x,"y":0.6},{"kind":"up","x":x,"y":0.6}]}),
+            T,
+        );
+        assert_eq!(r["ok"], true, "{r}");
+    };
+    drag(&mut h, 0.2, false);
+    assert!(h.app.session.ai_remove.selection.is_some());
+    drag(&mut h, 0.8, true);
+    let selection = h.app.session.ai_remove.object_selection.as_ref().expect("one selection with two strokes");
+    let mask = selection.decoded_mask().unwrap();
+    assert!(mask.contains(lightcraft_geom::Point::new(0.2, 0.45)));
+    assert!(mask.contains(lightcraft_geom::Point::new(0.8, 0.45)));
+    assert!(!mask.contains(lightcraft_geom::Point::new(0.5, 0.45)));
+    assert!(!h.app.widgets.iter().any(|(id, _)| id == "slider:ui.objectMargin"), "no object margin for a brush-only selection");
+    drag(&mut h, 0.5, false);
+    let fresh = h.app.session.ai_remove.selection.as_ref().expect("a plain stroke starts a fresh selection");
+    assert!(fresh.points.iter().all(|p| (p.x - 0.5).abs() < 0.01));
+    assert!(h.app.session.ai_remove.object_selection.is_none());
+    assert_eq!(develop(&h), before);
+    assert_eq!(h.app.session.undo.len(), undo);
+}
+
 /// Evaluate the real composite, with a deterministic embedded sky matte (no AI model required).
 fn mask_coverage(h: &Headless, mask: usize, x: usize, y: usize) -> f32 {
     use lightcraft_pipeline::{
