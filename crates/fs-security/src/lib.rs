@@ -52,14 +52,12 @@ pub fn clear_acl(file: &File) -> io::Result<()> {
 /// This reserves absent sidecars under the alternate spellings accepted by APFS/HFS+.
 /// Accents are significant; this does not perform a locale-dependent comparison.
 pub fn canonical_names_equal(a: &str, b: &str) -> io::Result<bool> {
-    if a == b {
-        return Ok(true);
-    }
+    let equal = a == b;
     #[cfg(target_os = "macos")]
-    if !a.is_ascii() || !b.is_ascii() {
+    if !equal && (!a.is_ascii() || !b.is_ascii()) {
         return macos::canonical_names_equal(a, b);
     }
-    Ok(false)
+    Ok(equal)
 }
 
 #[cfg(target_os = "macos")]
